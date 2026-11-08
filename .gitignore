@@ -1,0 +1,24 @@
+# ── Backups — NEVER COMMIT ────────────────────────────────────
+backups/
+*BACKUP*.json
+AT-FULL-BACKUP-*.json
+at_v2*.json
+
+# ── Secrets ───────────────────────────────────────────────────
+.env
+.env.*
+*apikey*
+*api-key*
+*secret*
+*service_role*
+
+# ── OS cruft ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editors ───────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
