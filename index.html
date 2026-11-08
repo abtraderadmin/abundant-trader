@@ -7848,7 +7848,11 @@ function oreDupCheck(ticker, direction){
   return state.discoveries.find(d=>{
     if((d.ticker||'').toUpperCase()!==(ticker||'').toUpperCase()) return false;
     if(d.direction && direction && d.direction!==direction) return false;
-    return ['watching','active'].includes(d.status||'');
+    // oreSaveDiscovery writes 'watch' | 'skipped' | 'rejected', so the old
+    // ['watching','active'] list never matched and duplicates slipped through.
+    // 'skipped'/'rejected' are deliberately not duplicates — a setup you passed
+    // on before can legitimately come back.
+    return ['watch','watching','active'].indexOf(d.status||'')>=0;
   })||null;
 }
 
@@ -7870,6 +7874,12 @@ function oreParseAcornWealth(text){
   if(longStart===-1 && shortStart===-1) return items;
 
   function parseSection(sectionText, direction){
+    // NOTE: this must collect into its OWN array. It previously pushed straight
+    // into the outer `items` and then returned that same array, so the caller's
+    // `.forEach(x=>items.push(x))` added every entry a second time — and because
+    // the Short section ran over the already-doubled array, an 11-ticker report
+    // came out as 40 entries.
+    const out=[];
     // Split into ticker blocks by finding lines that are just a ticker symbol
     // Handles: "ALLT" or "SDS - Hit Entry Criteria - October 23, 2026"
     const tickerLineRe=/^([A-Z]{1,6})(?:\s+-\s+.+)?$/gm;
@@ -7901,7 +7911,7 @@ function oreParseAcornWealth(text){
       const earnings  =g(/Upcoming Earnings Date[–-]+\s*(.+)/i);
       const entryText =g(/Entry Criteria\s*[–-]+\s*(.+)/i);
       if(!ticker||!entry) continue; // skip if no usable data
-      items.push({
+      out.push({
         ticker, direction, source:'acorn_wealth',
         alertDate, pattern, entryText, entry, stop,
         target1, target2: t2Raw?target2:null,
@@ -7914,7 +7924,7 @@ function oreParseAcornWealth(text){
         importedAt: new Date().toISOString().slice(0,10),
       });
     }
-    return items;
+    return out;
   }
 
   // Extract Long section
@@ -7952,6 +7962,15 @@ function oreParseAlerts(){
     statusEl.textContent='⚠ No tickers found. Make sure the full report is pasted (Long Ideas / Short Ideas sections required).';
     return;
   }
+
+  // Collapse repeats inside a single report — a ticker appearing more than once
+  // should still queue only once.
+  const seenKeys={};
+  parsed=parsed.filter(it=>{
+    const k=(it.ticker||'').toUpperCase()+'|'+(it.direction||'');
+    if(seenKeys[k])return false;
+    seenKeys[k]=true;return true;
+  });
 
   // Duplicate check
   parsed.forEach(item=>{
