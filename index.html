@@ -6280,27 +6280,49 @@ async function avGetMcp(toolName,params){
   throw new Error('MCP_PARSE_ERR');
 }
 
+// ── ALPHA VANTAGE — DIRECT HTTPS ─────────────────────────────────
+// This used to go through the Claude runtime's Alpha Vantage connector
+// (claude.use('mcp')), which only exists inside claude.ai — off that host the
+// page died with "claude is not defined". Calling the REST API directly works
+// anywhere and uses the key from Settings.
+//
+// Returns the same shapes the rest of the app already expects:
+//   normal endpoints  -> parsed JSON object
+//   EARNINGS_CALENDAR -> { _csv: "<raw csv>" }
+async function avGetRest(avFn,params){
+  const key=((state.settings&&state.settings.avApiKey)||'').trim();
+  if(!key)throw new Error('NO_API_KEY');
+  const qs=new URLSearchParams();
+  qs.set('function',avFn);
+  Object.keys(params||{}).forEach(k=>{
+    const v=params[k];
+    if(k==='return_full_data')return;            // connector-only flag, not an API param
+    if(v===undefined||v===null||v==='')return;
+    qs.set(k,v);
+  });
+  // EARNINGS_CALENDAR is CSV-only; everything else should come back as JSON
+  if(avFn!=='EARNINGS_CALENDAR'&&!qs.get('datatype'))qs.set('datatype','json');
+  qs.set('apikey',key);
+  let res;
+  try{res=await fetch('https://www.alphavantage.co/query?'+qs.toString(),{cache:'no-store'});}
+  catch(e){throw new Error('NETWORK');}
+  if(!res.ok)throw new Error('HTTP_'+res.status);
+  const text=await res.text();
+  const head=text.slice(0,120).trim().toLowerCase();
+  if(avFn==='EARNINGS_CALENDAR'||head.startsWith('symbol,'))return{_csv:text};
+  let obj;
+  try{obj=JSON.parse(text);}catch(e){throw new Error('AV_PARSE_ERR');}
+  if(obj['Error Message'])throw new Error('NO_DATA');
+  if(obj['Note']||obj['Information'])throw new Error('RATE_LIMIT');
+  return obj;
+}
+
 async function avGet(params){
   const {function:fn,...rest}=params;
-  // Map Alpha Vantage function names → MCP tool names
-  const toolMap={
-    GLOBAL_QUOTE:'GLOBAL_QUOTE',
-    TIME_SERIES_DAILY:'TIME_SERIES_DAILY',
-    EMA:'EMA',
-    EARNINGS_CALENDAR:'EARNINGS_CALENDAR',
-    OVERVIEW:'COMPANY_OVERVIEW',
-    COMPANY_OVERVIEW:'COMPANY_OVERVIEW',
-    ATR:'ATR',
-    NEWS_SENTIMENT:'NEWS_SENTIMENT',
-    REALTIME_OPTIONS:'REALTIME_OPTIONS',
-    TIME_SERIES_INTRADAY:'TIME_SERIES_INTRADAY',
-  };
-  const toolName=toolMap[fn]||fn;
-  // EARNINGS_CALENDAR only returns CSV; everything else: force JSON so payload is a parsed object
-  if(toolName!=='EARNINGS_CALENDAR'&&!rest.datatype){
-    rest.datatype='json';
-  }
-  return avGetMcp(toolName,rest);
+  // The connector used COMPANY_OVERVIEW; the REST API calls it OVERVIEW.
+  const restMap={COMPANY_OVERVIEW:'OVERVIEW'};
+  const avFn=restMap[fn]||fn;
+  return avGetRest(avFn,rest);
 }
 
 // ─ Parse earnings CSV, return days-to-earnings (null = none found in 90d)
@@ -6589,7 +6611,11 @@ async function oreAnalyze(){
     oreBuildResults();
 
   }catch(err){
-    if(err.message==='MCP_UNAVAILABLE'){oreProgress('⚠ Alpha Vantage connector not available. Open this app inside claude.ai with the Alpha Vantage connector enabled.');}
+    if(err.message==='NO_API_KEY'){oreProgress('⚠ No Alpha Vantage API key saved. Add it in Settings → Alpha Vantage API Key, then try again.');}
+    else if(err.message==='NETWORK'){oreProgress('⚠ Could not reach Alpha Vantage. Check your connection and try again.');}
+    else if(/^HTTP_/.test(err.message||'')){oreProgress('⚠ Alpha Vantage returned '+err.message.replace('HTTP_','HTTP ')+'. Try again shortly.');}
+    else if(err.message==='AV_PARSE_ERR'){oreProgress('⚠ Alpha Vantage sent a response this app could not read. Try again.');}
+    else if(err.message==='MCP_UNAVAILABLE'){oreProgress('⚠ Alpha Vantage connector not available. Open this app inside claude.ai with the Alpha Vantage connector enabled.');}
     else if(err.message==='RATE_LIMIT'){oreProgress('⚠ Alpha Vantage rate limit hit. Wait 60 s and try again.');}
     else if(err.message==='NO_DATA'){oreProgress('⚠ No data returned. Check the ticker symbol.');}
     else if(err.message==='MCP_EMPTY'||err.message==='MCP_PARSE_ERR'){oreProgress('⚠ Unexpected MCP response. Try again in a moment.');}
@@ -8274,6 +8300,18 @@ async function atReconcile(){
   }
   if(!localObj){atApplyCloudState(row.state);toast('☁ Loaded '+cloudN+' trades from the cloud.','ok',8000);return;}
   if(JSON.stringify(row.state)===localRaw){atSyncChip('☁ in sync','var(--green)');return;}
+  // If one side has no trades at all there is nothing to weigh up — the side
+  // holding data always wins. Asking here invites a click that wipes a trade log.
+  if(cloudN===0&&localN>0){
+    await atCloudPush();
+    toast('☁ Cloud had no trades — pushed this device up ('+localN+' trades).','ok',9000);
+    return;
+  }
+  if(localN===0&&cloudN>0){
+    atApplyCloudState(row.state);
+    toast('☁ This device had no trades — loaded '+cloudN+' from the cloud.','ok',9000);
+    return;
+  }
   const when=row.updated_at?new Date(row.updated_at).toLocaleString():'unknown';
   const useCloud=confirm(
     'The cloud copy and this device are different.\n\n'+
