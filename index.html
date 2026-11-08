@@ -60,6 +60,76 @@ body{
 }
 input,select,textarea,button{font-family:var(--sans)}
 
+/* ── Missing variable aliases ─────────────────────────────────
+   Parts of the app (SPY panels, Orders journal, Archer, watchlist) were
+   written against --bg2, --bg3 and --s1, which were never defined. An
+   undefined custom property resolves to nothing, so those elements rendered
+   with no background at all — white on white until hovered.
+   Defining them in terms of the real tokens means they follow the theme
+   automatically, in both light and dark. */
+:root{
+  --bg2:var(--s2);
+  --bg3:var(--s3);
+  --s1:var(--surface);
+  --surface2:var(--s2);
+  --teal:#14b8a6;
+}
+
+/* ── Native dropdown readability ──────────────────────────────
+   <option> popups are painted by the OS, not the page. Without explicit
+   colours they inherit unpredictably and can come out unreadable. */
+select{color-scheme:inherit}
+select option,
+select optgroup{
+  background-color:var(--surface);
+  color:var(--fg);
+}
+select optgroup{
+  color:var(--fg3);
+  font-style:normal;
+  font-weight:700;
+}
+select option:checked{
+  background-color:var(--s3);
+  color:var(--fg);
+  font-weight:700;
+}
+/* Long account names shouldn't push the popup off the edge of the window */
+select.fc{
+  max-width:100%;
+  text-overflow:ellipsis;
+}
+
+/* ── Custom dropdown ─────────────────────────────────────────
+   Native <select> popups are painted by the operating system and ignore page
+   styling on some setups — which left these unreadable. These are ordinary
+   elements the app draws itself, so they always match the theme. */
+.atdd{position:relative;display:inline-block}
+.atdd-btn{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  width:100%;padding:8px 11px;
+  background:var(--s2);color:var(--fg);
+  border:1px solid var(--border2);border-radius:7px;
+  font-size:13px;font-weight:600;cursor:pointer;text-align:left;
+}
+.atdd-btn:hover{border-color:var(--gold)}
+.atdd-car{color:var(--fg3);font-size:10px;flex:0 0 auto}
+.atdd-menu{
+  position:absolute;top:calc(100% + 4px);left:0;z-index:600;
+  min-width:100%;max-height:300px;overflow-y:auto;
+  background:var(--surface);border:1px solid var(--border2);border-radius:8px;
+  box-shadow:0 8px 26px rgba(0,0,0,.45);padding:4px;
+}
+.atdd-opt{
+  display:block;width:100%;text-align:left;white-space:nowrap;
+  padding:7px 10px;margin:1px 0;
+  background:transparent;color:var(--fg);
+  border:none;border-radius:5px;
+  font-size:13px;cursor:pointer;
+}
+.atdd-opt:hover{background:var(--s3)}
+.atdd-opt.sel{background:var(--gold-bg);color:var(--gold);font-weight:700}
+
 /* safe-area top band */
 body::before{
   content:"";position:fixed;inset:0 0 auto;
@@ -2778,11 +2848,19 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
     {k:'spy_day',label:'SPY Day',color:'--purple'},
     {k:'swing',  label:'Swing',  color:'--gold'},
   ];
+  // Prior-period P/L is credited to the futures account cards below, so the
+  // Futures ring has to include it too — otherwise the ring reads lower than the
+  // accounts that make it up and the two never reconcile.
+  const priorMapR=state.settings.accountPriorPL||{};
+  const futAcctNames=[...(state.settings.evalAccounts||[]),...(state.settings.paAccounts||[])].filter(n=>n&&String(n).trim());
+  const futPrior=futAcctNames.reduce((s,n)=>s+(priorMapR[n]||0),0);
   const modCards=MODULE_RINGS.map(m=>{
     const list=closed.filter(t=>t.module===m.k&&(incPaper||acctNature(t)!=='paper'));
     const tgt=m.k==='futures'?(mgR.futures||personalGoal||0):(mgR[m.k]||0);
     if(!list.length&&!tgt)return null;
-    return{label:m.label,amount:list.reduce((s,t)=>s+t.netPL,0),target:tgt,color:m.color};
+    let amount=list.reduce((s,t)=>s+t.netPL,0);
+    if(m.k==='futures')amount+=futPrior;
+    return{label:m.label,amount:amount,target:tgt,color:m.color};
   }).filter(Boolean);
   const goals=[
     ...modCards,
@@ -2813,11 +2891,15 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   const cashToggle=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><button onclick="state.cashFilter=!state.cashFilter;renderGoals();renderGoals('goalsRibbon2','statsRow2');renderPerf()" style="font-size:10px;padding:3px 9px;border-radius:12px;border:1px solid var(--border);cursor:pointer;background:${cashOn?'var(--gold)':'transparent'};color:${cashOn?'#111':'var(--fg3)'};font-weight:700;letter-spacing:.06em">${cashOn?'CASH':'ALL'}</button>${cashOn?'<span style="font-size:10px;color:var(--gold)">Eval &amp; sim excluded · PA counts as cash</span>':''}</div>`;
   const futStat=statBase.filter(t=>t.module==='futures');
   const nonFutStat=statBase.filter(t=>t.module!=='futures');
+  // Same prior-period credit as the rings, so tiles and account cards agree.
+  const futNetT=futStat.reduce((s,t)=>s+t.netPL,0)+futPrior;
+  const nonFutNetT=nonFutStat.reduce((s,t)=>s+t.netPL,0);
+  const statNetT=statNet+futPrior;
   const overallTiles=[
-    {l:'Total Net P/L',v:$(statNet),c:statNet>=0?'green':'red'},
+    {l:'Total Net P/L',v:$(statNetT),c:statNetT>=0?'green':'red'},
     ...(futStat.length&&nonFutStat.length?[
-      {l:'└ Futures',v:$(futStat.reduce((s,t)=>s+t.netPL,0)),c:futStat.reduce((s,t)=>s+t.netPL,0)>=0?'green':'red'},
-      {l:'└ Stock/Opt/SPY',v:$(nonFutStat.reduce((s,t)=>s+t.netPL,0)),c:nonFutStat.reduce((s,t)=>s+t.netPL,0)>=0?'green':'red'},
+      {l:'└ Futures',v:$(futNetT),c:futNetT>=0?'green':'red'},
+      {l:'└ Stock/Opt/SPY',v:$(nonFutNetT),c:nonFutNetT>=0?'green':'red'},
     ]:[]),
     {l:cashOn?'Cash Trades':'All Trades',v:cashOn?statBase.length:state.trades.length,c:''},
     {l:'Win Rate',v:statBase.length?wr.toFixed(0)+'%':'—',c:wr>=50?'green':wr>0?'red':''},
@@ -3012,6 +3094,50 @@ function renderLog(){
 }
 
 // ── PERFORMANCE ──────────────────────────────────────────────
+// ══ CUSTOM DROPDOWN ════════════════════════════════════════
+// opts: [{v,l}] · onPick: name of a global function taking the chosen value.
+// Values are URI-encoded into the handler so account names containing spaces,
+// quotes or dashes can't break the markup.
+function atDropdown(id,current,opts,onPick,minW){
+  const cur=opts.filter(o=>String(o.v)===String(current))[0]||opts[0];
+  const items=opts.map(o=>{
+    const sel=String(o.v)===String(current)?' sel':'';
+    return '<button type="button" class="atdd-opt'+sel+'" onclick="atddPick(\''+id+'\',\''+onPick+'\',\''+encodeURIComponent(o.v)+'\')">'+o.l+'</button>';
+  }).join('');
+  return '<div class="atdd" id="dd-'+id+'" style="min-width:'+(minW||150)+'px">'
+    +'<button type="button" class="atdd-btn" onclick="atddToggle(event,\''+id+'\')">'
+      +'<span>'+(cur?cur.l:'—')+'</span><span class="atdd-car">▾</span>'
+    +'</button>'
+    +'<div class="atdd-menu" id="ddm-'+id+'" hidden>'+items+'</div>'
+  +'</div>';
+}
+function atddToggle(ev,id){
+  if(ev&&ev.stopPropagation)ev.stopPropagation();
+  const me=document.getElementById('ddm-'+id);
+  document.querySelectorAll('.atdd-menu').forEach(m=>{if(m!==me)m.hidden=true;});
+  if(me)me.hidden=!me.hidden;
+}
+function atddPick(id,fn,encVal){
+  const me=document.getElementById('ddm-'+id);
+  if(me)me.hidden=true;
+  let val=encVal;
+  try{val=decodeURIComponent(encVal);}catch(e){}
+  if(typeof window[fn]==='function')window[fn](val);
+}
+document.addEventListener('click',function(e){
+  if(e.target&&e.target.closest&&e.target.closest('.atdd'))return;
+  document.querySelectorAll('.atdd-menu').forEach(m=>m.hidden=true);
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape')document.querySelectorAll('.atdd-menu').forEach(m=>m.hidden=true);
+});
+
+// Performance filter handlers
+function perfSetAcct(v){state.perfFilter.acct=v;renderPerf();}
+function perfSetMod(v){state.perfFilter.mod=v;renderPerf();}
+function perfSetNature(v){state.perfFilter.nature=v;renderPerf();}
+function perfSetDir(v){state.perfFilter.dir=v;renderPerf();}
+
 function renderPerf(){
   const el=document.getElementById('perfContent');if(!el)return;
   if(!state.perfFilter)state.perfFilter={acct:'all',mod:'all',dir:'all',nature:'all'};
@@ -3113,36 +3239,25 @@ function renderPerf(){
   if(dirF!=='all')filtered=filtered.filter(t=>tradeMatchesDir(t,dirF));
 
   // Filter bar
-  const acctOpts=[`<option value="all"${acctF==='all'?' selected':''}>All Accounts</option>`,
-    ...allAcctNames.map(n=>`<option value="${n}"${acctF===n?' selected':''}>${n}</option>`)
-  ].join('');
-  const modOpts=[
-    `<option value="all"${modF==='all'?' selected':''}>All Modules</option>`,
-    `<option value="futures"${modF==='futures'?' selected':''}>Futures</option>`,
-    `<option value="stock"${modF==='stock'?' selected':''}>Stock</option>`,
-    `<option value="options"${modF==='options'?' selected':''}>Options</option>`,
-    `<option value="spy_day"${modF==='spy_day'?' selected':''}>SPY Day</option>`,
-    `<option value="swing"${modF==='swing'?' selected':''}>Swing</option>`,
-  ].join('');
-  const dirOpts=[
-    `<option value="all"${dirF==='all'?' selected':''}>Long &amp; Short</option>`,
-    `<option value="LONG"${dirF==='LONG'?' selected':''}>Long only</option>`,
-    `<option value="SHORT"${dirF==='SHORT'?' selected':''}>Short only</option>`,
-    `<option value="CALL"${dirF==='CALL'?' selected':''}>Calls only</option>`,
-    `<option value="PUT"${dirF==='PUT'?' selected':''}>Puts only</option>`,
-  ].join('');
-  const natOpts=[
-    `<option value="all"${natF==='all'?' selected':''}>All Capital</option>`,
-    `<option value="real"${natF==='real'?' selected':''}>Real Money only</option>`,
-    `<option value="eval"${natF==='eval'?' selected':''}>Eval / Prop only</option>`,
-    `<option value="paper"${natF==='paper'?' selected':''}>Paper / Sim only</option>`,
-  ].join('');
+  const acctList=[{v:'all',l:'All Accounts'},...allAcctNames.map(n=>({v:n,l:n}))];
+  const modList=[
+    {v:'all',l:'All Modules'},{v:'futures',l:'Futures'},{v:'stock',l:'Stock'},
+    {v:'options',l:'Options'},{v:'spy_day',l:'SPY Day'},{v:'swing',l:'Swing'},
+  ];
+  const dirList=[
+    {v:'all',l:'Long & Short'},{v:'LONG',l:'Long only'},{v:'SHORT',l:'Short only'},
+    {v:'CALL',l:'Calls only'},{v:'PUT',l:'Puts only'},
+  ];
+  const natList=[
+    {v:'all',l:'All Capital'},{v:'real',l:'Real Money only'},
+    {v:'eval',l:'Eval / Prop only'},{v:'paper',l:'Paper / Sim only'},
+  ];
 
   let html=`<div style="display:flex;gap:10px;margin-bottom:16px;align-items:center;flex-wrap:wrap">
-    <select class="fc" style="min-width:160px" onchange="state.perfFilter.acct=this.value;renderPerf()">${acctOpts}</select>
-    <select class="fc" style="min-width:130px" onchange="state.perfFilter.mod=this.value;renderPerf()">${modOpts}</select>
-    <select class="fc" style="min-width:130px" onchange="state.perfFilter.nature=this.value;renderPerf()">${natOpts}</select>
-    <select class="fc" style="min-width:125px" onchange="state.perfFilter.dir=this.value;renderPerf()">${dirOpts}</select>
+    ${atDropdown('pf-acct',acctF,acctList,'perfSetAcct',190)}
+    ${atDropdown('pf-mod',modF,modList,'perfSetMod',150)}
+    ${atDropdown('pf-nat',natF,natList,'perfSetNature',175)}
+    ${atDropdown('pf-dir',dirF,dirList,'perfSetDir',155)}
     <button onclick="state.cashFilter=!state.cashFilter;renderGoals();renderGoals('goalsRibbon2','statsRow2');renderPerf()" style="font-size:10px;padding:4px 10px;border-radius:12px;border:1px solid var(--border);cursor:pointer;background:${cashOnP?'var(--gold)':'transparent'};color:${cashOnP?'#111':'var(--fg3)'};font-weight:700">${cashOnP?'CASH ✓':'CASH'}</button>
     <span style="color:var(--fg3);font-size:12px;margin-left:4px">${filtered.length} closed trade${filtered.length!==1?'s':''}</span>
   </div>`;
@@ -3188,8 +3303,20 @@ function renderPerf(){
       h+=`<div class="section-title" style="margin:2px 0 8px;font-size:12px;color:${color}">└ ${lb} (${B.length})</div>${statGrid(modStats(B))}`;
       return h;
     }
-    if(futC.length){html+=`<div class="section-title" style="margin-bottom:12px">Futures</div>${statGrid(modStats(futC))}`;
-      html+=sideSplit(futC,'LONG','SHORT','Long','Short','var(--fg3)');}
+    if(futC.length){
+      // Prior-period P/L belongs to the futures accounts, so the Futures section
+      // must carry it too — otherwise the module sections don't sum to Overall.
+      const futAcctSet=new Set([...evalNames,...paNames]);
+      const futPriorP=Object.keys(priorPLMapP)
+        .filter(nm=>futAcctSet.has(nm))
+        .reduce((s,nm)=>s+(priorPLMapP[nm]||0),0);
+      const fStats=modStats(futC);
+      const tradedF=fStats.totalNet;
+      if(futPriorP)fStats.totalNet=tradedF+futPriorP;
+      const fNote=futPriorP?` <span style="font-size:11px;color:var(--fg3);font-weight:400">· ${$(tradedF)} traded + ${$(futPriorP)} prior period</span>`:'';
+      html+=`<div class="section-title" style="margin-bottom:12px">Futures${fNote}</div>${statGrid(fStats)}`;
+      html+=sideSplit(futC,'LONG','SHORT','Long','Short','var(--fg3)');
+    }
     if(stkC.length){html+=`<div class="section-title blue" style="margin-bottom:12px">Stock</div>${statGrid(modStats(stkC))}`;
       html+=sideSplit(stkC,'LONG','SHORT','Long','Short','var(--blue)');}
     if(optC.length){html+=`<div class="section-title" style="margin-bottom:12px;color:#C084FC">Options</div>${statGrid(modStats(optC))}`;
@@ -3200,21 +3327,35 @@ function renderPerf(){
       html+=sideSplit(spyC,'LONG','SHORT','Long premium','Short premium','#a855f7');}
     if(swgC.length){html+=`<div class="section-title" style="margin-bottom:12px;color:var(--gold)">Swing</div>${statGrid(modStats(swgC))}`;
       html+=sideSplit(swgC,'CALL','PUT','Calls','Puts','var(--gold)');}
-    const acctsHere=allAcctNames.filter(nm=>baseClosed.some(t=>t.account===nm));
+  }
+
+  // By Account — shown whenever a single account isn't already selected, including
+  // while a module filter is on. It used to require nothing at all being filtered,
+  // so choosing "Module: Futures" made the per-account breakdown disappear.
+  if(acctF==='all'){
+    const acctsHere=allAcctNames.filter(nm=>filtered.some(t=>t.account===nm));
     if(acctsHere.length){
-      html+=`<div class="section-title" style="margin:4px 0 12px">By Account</div>`;
+      const scope=modF==='all'?'':' · '+modF.replace('_',' ')+' only';
+      html+=`<div class="section-title" style="margin:4px 0 12px">By Account<span style="font-size:11px;color:var(--fg3);font-weight:400">${scope}</span></div>`;
+      let rollup=0;
       acctsHere.forEach(nm=>{
-        const at=baseClosed.filter(t=>t.account===nm);
+        const at=filtered.filter(t=>t.account===nm);
         const priorPL=priorPLMapP[nm]||0;
         const stats=modStats(at);
         const tradedPL=stats.totalNet;
         if(priorPL)stats.totalNet=tradedPL+priorPL;
+        rollup+=stats.totalNet;
         const isEval=evalNames.includes(nm);
         const color=isEval?'var(--blue)':'var(--green)';
         const priorNote=priorPL?` <span style="font-size:11px;color:var(--fg3);font-weight:400">· ${$(tradedPL)} traded + ${$(priorPL)} prior period</span>`:'';
         html+=`<div class="section-title" style="margin-bottom:8px;font-size:13px;color:${color}">${nm}${priorNote}</div>`;
         html+=statGrid(stats);
       });
+      // The roll-up makes the arithmetic visible: accounts must sum to the module total.
+      html+=`<div style="display:flex;justify-content:flex-end;align-items:baseline;gap:10px;margin:-4px 0 20px;padding-top:8px;border-top:1px solid var(--border2)">
+        <span style="font-size:11px;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em">Accounts roll-up${scope}</span>
+        <span style="font-family:var(--mono);font-size:17px;font-weight:700;color:${rollup>=0?'var(--green)':'var(--red)'}">${$(rollup)}</span>
+      </div>`;
     }
   }
 
