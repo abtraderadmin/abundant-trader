@@ -7171,6 +7171,142 @@ function setOreRoute(route){
   if(route==='stock'||route==='both')oreUpdateScenario();
 }
 
+// ── Obstacle-aware risk/reward ────────────────────────────────────
+// A ratio measured to a distant target is flattered when resistance sits in
+// between: price has to get through that level first, and often doesn't. So
+// every setup carries two numbers — to the first obstacle, and to the target.
+// A setup is not grade A on the second number alone.
+function oreLastVal(s){return(Array.isArray(s)&&s.length&&s[s.length-1])?s[s.length-1].value:null;}
+
+function oreObstacles(o){
+  const out=[];
+  const add=(v,l)=>{const n=parseFloat(v);if(isFinite(n)&&n>0)out.push({v:n,l:l});};
+  add(o.ema200!=null?o.ema200:oreLastVal(o.emaSeries200),'200 EMA');
+  add(o.ema50!=null?o.ema50:oreLastVal(o.emaSeries50),'50 EMA');
+  if(o.pivots){add(o.pivots.R1,'pivot R1');add(o.pivots.R2,'pivot R2');add(o.pivots.PP,'pivot PP');add(o.pivots.S1,'pivot S1');add(o.pivots.S2,'pivot S2');}
+  if(o.bb){add(o.bb.upper,'Bollinger upper');add(o.bb.lower,'Bollinger lower');}
+  if(o.fibs){add(o.fibs.swingH,'swing high');add(o.fibs.swingL,'swing low');}
+  add(o.pdH,'prior day high');add(o.pdL,'prior day low');
+  return out;
+}
+
+// Nearest level strictly between entry and target. Direction is inferred from
+// the two prices, so this works for shorts without a separate code path.
+function oreFirstObstacle(o,entry,target){
+  if(!o||!entry||!target||entry===target)return null;
+  const up=target>entry;
+  const list=oreObstacles(o).filter(x=>up?(x.v>entry*1.001&&x.v<target*0.999):(x.v<entry*0.999&&x.v>target*1.001));
+  if(!list.length)return null;
+  list.sort((a,b)=>up?a.v-b.v:b.v-a.v);
+  return list[0];
+}
+
+function oreRR(entry,stop,target){
+  const risk=Math.abs(entry-stop);
+  if(!(risk>0))return null;
+  return parseFloat((Math.abs(target-entry)/risk).toFixed(2));
+}
+
+function oreSetupsEl(){
+  let el=document.getElementById('ore-setup-compare');
+  if(!el){
+    const anchor=document.getElementById('ore-stock-calc');
+    if(!anchor)return null;
+    el=document.createElement('div');
+    el.id='ore-setup-compare';
+    el.style.cssText='margin:14px 18px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden';
+    el.innerHTML='<div style="padding:10px 13px;background:var(--s2);display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      +'<strong style="font-size:12px;letter-spacing:.05em;color:var(--fg2)">ENTRY PATHS</strong>'
+      +'<span style="font-size:11px;color:var(--fg3);flex:1;min-width:150px">R:R measured twice — to the first obstacle, and to the full target.</span>'
+      +'<label for="ore-fulltarget" style="font-size:11px;color:var(--fg3)">Full target $</label>'
+      +'<input id="ore-fulltarget" type="number" step="0.01" oninput="oreUpdateScenario()" placeholder="auto" style="width:86px;padding:4px 7px;border-radius:5px;border:1px solid var(--border2);background:var(--surface);color:var(--fg);font-family:var(--mono);font-size:11px;text-align:right">'
+      +'</div><div id="ore-setup-rows"></div>';
+    anchor.parentNode.insertBefore(el,anchor.nextSibling);
+  }
+  return el;
+}
+
+// Three ways into the same idea. Each gets its own stop from its own
+// structure — reusing one setup's stop on another invents a ratio the chart
+// never offered.
+function oreBuildSetups(o,support,resistance,fullTarget,maxLoss){
+  const atr=o.atr14||null;
+  const buf=v=>atr?atr*0.25:Math.abs(v)*0.01;
+  const mk=(key,name,entry,stop,target,note)=>{
+    entry=parseFloat(Number(entry).toFixed(2));
+    stop=parseFloat(Number(stop).toFixed(2));
+    target=parseFloat(Number(target).toFixed(2));
+    const risk=Math.abs(entry-stop);
+    if(!(risk>0))return null;
+    const ob=oreFirstObstacle(o,entry,target);
+    return{key,name,entry,stop,target,note,
+      risk:parseFloat(risk.toFixed(2)),
+      shares:Math.floor(maxLoss/risk),
+      obstacle:ob,
+      rrFirst:ob?oreRR(entry,stop,ob.v):null,
+      rrFull:oreRR(entry,stop,target)};
+  };
+  const list=[];
+  if(support&&resistance&&resistance>support){
+    const s=mk('A','Support bounce',support,support-buf(support),resistance,
+      'Entry at support, target the level above. The target is the obstacle, so nothing stands in between — this ratio is what it looks like.');
+    if(s)list.push(s);
+  }
+  if(resistance&&fullTarget&&fullTarget>resistance){
+    const s=mk('B','Reclaim + retest',resistance,resistance-buf(resistance),fullTarget,
+      'Needs a close above the level, then a retest that holds. The stop sits under the confirmed higher low — if the thesis is that this level becomes support, the trade is wrong the moment it fails, not a dollar lower.');
+    if(s)list.push(s);
+  }
+  const gate=oreFirstObstacle(o,resistance||support||o.price,fullTarget||0);
+  if(gate&&fullTarget&&fullTarget>gate.v){
+    const s=mk('C','Breakout above '+gate.l,gate.v*1.002,gate.v-buf(gate.v),fullTarget,
+      'Entry only once the obstacle is cleared. Often the lowest headline ratio of the three — and the most trustworthy, because the resistance is already behind it.');
+    if(s)list.push(s);
+  }
+  return list;
+}
+
+function oreRenderSetups(o,support,resistance,maxLoss){
+  if(!oreSetupsEl())return;
+  const rows=document.getElementById('ore-setup-rows');
+  if(!rows)return;
+  const ftEl=document.getElementById('ore-fulltarget');
+  const alert=state.oreAlert||{};
+  let fullTarget=parseFloat(ftEl&&ftEl.value)||null;
+  if(!fullTarget){
+    fullTarget=parseFloat(alert.target2)||parseFloat(alert.target1)||null;
+    if(fullTarget&&ftEl&&!ftEl.value)ftEl.placeholder='$'+fullTarget.toFixed(2);
+  }
+  const minRR=state.settings.minRR||1.5;
+  const setups=oreBuildSetups(o,support,resistance,fullTarget,maxLoss);
+  if(!setups.length){
+    rows.innerHTML='<div style="padding:12px 13px;font-size:11px;color:var(--fg3);line-height:1.6">Set support and resistance above to compare entry paths. Add a full target beyond resistance to see the reclaim and breakout paths too.</div>';
+    return;
+  }
+  rows.innerHTML=setups.map(s=>{
+    const flattered=s.rrFirst!=null&&s.rrFull>=minRR&&s.rrFirst<minRR;
+    const clean=s.rrFull>=minRR&&!flattered;
+    const firstCol=s.rrFirst==null?'var(--fg3)':(s.rrFirst>=minRR?'var(--green)':'var(--red)');
+    return'<div style="padding:11px 13px;border-top:1px solid var(--border)">'
+      +'<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:4px">'
+        +'<strong style="font-size:12px;color:var(--gold)">Setup '+s.key+'</strong>'
+        +'<span style="font-size:12px;color:var(--fg2)">'+s.name+'</span>'
+      +'</div>'
+      +'<div style="font-family:var(--mono);font-size:11px;color:var(--fg2);margin-bottom:5px">'
+        +'entry $'+fmt(s.entry,2)+' · stop $'+fmt(s.stop,2)+' · risk $'+fmt(s.risk,2)+'/sh · '+s.shares+' sh'
+      +'</div>'
+      +'<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;margin-bottom:5px">'
+        +'<span style="color:var(--fg3)">first obstacle: <strong style="font-family:var(--mono);color:'+firstCol+'">'+(s.rrFirst==null?'clear':s.rrFirst+':1')+'</strong>'
+          +(s.obstacle?' <span style="color:var(--fg3)">('+s.obstacle.l+' $'+fmt(s.obstacle.v,2)+')</span>':'')+'</span>'
+        +'<span style="color:var(--fg3)">full target: <strong style="font-family:var(--mono);color:'+(s.rrFull>=minRR?'var(--green)':'var(--red)')+'">'+s.rrFull+':1</strong> <span style="color:var(--fg3)">($'+fmt(s.target,2)+')</span></span>'
+      +'</div>'
+      +(flattered?'<div style="font-size:11px;color:var(--red);line-height:1.55;margin-bottom:4px">⚠ '+s.rrFull+':1 to target, but only '+s.rrFirst+':1 to the '+s.obstacle.l+' at $'+fmt(s.obstacle.v,2)+'. The headline ratio is flattered by resistance in between — not an A setup until that level is dealt with.</div>':'')
+      +(clean?'<div style="font-size:11px;color:var(--green);margin-bottom:4px">✓ Clean path to target at this size.</div>':'')
+      +'<div style="font-size:11px;color:var(--fg3);line-height:1.55">'+s.note+'</div>'
+    +'</div>';
+  }).join('');
+}
+
 // ─ Build stock scenario from inputs
 function oreUpdateScenario(){
   const o=state.ore;if(!o)return;
@@ -7204,6 +7340,11 @@ function oreUpdateScenario(){
 
   const minRR=state.settings.minRR||1.5;
   const rrOk=rr&&rr>=minRR;
+  // Same test on the live scenario: is there a level between here and the
+  // target that price has to get through first?
+  const obPrimary=(target&&stop)?oreFirstObstacle(o,entry,target):null;
+  const rrFirstPrimary=obPrimary?oreRR(entry,stop,obPrimary.v):null;
+  const obOk=!obPrimary||(rrFirstPrimary!=null&&rrFirstPrimary>=minRR);
 
   document.getElementById('ore-stock-calc').innerHTML=`
     <div class="calc-item"><div class="calc-lbl">Entry</div><div class="calc-val mono">$${fmt(entry,2)}</div></div>
@@ -7238,6 +7379,7 @@ function oreUpdateScenario(){
     {label:'Resistance level set',pass:!!resistance},
     {label:'Stop loss calculated',pass:!!stop},
     {label:`R:R ≥ ${minRR}:1`,pass:rrOk},
+    {label:obPrimary?`R:R ≥ ${minRR}:1 to ${obPrimary.l}`:'No resistance before target',pass:obOk},
     {label:'Position size within max loss',pass:!!(totalRisk&&totalRisk<=maxLoss*1.05)},
   ];
   const passCount=checks.filter(c=>c.pass).length;
@@ -7253,6 +7395,8 @@ function oreUpdateScenario(){
       </div>`).join('')}
     </div>
   `;
+
+  oreRenderSetups(o,support,resistance,maxLoss);
 
   // Store scenario
   // Include direction so orePromoteToStock() can read it reliably
