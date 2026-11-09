@@ -7305,6 +7305,123 @@ function oreUpdateRoutingSuggestion(){
   document.getElementById('ore-routing-suggestion').innerHTML=`<strong>Routing Suggestion: ${icons[route]||route}</strong><br><span style="color:var(--fg3)">${reason}</span>`;
 }
 
+// ── Options route panel ──────────────────────────────────────────────
+// Picking Options used to hide both panels and show nothing at all, so the
+// route the app most often recommends was the one with no plan behind it.
+function oreOptionsEl(){
+  let el=document.getElementById('ore-options-panel');
+  if(!el){
+    const anchor=document.getElementById('ore-stock-scenario-panel')||document.getElementById('ore-swing-ideas');
+    if(!anchor)return null;
+    el=document.createElement('div');
+    el.id='ore-options-panel';
+    el.hidden=true;
+    el.style.cssText='margin:14px 18px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden';
+    anchor.parentNode.insertBefore(el,anchor.nextSibling);
+  }
+  return el;
+}
+
+// Sizing by premium, because one contract can quietly exceed the whole risk
+// budget — the most common way an options trade breaks the rules before it
+// is even placed.
+function oreOptPremium(v){
+  const el=document.getElementById('ore-opt-size');
+  if(!el)return;
+  const prem=parseFloat(v);
+  const maxLoss=state.settings.maxLossPerTrade||200;
+  if(!isFinite(prem)||prem<=0){el.textContent='Enter the ask to size it against your $'+fmt(maxLoss,0)+' cap.';el.style.color='var(--fg3)';return;}
+  const per=prem*100;
+  const n=Math.floor(maxLoss/per);
+  if(n<1){
+    el.textContent='⚠ One contract costs $'+fmt(per,0)+' — more than your $'+fmt(maxLoss,0)+' max loss. Use a spread, a cheaper strike, or pass.';
+    el.style.color='var(--red)';el.style.fontWeight='700';return;
+  }
+  el.textContent='✓ '+n+' contract'+(n!==1?'s':'')+' = $'+fmt(n*per,0)+' at risk, inside your $'+fmt(maxLoss,0)+' cap.';
+  el.style.color='var(--green)';el.style.fontWeight='400';
+}
+
+function oreRenderOptions(){
+  const el=oreOptionsEl(); if(!el)return;
+  const o=state.ore;
+  if(!o){el.innerHTML='';return;}
+  const atr=o.atr14||null;
+  const maxLoss=state.settings.maxLossPerTrade||200;
+  // Computed here rather than read from stockScenario, which is only built
+  // when the stock panel is open — and on this route it never is.
+  const support=parseFloat((document.getElementById('ore-support')||{}).value)||null;
+  const resistance=parseFloat((document.getElementById('ore-resistance')||{}).value)||null;
+  const condNow=(document.getElementById('ore-condition')||{}).value||'';
+  const setupNow=(document.getElementById('ore-setup')||{}).value||'';
+  const bear=(o.emaAlignment||'').toLowerCase().includes('bear')||
+    condNow.toLowerCase().includes('trending down')||
+    setupNow.toLowerCase().includes('short')||setupNow.toLowerCase().includes('resist');
+  const dir=bear?'SHORT':'LONG';
+  const entry=o.price;
+  let target=resistance||null;
+  if(!target&&atr)target=parseFloat((bear?(entry-atr*2):(entry+atr*2)).toFixed(2));
+  const strike=(entry&&target)?parseFloat(((entry+target)/2).toFixed(2)):null;
+  const em=d=>atr?parseFloat((atr*Math.sqrt(d)).toFixed(2)):null;
+  const em21=em(21);
+  const need=target?Math.abs(target-entry):null;
+  const stretch=(need!=null&&em21!=null&&need>em21);
+  const dte=o.daysToEarnings;
+  const row=(l,v,c)=>'<div style="display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid var(--border)"><span style="font-size:11px;color:var(--fg3)">'+l+'</span><span style="font-family:var(--mono);font-size:12px;color:'+(c||'var(--fg)')+'">'+v+'</span></div>';
+  el.innerHTML='<div style="padding:10px 13px;background:var(--s2);display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      +'<strong style="font-size:12px;letter-spacing:.05em;color:var(--fg2)">OPTIONS PLAN</strong>'
+      +'<span style="font-size:11px;color:var(--fg3)">Halfway strike — midway between the trigger and the target.</span>'
+    +'</div>'
+    +'<div style="padding:11px 14px">'
+      +row('Underlying',' $'+fmt(entry,2))
+      +row('Structure',(dir==='LONG'?'CALL — bullish':'PUT — bearish'),dir==='LONG'?'var(--green)':'var(--red)')
+      +row('Target used',target?'$'+fmt(target,2):'— set a resistance level',target?'var(--fg)':'var(--gold)')
+      +row('Halfway strike',strike?'$'+fmt(strike,2):'—','var(--gold)')
+      +row('Expected move (ATR)',atr?('5d $'+fmt(em(5),2)+' · 10d $'+fmt(em(10),2)+' · 21d $'+fmt(em21,2)):'— no ATR')
+      +row('Move needed',need!=null?'$'+fmt(need,2):'—',stretch?'var(--red)':'var(--fg)')
+      +(dte!=null?row('Earnings in',dte+' day'+(dte!==1?'s':''),dte<=30?'var(--gold)':'var(--fg)'):'')
+      +(stretch?'<div style="margin-top:9px;font-size:11px;color:var(--red);line-height:1.55">⚠ The move needed ($'+fmt(need,2)+') is larger than a typical 21-day range ($'+fmt(em21,2)+'). Either buy more time than you think you need, or accept this is a catalyst bet rather than a chart bet.</div>':'')
+      +(dte!=null&&dte<=30?'<div style="margin-top:9px;font-size:11px;color:var(--gold);line-height:1.55">⚡ Earnings land inside a normal 3–4 week expiry. Defined risk is exactly why options were suggested here — but premium is inflated going in and collapses after the print, so a correct direction can still lose. Either expire before the date or size for a gap.</div>':'')
+      +'<div style="margin-top:11px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        +'<label for="ore-opt-prem" style="font-size:11px;color:var(--fg3)">Ask per contract $</label>'
+        +'<input id="ore-opt-prem" type="number" step="0.01" min="0" placeholder="2.40" oninput="oreOptPremium(this.value)" style="width:84px;padding:4px 7px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px;text-align:right">'
+        +'<span id="ore-opt-size" style="font-size:11px;color:var(--fg3)">Enter the ask to size it against your $'+fmt(maxLoss,0)+' cap.</span>'
+      +'</div>'
+      +'<div style="margin-top:11px;display:flex;gap:7px;flex-wrap:wrap">'
+        +'<button onclick="orePromoteToOptions()" style="padding:6px 13px;border-radius:6px;border:1px solid rgba(167,139,250,.4);background:rgba(167,139,250,.12);color:#A78BFA;font-size:11px;font-weight:700;cursor:pointer">▶ Open Options Planner</button>'
+        +'<button onclick="oreSaveDiscovery(\'watch\')" style="padding:6px 13px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--fg2);font-size:11px;cursor:pointer">⏳ Watchlist instead</button>'
+      +'</div>'
+      +'<div style="margin-top:9px;font-size:11px;color:var(--fg3);line-height:1.55">Check the strike against the actual chain before committing — the halfway strike is a starting neighbourhood, not a quote. Open interest and spread width decide whether it is tradeable.</div>'
+    +'</div>';
+}
+
+function orePromoteToOptions(){
+  const o=state.ore;
+  if(!o){toast('Run an analysis first.','warn');return;}
+  const atr=o.atr14||null;
+  const resistance=parseFloat((document.getElementById('ore-resistance')||{}).value)||null;
+  const bear=(o.emaAlignment||'').toLowerCase().includes('bear');
+  const entry=o.price;
+  let target=resistance||(atr?(bear?entry-atr*2:entry+atr*2):null);
+  const strike=(entry&&target)?((entry+target)/2).toFixed(2):null;
+  showScreen('options');
+  setTimeout(()=>{
+    // Field names differ across the forms, so try the plausible ones and let
+    // the rest fall through rather than throwing.
+    const setFirst=(ids,v)=>{
+      if(v==null||v==='')return;
+      for(let i=0;i<ids.length;i++){const el=document.getElementById(ids[i]);if(el){el.value=v;return;}}
+    };
+    setFirst(['o-ticker','o-symbol'],o.ticker);
+    setFirst(['o-date'],new Date().toISOString().slice(0,10));
+    setFirst(['o-stock-price','o-underlying','o-price','o-spot'],entry);
+    setFirst(['o-strike'],strike);
+    if(typeof setOptType==='function')setOptType(bear?'PUT':'CALL');
+    if(typeof setODir==='function')setODir(bear?'BEARISH':'BULLISH');
+    if(typeof recalcO==='function')recalcO();
+    toast('Options planner prefilled — confirm the strike and expiry against the live chain.','ok',7000);
+  },110);
+}
+
 // ─ Set selected route
 function setOreRoute(route){
   const map={stock:'orb-stock',options:'orb-options',both:'orb-both',wait:'orb-wait',reject:'orb-reject'};
@@ -7315,9 +7432,19 @@ function setOreRoute(route){
   });
   if(state.ore)state.ore.routeDecision=route;
   // Show/hide panels
-  document.getElementById('ore-stock-scenario-panel').hidden=!(route==='stock'||route==='both');
-  document.getElementById('ore-pass-panel').hidden=!(route==='wait'||route==='reject');
+  const sp=document.getElementById('ore-stock-scenario-panel');
+  if(sp)sp.hidden=!(route==='stock'||route==='both');
+  const pp=document.getElementById('ore-pass-panel');
+  if(pp)pp.hidden=!(route==='wait'||route==='reject');
+  const op=oreOptionsEl();
+  if(op)op.hidden=!(route==='options'||route==='both');
+  if(route==='options'||route==='both')oreRenderOptions();
   if(route==='stock'||route==='both')oreUpdateScenario();
+  // Every route now shows something. Silence used to read as a broken button.
+  if(route==='wait'||route==='reject'){
+    const n=document.getElementById('ore-pass-note');
+    if(n&&typeof n.focus==='function')setTimeout(()=>{try{n.focus();}catch(e){}},60);
+  }
 }
 
 // ── Obstacle-aware risk/reward ────────────────────────────────────
