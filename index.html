@@ -6398,7 +6398,7 @@ function renderAll(){renderGoals();renderGoals('goalsRibbon2','statsRow2');rende
 
 // ─ Chart instance & series refs
 let oreChart=null, oreCandleSeries=null;
-const oreSeriesMap={emas:{},pivots:{},fibs:{},bb:{},pdhl:{}};
+const oreSeriesMap={emas:{},pivots:{},fibs:{},bb:{},pdhl:{},contested:{}};
 
 // ─ Utility
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -6886,18 +6886,40 @@ function oreGenSwingIdeas(){
   const minRR=state.settings?.minRR||1.5;
   const ideas=[];
 
+  // Setups that failed the R:R test, kept so the page can say what it rejected
+  // rather than just showing fewer cards.
+  const rejected=[];
+
   // Helper: build a swing idea card
-  function mkIdea(dir,entry,stop,target,rationale,grade){
+  function mkIdea(dir,entry,stop,target,rationale,grade,name){
     if(!entry||!stop||!target)return null;
     const rps=dir==='LONG'?entry-stop:stop-entry;
     const rpt=dir==='LONG'?target-entry:entry-target;
     if(rps<=0||rpt<=0)return null;
     const rr=parseFloat((rpt/rps).toFixed(2));
-    if(rr<minRR)return null;// below minimum R:R — skip idea
+    if(rr<minRR){rejected.push((name||(dir+' to $'+fmt(target,2)))+' '+rr+':1');return null;}
     const shares=Math.floor(maxLoss/rps);
-    const t1=dir==='LONG'?parseFloat((entry+rpt/3).toFixed(2)):parseFloat((entry-rpt/3).toFixed(2));
-    const t2=dir==='LONG'?parseFloat((entry+rpt*2/3).toFixed(2)):parseFloat((entry-rpt*2/3).toFixed(2));
-    return{dir,entry,stop,t1,t2,target,rr,shares,rps,rpt,rationale,grade,
+    const ob=oreFirstObstacle(o,entry,target);
+    const rrFirst=ob?parseFloat((Math.abs(ob.v-entry)/rps).toFixed(2)):null;
+    // How far into the move the level sits is what decides whether it matters.
+    // A 200 MA at 80% of the way to target is barely an obstacle; the same
+    // level at 15% is the whole trade.
+    const obPct=(ob&&target!==entry)?Math.abs((ob.v-entry)/(target-entry)):null;
+    // A known level in the path is a better place to take the first third than
+    // an arbitrary 33% of the distance — that is what it is good for.
+    let t1=dir==='LONG'?parseFloat((entry+rpt/3).toFixed(2)):parseFloat((entry-rpt/3).toFixed(2));
+    let t1AtObstacle=false;
+    if(ob&&obPct!=null&&obPct>=0.15&&obPct<=0.8){t1=parseFloat(Number(ob.v).toFixed(2));t1AtObstacle=true;}
+    let t2=dir==='LONG'?parseFloat((entry+rpt*2/3).toFixed(2)):parseFloat((entry-rpt*2/3).toFixed(2));
+    // Moving T1 out to the level can push it past T2; split what is left so the
+    // ladder still executes in order.
+    if(t1AtObstacle&&(dir==='LONG'?t1>=t2:t1<=t2))t2=parseFloat(((t1+target)/2).toFixed(2));
+    // Only an early wall you are poorly paid to reach costs a grade. A distant
+    // one is information for the profit plan, not a reason to pass the trade.
+    let g=grade;
+    if(obPct!=null&&obPct<0.34&&rrFirst!=null&&rrFirst<1&&(g==='A'||g==='B+'))g=(g==='A'?'B':'B-');
+    return{dir,entry,stop,t1,t2,target,rr,shares,rps,rpt,rationale,grade:g,name:name||'',
+      obstacle:ob,rrFirst,obPct,t1AtObstacle,
       plannedRisk:parseFloat((rps*shares).toFixed(2)),
       plannedProfit:parseFloat((rpt*shares).toFixed(2))};
   }
@@ -6968,8 +6990,68 @@ function oreGenSwingIdeas(){
   if(al==='bearish_stacked'&&ideas.filter(i=>i.dir==='SHORT').length===0&&resistAbove.length&&fibs.extDn127){
     const entry=p,stop=parseFloat((resistAbove[0]+atr*0.2).toFixed(2)),target=fibs.extDn127;
     const idea=mkIdea('SHORT',entry,stop,target,
-      `Bearish EMA stack. Short at market, stop above $${fmt(resistAbove[0],2)}, downside target 127.2% extension $${fmt(fibs.extDn127,2)}.`,'B');
+      `Bearish EMA stack. Short at market, stop above $${fmt(resistAbove[0],2)}, downside target 127.2% extension $${fmt(fibs.extDn127,2)}.`,'B','Bearish stack short');
     if(idea)ideas.push(idea);
+  }
+
+  // ─ Breakout / reclaim / breakdown paths ──────────────────────────────
+  // Entering at market is only one way into an idea. These wait for a level to
+  // be taken out first, which costs a worse price and buys a cleaner thesis —
+  // and each one's stop comes from its own structure, never borrowed.
+
+  // L3: Breakout above the nearest overhead level
+  if(resistAbove.length){
+    const lvl=resistAbove[0];
+    const nextUp=resistAbove.find(v=>v>lvl*1.005)||fibs.extUp127||fibs.extUp162;
+    if(nextUp&&nextUp>lvl){
+      const entry=parseFloat((lvl*1.002).toFixed(2));
+      const stop=parseFloat((lvl-(atr?atr*0.3:lvl*0.008)).toFixed(2));
+      const idea=mkIdea('LONG',entry,stop,nextUp,
+        `Breakout entry only once $${fmt(lvl,2)} is cleared and holds. Stop back under the level — if it fails to hold, the breakout thesis is wrong. Target $${fmt(nextUp,2)}.`,
+        al==='bullish_stacked'?'B+':'B','Long breakout');
+      if(idea)ideas.push(idea);
+    }
+  }
+
+  // L4: Reclaim of the 200 EMA from below
+  const ema200v=oreEma(o,200);
+  if(ema200v&&p<ema200v){
+    const tgt=resistAbove.find(v=>v>ema200v*1.01)||fibs.extUp127;
+    if(tgt&&tgt>ema200v){
+      const entry=parseFloat((ema200v*1.002).toFixed(2));
+      const stop=parseFloat((ema200v-(atr?atr*0.35:ema200v*0.01)).toFixed(2));
+      const idea=mkIdea('LONG',entry,stop,tgt,
+        `Reclaim of the 200 EMA at $${fmt(ema200v,2)}. Needs a close above and a retest that holds. Stop sits under the reclaimed level — if this level is the thesis, the trade is wrong the moment it fails.`,
+        'B+','200 EMA reclaim');
+      if(idea)ideas.push(idea);
+    }
+  }
+
+  // L5: Prior-day-high continuation
+  if(o.pdH&&o.pdH>p&&(al==='bullish_stacked'||al==='mixed')){
+    const tgt=resistAbove.find(v=>v>o.pdH*1.005)||fibs.extUp127;
+    if(tgt&&tgt>o.pdH){
+      const entry=parseFloat((o.pdH*1.001).toFixed(2));
+      const stop=parseFloat((o.pdH-(atr?atr*0.4:o.pdH*0.01)).toFixed(2));
+      const idea=mkIdea('LONG',entry,stop,tgt,
+        `Continuation over the prior day's high $${fmt(o.pdH,2)}. Stop back inside yesterday's range. Target $${fmt(tgt,2)}.`,
+        'B','Prior-day-high break');
+      if(idea)ideas.push(idea);
+    }
+  }
+
+  // S3: Breakdown below the prior-day low or 20-day swing low
+  const brkLvl=[o.pdL,fibs.swingL].filter(v=>v&&v<p).sort((a,b)=>b-a)[0];
+  if(brkLvl){
+    const tgt=downsideLevels.find(v=>v<brkLvl*0.995);
+    if(tgt){
+      const entry=parseFloat((brkLvl*0.998).toFixed(2));
+      const stop=parseFloat((brkLvl+(atr?atr*0.3:brkLvl*0.008)).toFixed(2));
+      const idea=mkIdea('SHORT',entry,stop,tgt,
+        `Breakdown entry below $${fmt(brkLvl,2)}. Stop back above the level — a reclaim invalidates it. Target $${fmt(tgt,2)}.`,
+        'B','Short breakdown');
+      if(idea)ideas.push(idea);
+    }
   }
 
   // ─ Alert-sourced idea — the service's own levels, offered alongside ours.
@@ -6986,6 +7068,8 @@ function oreGenSwingIdeas(){
     const maxLossA=state.settings.maxLossPerTrade||200;
     const aShares=aRisk>0?Math.floor(maxLossA/aRisk):0;
     const aRR=(aFull&&aRisk>0)?parseFloat((Math.abs(aFull-aEntry)/aRisk).toFixed(2)):null;
+    const aOb=aFull?oreFirstObstacle(o,aEntry,aFull):null;
+    const aRRFirst=(aOb&&aRisk>0)?parseFloat((Math.abs(aOb.v-aEntry)/aRisk).toFixed(2)):null;
     const triggered=aDir==='LONG'?(p>=aEntry):(p<=aEntry);
     const bits=[];
     if(alrt.pattern)bits.push(alrt.pattern);
@@ -6994,11 +7078,17 @@ function oreGenSwingIdeas(){
                        :'Not yet triggered — price $'+fmt(p,2)+'.');
     if(alrt.earnings&&alrt.earnings!=='N/A')bits.push('Earnings: '+alrt.earnings);
     if(alrt.special&&alrt.special!=='N/A')bits.push(alrt.special);
+    // A service's "Target 1" is often its ONLY target, in which case it IS the
+    // full target. Using it as the ⅓ level put T1 above T2 and made the
+    // scale-out plan impossible to execute in order. Only trust it as T1 when a
+    // further target sits behind it.
+    const aT1Usable=(aT1!=null&&aT2raw!=null&&(aDir==='LONG'?aT1<aFull:aT1>aFull));
     ideas.unshift({
       dir:aDir,entry:aEntry,stop:aStop,
-      t1:aT1||(aFull?parseFloat((aEntry+(aFull-aEntry)/3).toFixed(2)):null),
-      t2:aFull?parseFloat((aEntry+(aFull-aEntry)*2/3).toFixed(2)):null,
+      t1:aT1Usable?aT1:(aFull!=null?parseFloat((aEntry+(aFull-aEntry)/3).toFixed(2)):null),
+      t2:aFull!=null?parseFloat((aEntry+(aFull-aEntry)*2/3).toFixed(2)):null,
       target:aFull,
+      obstacle:aOb,rrFirst:aRRFirst,
       shares:aShares,plannedRisk:aShares*aRisk,rr:aRR,grade:'—',
       rationale:bits.join(' · '),
       _alert:true,
@@ -7006,18 +7096,73 @@ function oreGenSwingIdeas(){
     });
   }
 
+  // ─ Dedupe, order, and check for a contradiction
+  const _seen=new Set();
+  let shown=ideas.filter(i=>{
+    if(i._alert)return true;
+    const k=i.dir+'|'+Number(i.entry||0).toFixed(2)+'|'+Number(i.target||0).toFixed(2);
+    if(_seen.has(k))return false;
+    _seen.add(k);return true;
+  });
+  // Alert levels stay pinned first — it's the plan you came in with. The rest
+  // sort cleanest-first: anything flattered by intervening resistance sinks.
+  const _alerts=shown.filter(i=>i._alert);
+  const _rest=shown.filter(i=>!i._alert).sort((a,b)=>{
+    const af=(a.rrFirst!=null&&a.rrFirst<minRR)?1:0, bf=(b.rrFirst!=null&&b.rrFirst<minRR)?1:0;
+    if(af!==bf)return af-bf;
+    return (b.rr||0)-(a.rr||0);
+  });
+  shown=_alerts.concat(_rest);
+  const bothWays=shown.some(i=>i.dir==='LONG')&&shown.some(i=>i.dir==='SHORT');
+
+  // Where a long and a short disagree, one side's entry is the other's target.
+  // That price is the battleground — hard support or resistance that decides
+  // which thesis is right. Worth marking on the chart, not just warning about.
+  const contested=[];
+  if(bothWays){
+    const longs=shown.filter(i=>i.dir==='LONG'), shorts=shown.filter(i=>i.dir==='SHORT');
+    const tol=atr?atr*0.35:p*0.004;
+    const near=(a,b)=>(a&&b)?Math.abs(a-b)<=tol:false;
+    const addC=(v,why)=>{
+      if(!v||!isFinite(v))return;
+      const hit=contested.find(c=>Math.abs(c.v-v)<=tol);
+      if(hit){if(hit.why.indexOf(why)<0)hit.why+=' / '+why;return;}
+      contested.push({v:parseFloat(Number(v).toFixed(2)),why});
+    };
+    longs.forEach(L=>shorts.forEach(S=>{
+      if(near(L.entry,S.target))addC((L.entry+S.target)/2,'long entry vs short target');
+      if(near(L.target,S.entry))addC((L.target+S.entry)/2,'long target vs short entry');
+      if(near(L.stop,S.target))addC((L.stop+S.target)/2,'long stop vs short target');
+      if(near(L.target,S.stop))addC((L.target+S.stop)/2,'long target vs short stop');
+    }));
+    contested.sort((a,b)=>a.v-b.v);
+  }
+  if(state.ore)state.ore.contested=contested;
+
   // ─ Render
   const ideasEl=document.getElementById('ore-swing-ideas');
   if(!ideasEl)return;
-  if(!ideas.length){
-    ideasEl.innerHTML=`<div style="padding:14px 18px;font-size:13px;color:var(--fg3)">⚠ No clean swing setups found — R:R below ${minRR}:1 on all scenarios, or price is mid-range with no clear edge. Set support & resistance above, then re-check.</div>`;
+  if(!shown.length){
+    ideasEl.innerHTML=`<div style="padding:14px 18px;font-size:13px;color:var(--fg3);line-height:1.6">⚠ Nothing cleared ${minRR}:1 — no trade is the answer here.`
+      +(rejected.length?`<br><span style="font-size:11px">Rejected: ${rejected.join(' · ')}</span>`:'')+`</div>`;
     return;
   }
-  ideasEl.innerHTML=ideas.map((id,i)=>{
+  const cList=contested.map(c=>'$'+fmt(c.v,2)).join(' and ');
+  const conflictNote=bothWays?`<div style="margin:8px 18px;padding:10px 13px;border-radius:7px;border:1px solid rgba(251,185,36,.35);background:var(--gold-bg);font-size:11px;color:var(--gold);line-height:1.6">`
+    +`⚠ <strong>Long and short setups are both showing</strong> — one side's entry is the other's target. That is a range, not a trend.`
+    +(contested.length
+      ?` Which makes ${cList} <strong>contested</strong>: hard support and resistance where the decision actually gets made. ${contested.length>1?'They are':'It is'} marked in gold on the chart — watch how price behaves there, because whichever side breaks tells you which thesis was right.`
+      :``)
+    +` Trade the break or the hold of a level. Taking both directions is how you pay twice.</div>`:'';
+  ideasEl.innerHTML=conflictNote+shown.map((id,i)=>{
     const isLong=id.dir==='LONG';
     const col=isLong?'var(--green)':'var(--red)';
     const colBg=isLong?'rgba(34,197,94,.07)':'rgba(244,63,94,.06)';
     const colBorder=isLong?'rgba(34,197,94,.25)':'rgba(244,63,94,.2)';
+    // Severity is about distance, not the bare ratio: a level close to entry
+    // that pays under 1:1 to reach is a real problem; a distant one is not.
+    const obEarly=id.obPct!=null&&id.obPct<0.34&&id.rrFirst!=null&&id.rrFirst<1;
+    const obPctTxt=id.obPct!=null?' ('+Math.round(id.obPct*100)+'% of the move)':'';
     return`<div style="margin:8px 18px;padding:12px 14px;border-radius:8px;border:1px solid ${colBorder};background:${colBg}">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:8px">
@@ -7027,7 +7172,9 @@ function oreGenSwingIdeas(){
             :`<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(251,185,36,.12);color:var(--gold);border:1px solid rgba(251,185,36,.3);font-weight:700">Grade ${id.grade}</span>`}
         </div>
         <span style="font-size:11px;color:var(--fg3);display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-          <span>R:R ${id.rr}:1</span>
+          <span title="To the full target">R:R ${id.rr}:1</span>
+          ${id.rrFirst!=null?`<span style="color:${obEarly?'var(--red)':'var(--fg3)'};font-weight:${obEarly?'700':'400'}" title="The first level in the path, and how far into the move it sits. Near the start it shapes the trade; far along it is just where to scale out.">${id.rrFirst}:1 to ${id.obstacle.l}${obPctTxt}${obEarly?' ⚠':''}</span>`:''}
+          ${id.t1AtObstacle?`<span style="color:var(--gold)" title="T1 has been moved to the level rather than a flat third of the distance">T1 set at the level</span>`:''}
           <span style="display:inline-flex;align-items:center;gap:4px">
             <input type="number" min="0" step="1" value="${id.shares}" id="ore-idea-sh-${i}" oninput="oreIdeaShares(${i},this.value)"
               title="Change the size — risk and capital update as you type"
@@ -7051,9 +7198,11 @@ function oreGenSwingIdeas(){
         <button onclick="oreSwingToStock(${i})" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--fg2);font-size:11px;cursor:pointer">▶ Open Trade Form</button>
       </div>
     </div>`;
-  }).join('');
+  }).join('')
+  +(rejected.length?`<div style="margin:8px 18px 2px;font-size:11px;color:var(--fg3);line-height:1.55">${rejected.length} further setup${rejected.length!==1?'s were':' was'} found and rejected for falling short of ${minRR}:1 — ${rejected.join(' · ')}.</div>`:'');
   // Store for button handlers
-  window._oreSwingIdeas=ideas;
+  window._oreSwingIdeas=shown;
+  oreDrawContested();
 }
 
 // Resize an idea in place. The Governor's first question is "how much is at
@@ -7178,11 +7327,34 @@ function setOreRoute(route){
 // A setup is not grade A on the second number alone.
 function oreLastVal(s){return(Array.isArray(s)&&s.length&&s[s.length-1])?s[s.length-1].value:null;}
 
+// Last-resort EMA straight off the bars. Without this, a missing ema200 field
+// made obstacle detection silently report "clear" on every card — which looks
+// like a clean trade rather than a broken check, and that is the dangerous
+// way for this to fail.
+function oreEmaFromBars(bars,period){
+  if(!Array.isArray(bars)||bars.length<period)return null;
+  const k=2/(period+1);
+  let e=null;
+  for(let i=0;i<bars.length;i++){
+    const c=parseFloat(bars[i]&&bars[i].close);
+    if(!isFinite(c))continue;
+    e=(e==null)?c:(c-e)*k+e;
+  }
+  return isFinite(e)?parseFloat(e.toFixed(2)):null;
+}
+function oreEma(o,period){
+  const direct=o['ema'+period];
+  if(direct!=null&&isFinite(direct))return parseFloat(direct);
+  const series=oreLastVal(o['emaSeries'+period]);
+  if(series!=null&&isFinite(series))return parseFloat(series);
+  return oreEmaFromBars(o.bars,period);
+}
+
 function oreObstacles(o){
   const out=[];
   const add=(v,l)=>{const n=parseFloat(v);if(isFinite(n)&&n>0)out.push({v:n,l:l});};
-  add(o.ema200!=null?o.ema200:oreLastVal(o.emaSeries200),'200 EMA');
-  add(o.ema50!=null?o.ema50:oreLastVal(o.emaSeries50),'50 EMA');
+  add(oreEma(o,200),'200 EMA');
+  add(oreEma(o,50),'50 EMA');
   if(o.pivots){add(o.pivots.R1,'pivot R1');add(o.pivots.R2,'pivot R2');add(o.pivots.PP,'pivot PP');add(o.pivots.S1,'pivot S1');add(o.pivots.S2,'pivot S2');}
   if(o.bb){add(o.bb.upper,'Bollinger upper');add(o.bb.lower,'Bollinger lower');}
   if(o.fibs){add(o.fibs.swingH,'swing high');add(o.fibs.swingL,'swing low');}
@@ -7210,7 +7382,10 @@ function oreRR(entry,stop,target){
 function oreSetupsEl(){
   let el=document.getElementById('ore-setup-compare');
   if(!el){
-    const anchor=document.getElementById('ore-stock-calc');
+    // Anchor to the swing-ideas block, which shows on every route. The
+    // scenario calculator sits inside a panel that stays hidden unless you
+    // pick Stock, and the entry paths are worth seeing either way.
+    const anchor=document.getElementById('ore-swing-ideas')||document.getElementById('ore-stock-calc');
     if(!anchor)return null;
     el=document.createElement('div');
     el.id='ore-setup-compare';
@@ -7284,7 +7459,10 @@ function oreRenderSetups(o,support,resistance,maxLoss){
     return;
   }
   rows.innerHTML=setups.map(s=>{
-    const flattered=s.rrFirst!=null&&s.rrFull>=minRR&&s.rrFirst<minRR;
+    const obPct=(s.obstacle&&s.target!==s.entry)?Math.abs((s.obstacle.v-s.entry)/(s.target-s.entry)):null;
+    // Only an early level you are badly paid to reach is a problem worth red.
+    const flattered=s.rrFirst!=null&&s.rrFull>=minRR&&s.rrFirst<1&&obPct!=null&&obPct<0.34;
+    const scaleHere=s.obstacle&&!flattered;
     const clean=s.rrFull>=minRR&&!flattered;
     const firstCol=s.rrFirst==null?'var(--fg3)':(s.rrFirst>=minRR?'var(--green)':'var(--red)');
     return'<div style="padding:11px 13px;border-top:1px solid var(--border)">'
@@ -7300,8 +7478,9 @@ function oreRenderSetups(o,support,resistance,maxLoss){
           +(s.obstacle?' <span style="color:var(--fg3)">('+s.obstacle.l+' $'+fmt(s.obstacle.v,2)+')</span>':'')+'</span>'
         +'<span style="color:var(--fg3)">full target: <strong style="font-family:var(--mono);color:'+(s.rrFull>=minRR?'var(--green)':'var(--red)')+'">'+s.rrFull+':1</strong> <span style="color:var(--fg3)">($'+fmt(s.target,2)+')</span></span>'
       +'</div>'
-      +(flattered?'<div style="font-size:11px;color:var(--red);line-height:1.55;margin-bottom:4px">⚠ '+s.rrFull+':1 to target, but only '+s.rrFirst+':1 to the '+s.obstacle.l+' at $'+fmt(s.obstacle.v,2)+'. The headline ratio is flattered by resistance in between — not an A setup until that level is dealt with.</div>':'')
-      +(clean?'<div style="font-size:11px;color:var(--green);margin-bottom:4px">✓ Clean path to target at this size.</div>':'')
+      +(flattered?'<div style="font-size:11px;color:var(--red);line-height:1.55;margin-bottom:4px">⚠ The '+s.obstacle.l+' sits at $'+fmt(s.obstacle.v,2)+' — only '+Math.round(obPct*100)+'% into the move, and worth just '+s.rrFirst+':1 to reach. Price has to fight almost immediately for a poor payoff. That is the part to question, not the '+s.rrFull+':1 headline.</div>':'')
+      +(scaleHere?'<div style="font-size:11px;color:var(--gold);line-height:1.55;margin-bottom:4px">▸ '+s.obstacle.l+' at $'+fmt(s.obstacle.v,2)+', '+Math.round((obPct||0)*100)+'% of the way — take the first third there, then let the rest run to $'+fmt(s.target,2)+'.</div>':'')
+      +(clean&&!s.obstacle?'<div style="font-size:11px;color:var(--green);margin-bottom:4px">✓ Clear path to target at this size.</div>':'')
       +'<div style="font-size:11px;color:var(--fg3);line-height:1.55">'+s.note+'</div>'
     +'</div>';
   }).join('');
@@ -7310,6 +7489,13 @@ function oreRenderSetups(o,support,resistance,maxLoss){
 // ─ Build stock scenario from inputs
 function oreUpdateScenario(){
   const o=state.ore;if(!o)return;
+  // Entry paths render whatever route is selected — a wait or options decision
+  // still benefits from seeing where the clean entry would have been. Done
+  // before the stock-panel check, which bails out on every other route.
+  oreRenderSetups(o,
+    parseFloat((document.getElementById('ore-support')||{}).value)||null,
+    parseFloat((document.getElementById('ore-resistance')||{}).value)||null,
+    state.settings.maxLossPerTrade||200);
   if(document.getElementById('ore-stock-scenario-panel').hidden)return;
   const support=parseFloat(document.getElementById('ore-support').value)||null;
   const resistance=parseFloat(document.getElementById('ore-resistance').value)||null;
@@ -7344,7 +7530,10 @@ function oreUpdateScenario(){
   // target that price has to get through first?
   const obPrimary=(target&&stop)?oreFirstObstacle(o,entry,target):null;
   const rrFirstPrimary=obPrimary?oreRR(entry,stop,obPrimary.v):null;
-  const obOk=!obPrimary||(rrFirstPrimary!=null&&rrFirstPrimary>=minRR);
+  const obPctPrimary=(obPrimary&&target!==entry)?Math.abs((obPrimary.v-entry)/(target-entry)):null;
+  // Overhead resistance is not a blocker — it is where the first third comes
+  // off. Only a level close to entry that pays under 1:1 to reach fails here.
+  const obOk=!obPrimary||!(obPctPrimary!=null&&obPctPrimary<0.34&&rrFirstPrimary!=null&&rrFirstPrimary<1);
 
   document.getElementById('ore-stock-calc').innerHTML=`
     <div class="calc-item"><div class="calc-lbl">Entry</div><div class="calc-val mono">$${fmt(entry,2)}</div></div>
@@ -7379,7 +7568,7 @@ function oreUpdateScenario(){
     {label:'Resistance level set',pass:!!resistance},
     {label:'Stop loss calculated',pass:!!stop},
     {label:`R:R ≥ ${minRR}:1`,pass:rrOk},
-    {label:obPrimary?`R:R ≥ ${minRR}:1 to ${obPrimary.l}`:'No resistance before target',pass:obOk},
+    {label:obPrimary?`${obPrimary.l} $${fmt(obPrimary.v,2)} at ${Math.round((obPctPrimary||0)*100)}% — scale out there`:'Clear path to target',pass:obOk},
     {label:'Position size within max loss',pass:!!(totalRisk&&totalRisk<=maxLoss*1.05)},
   ];
   const passCount=checks.filter(c=>c.pass).length;
@@ -7396,8 +7585,6 @@ function oreUpdateScenario(){
     </div>
   `;
 
-  oreRenderSetups(o,support,resistance,maxLoss);
-
   // Store scenario
   // Include direction so orePromoteToStock() can read it reliably
   const condNow=(document.getElementById('ore-condition')?.value||'').toLowerCase();
@@ -7406,6 +7593,22 @@ function oreUpdateScenario(){
     condNow.includes('trending down')||setupNow.includes('short')||setupNow.includes('resist');
   const scenarioDir=isBearScenario?'SHORT':'LONG';
   if(state.ore)state.ore.stockScenario={entry,stop,t1,t2,target,shares,rr,totalRisk,fullProfit,direction:scenarioDir};
+}
+
+// ─ Draw contested levels — kept separate from oreBuildChart because the
+// swing ideas that identify them may be generated either side of the chart
+// being built. Safe to call at any time; it clears its own lines first.
+function oreDrawContested(){
+  const o=state.ore;
+  if(!oreChart||!o||!o.bars||!o.bars.length)return;
+  Object.values(oreSeriesMap.contested||{}).forEach(s=>{try{oreChart.removeSeries(s);}catch(e){}});
+  oreSeriesMap.contested={};
+  (o.contested||[]).forEach((c,ix)=>{
+    if(!c||!isFinite(c.v))return;
+    const s=oreChart.addLineSeries({color:'#F5A623',lineWidth:3,priceLineVisible:false,lastValueVisible:true,crosshairMarkerVisible:false,title:'CONTESTED'});
+    s.setData(o.bars.map(b=>({time:b.time,value:c.v})));
+    oreSeriesMap.contested['c'+ix]=s;
+  });
 }
 
 // ─ Build chart
@@ -7485,6 +7688,8 @@ function oreBuildChart(){
     s.setData(o.bars.map(b=>({time:b.time,value:val})));
     oreSeriesMap.pdhl[label]=s;
   });
+
+  oreDrawContested();
 
   oreChart.timeScale().fitContent();
 
@@ -7590,6 +7795,56 @@ function oreLoadDiscovery(id){
   if(el){el.value=d.ticker||'';el.dispatchEvent(new Event('input'));}
   toast(`Loaded ${d.ticker} — re-analyze or update.`,'ok');
 }
+// Load the ticker and run the analysis in one step — "Load" on its own left
+// you on the watchlist wondering whether anything had happened.
+function oreAnalyzeDiscovery(id){
+  const d=(state.discoveries||[]).find(x=>x.id===id);
+  if(!d)return;
+  const el=document.getElementById('ore-ticker');
+  if(el){el.value=d.ticker||'';}
+  const sup=document.getElementById('ore-support'),res=document.getElementById('ore-resistance');
+  if(sup&&d.support)sup.value=d.support;
+  if(res&&d.resistance)res.value=d.resistance;
+  showScreen('ore');
+  if(typeof oreAnalyze==='function')setTimeout(oreAnalyze,80);
+}
+
+// Status changes keep the record. Deleting is a separate, deliberate act —
+// a setup you passed on is evidence about your judgement later.
+function oreSetDiscoveryStatus(id,status){
+  const d=(state.discoveries||[]).find(x=>x.id===id);
+  if(!d)return;
+  d.status=status;
+  d.statusChangedAt=new Date().toISOString().slice(0,10);
+  saveState();
+  renderDiscoveries();
+  const lbl={watch:'Watchlist',skipped:'Skipped',rejected:'Rejected'}[status]||status;
+  toast(d.ticker+' → '+lbl,'ok');
+}
+
+function oreDiscoveryToStock(id){
+  const d=(state.discoveries||[]).find(x=>x.id===id);
+  if(!d){toast('That entry is no longer in the watchlist.','warn');return;}
+  const sc=d.stockScenario||{};
+  if(!sc.entry){toast('No saved plan on this entry — press Analyze to build one first.','warn',7000);return;}
+  showScreen('stock');
+  setTimeout(()=>{
+    const setV=(k,v)=>{const el=document.getElementById(k);if(el&&v!=null&&v!=='')el.value=v;};
+    setV('s-ticker',d.ticker);
+    setV('s-date',new Date().toISOString().slice(0,10));
+    setV('s-direction',sc.direction||'LONG');
+    setV('s-entry',sc.entry);
+    setV('s-stop',sc.stop);
+    setV('s-target',sc.target);
+    setV('s-shares',sc.shares);
+    setV('s-regime',d.condition||'');
+    setV('s-setup',d.setup||'');
+    if(typeof autoFillTargets==='function')autoFillTargets();
+    if(typeof recalcS==='function')recalcS();
+    toast('Plan loaded from the watchlist — check the levels are still valid before logging.','ok',7000);
+  },110);
+}
+
 function renderDiscoveries(){
   const body=document.getElementById('ore-wl-body');
   const cnt=document.getElementById('ore-wl-count');
@@ -7620,9 +7875,12 @@ function renderDiscoveries(){
         ${d.note?`<div style="font-size:11px;color:var(--fg3);font-style:italic">"${d.note}"</div>`:''}
         ${d.support||d.resistance?`<div style="font-size:10px;color:var(--fg3);margin-top:2px">${d.support?'S:'+d.support:''}${d.support&&d.resistance?' · ':''}${d.resistance?'R:'+d.resistance:''}</div>`:''}
       </div>
-      <div style="display:flex;gap:5px;align-items:center;flex-shrink:0">
-        <button class="btn-secondary" style="font-size:10px;padding:3px 8px" onclick="oreLoadDiscovery(${d.id})">Load</button>
-        <button onclick="deleteDiscovery(${d.id})" title="Delete" style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:transparent;cursor:pointer;color:var(--red);font-size:12px;display:flex;align-items:center;justify-content:center;padding:0">×</button>
+      <div style="display:flex;gap:4px;align-items:center;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:210px">
+        <button class="btn-secondary" style="font-size:10px;padding:3px 8px" title="Load this ticker and run a fresh analysis" onclick="oreAnalyzeDiscovery(${d.id})">↻ Analyze</button>
+        ${d.stockScenario&&d.stockScenario.entry?`<button class="btn-secondary" style="font-size:10px;padding:3px 8px;color:var(--green);border-color:rgba(34,197,94,.3)" title="Open the stock form with this plan filled in" onclick="oreDiscoveryToStock(${d.id})">▶ Trade</button>`:''}
+        ${d.status!=='watch'?`<button class="btn-secondary" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(245,166,35,.3)" title="Move back to the watchlist" onclick="oreSetDiscoveryStatus(${d.id},'watch')">⏳ Watch</button>`:''}
+        ${d.status!=='rejected'?`<button class="btn-secondary" style="font-size:10px;padding:3px 8px;color:var(--fg3)" title="Reject — keeps the record, stops it counting as watched" onclick="oreSetDiscoveryStatus(${d.id},'rejected')">✕ Reject</button>`:''}
+        <button onclick="deleteDiscovery(${d.id})" title="Delete permanently" style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:transparent;cursor:pointer;color:var(--red);font-size:12px;display:flex;align-items:center;justify-content:center;padding:0">×</button>
       </div>
     </div>`;
   }).join('');
@@ -7821,8 +8079,149 @@ function csLoadOre(ticker){
   if(typeof oreAnalyze==='function') oreAnalyze();
 }
 
+// ── Class session import / export ──────────────────────────────────────────
+// Sessions are user data and no longer ship in the source, so this is the only
+// route in or out. JSON in, JSON out — portable between installs and devices.
+const CS_TEMPLATE={
+  label:'Nov 12 — Options Class',
+  date:'2026-11-12',
+  source:'MBG class',
+  atAddsNote:'What this system adds beyond what was taught.',
+  classWins:['Named the level before the move'],
+  sessionNotes:'',
+  tickers:[{
+    symbol:'AAPL',
+    classMethod:'Halfway strike, 3 weeks out',
+    atStructure:'Debit call spread, defined risk',
+    governance:'Within max loss; R:R 2.1:1',
+    classRight:'Direction and level',
+    atAdds:'Sized to the $200 cap and set an invalidation',
+    atStatus:'compliant',
+    atStatusLabel:'Compliant',
+    decision:'',decisionDate:'',notes:''
+  }]
+};
+
+function csImportMsg(t,c){
+  const m=document.getElementById('cs-imp-msg');
+  if(m){m.textContent=t||'';m.style.color=c||'var(--fg3)';}
+}
+
 function csShowImport(){
-  toast('Manual session import — coming soon. For now, ask AI to analyze a class session and import it here.');
+  let d=document.getElementById('cs-import-modal');
+  if(!d){
+    d=document.createElement('div');
+    d.id='cs-import-modal';
+    d.style.cssText='position:fixed;inset:0;z-index:880;background:rgba(4,8,18,.92);display:none;align-items:center;justify-content:center;padding:18px';
+    d.innerHTML='<div style="width:100%;max-width:620px;background:var(--surface);border:1px solid var(--border2);border-radius:14px;padding:20px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+        +'<strong style="font-family:var(--cond);font-size:17px;letter-spacing:.05em;color:var(--gold)">CLASS SESSION — IMPORT / EXPORT</strong>'
+        +'<button onclick="csCloseImport()" style="background:transparent;border:none;color:var(--fg3);font-size:19px;cursor:pointer;line-height:1">×</button>'
+      +'</div>'
+      +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:10px">Sessions live in your saved data, not in the app\'s code, so this is how they move between devices. Paste a session below and press Import, or press Export to copy everything you already have.</div>'
+      +'<textarea id="cs-imp-text" rows="13" spellcheck="false" placeholder="Paste session JSON here…" style="width:100%;box-sizing:border-box;resize:vertical;font-family:var(--mono);font-size:11px;line-height:1.5;padding:10px;border-radius:8px;border:1px solid var(--border2);background:var(--s2);color:var(--fg)"></textarea>'
+      +'<div id="cs-imp-msg" style="font-size:11px;min-height:17px;color:var(--fg3);margin:6px 0 9px;line-height:1.5"></div>'
+      +'<div style="display:flex;gap:7px;flex-wrap:wrap">'
+        +'<button class="btn-primary" style="font-size:12px" onclick="csDoImport()">⬇ Import</button>'
+        +'<button class="btn-secondary" style="font-size:12px" onclick="csExportSessions()">⬆ Export all</button>'
+        +'<button class="btn-secondary" style="font-size:12px" onclick="csFillTemplate()">✎ Template</button>'
+        +'<button class="btn-secondary" style="font-size:12px;margin-left:auto" onclick="csCloseImport()">Close</button>'
+      +'</div></div>';
+    document.body.appendChild(d);
+  }
+  d.style.display='flex';
+  csImportMsg('');
+}
+
+function csCloseImport(){
+  const d=document.getElementById('cs-import-modal');
+  if(d)d.style.display='none';
+}
+
+function csFillTemplate(){
+  const ta=document.getElementById('cs-imp-text');
+  if(ta)ta.value=JSON.stringify(CS_TEMPLATE,null,2);
+  csImportMsg('Template loaded — edit the fields, then press Import. One object, or an array of them.','var(--fg3)');
+}
+
+function csExportSessions(){
+  csInitSessions();
+  const ta=document.getElementById('cs-imp-text');
+  const all=state.classSessions||[];
+  if(!all.length){csImportMsg('No sessions to export yet.','var(--gold)');return;}
+  if(ta){ta.value=JSON.stringify(all,null,2);ta.focus();ta.select();}
+  csImportMsg('✓ '+all.length+' session'+(all.length!==1?'s':'')+' above — already selected, so Ctrl+C copies it.','var(--green)');
+}
+
+// Accepts one session or an array. Anything missing gets a safe default rather
+// than being rejected, because a session that half-imports is more useful than
+// an error message — but a session with no tickers is not a session.
+function csNormalizeSession(raw,i){
+  if(!raw||typeof raw!=='object')return null;
+  const tickers=Array.isArray(raw.tickers)?raw.tickers:[];
+  const clean=tickers.map(t=>({
+    symbol:String((t&&t.symbol)||'').toUpperCase().trim(),
+    classMethod:(t&&t.classMethod)||'—',
+    atStructure:(t&&t.atStructure)||'—',
+    governance:(t&&t.governance)||'—',
+    classRight:(t&&t.classRight)||'—',
+    atAdds:(t&&t.atAdds)||'—',
+    atStatus:['compliant','contingent','veto'].indexOf((t&&t.atStatus)||'')>=0?t.atStatus:'contingent',
+    atStatusLabel:(t&&t.atStatusLabel)||'Review needed',
+    decision:(t&&t.decision)||'',
+    decisionDate:(t&&t.decisionDate)||'',
+    notes:(t&&t.notes)||'',
+  })).filter(t=>t.symbol);
+  if(!clean.length)return null;
+  const date=raw.date||new Date().toISOString().slice(0,10);
+  return{
+    id:raw.id||('cs_'+Date.now().toString(36)+'_'+i),
+    label:raw.label||date,
+    date:date,
+    source:raw.source||'',
+    atAddsNote:raw.atAddsNote||'',
+    classWins:Array.isArray(raw.classWins)?raw.classWins:[],
+    sessionNotes:raw.sessionNotes||'',
+    expanded:true,
+    tickers:clean,
+  };
+}
+
+function csDoImport(){
+  const ta=document.getElementById('cs-imp-text');
+  const raw=(ta&&ta.value||'').trim();
+  if(!raw){csImportMsg('⚠ Paste a session first, or press Template for the shape it expects.','var(--gold)');return;}
+  let parsed;
+  try{parsed=JSON.parse(raw);}
+  catch(e){csImportMsg('⚠ That is not valid JSON — '+e.message,'var(--red)');return;}
+  const incoming=(Array.isArray(parsed)?parsed:[parsed]).map(csNormalizeSession).filter(Boolean);
+  if(!incoming.length){csImportMsg('⚠ No usable sessions found. Each one needs a tickers array, and each ticker needs a symbol.','var(--red)');return;}
+  csInitSessions();
+  const existing=state.classSessions||[];
+  let added=0,replaced=0;
+  incoming.forEach(s=>{
+    const at=existing.findIndex(x=>x.id===s.id);
+    if(at>=0){
+      // Keep decisions already made — re-importing a session should not wipe
+      // the Trade/Watch/Pass calls you recorded against it.
+      const old=existing[at];
+      s.tickers.forEach(t=>{
+        const prev=(old.tickers||[]).find(x=>x.symbol===t.symbol);
+        if(prev&&prev.decision&&!t.decision){t.decision=prev.decision;t.decisionDate=prev.decisionDate;t.notes=t.notes||prev.notes;}
+      });
+      if(!s.sessionNotes)s.sessionNotes=old.sessionNotes||'';
+      existing[at]=s;replaced++;
+    } else {existing.push(s);added++;}
+  });
+  state.classSessions=existing;
+  saveState();
+  csRender();
+  const bits=[];
+  if(added)bits.push(added+' added');
+  if(replaced)bits.push(replaced+' updated (decisions kept)');
+  csImportMsg('✓ '+bits.join(' · ')+'.','var(--green)');
+  toast('✓ Class sessions imported — '+bits.join(', '),'ok',7000);
+  if(ta)ta.value='';
 }
 
 /* ── Branded Status Icons ─────────────────────────────────────
