@@ -6437,7 +6437,78 @@ async function avGetMcp(toolName,params){
 // Returns the same shapes the rest of the app already expects:
 //   normal endpoints  -> parsed JSON object
 //   EARNINGS_CALENDAR -> { _csv: "<raw csv>" }
-async function avGetRest(avFn,params){
+// ── Response cache ───────────────────────────────────────────────────
+// Nine calls go out per ticker, but only the quote and the intraday series can
+// change during a session — daily bars and EMAs are fixed until the next
+// close. Lifetimes are therefore per endpoint, not one blanket number.
+//
+// Kept in its own localStorage key on purpose: inside at_v2 it would be pushed
+// to Supabase on every change and bloat both the sync and the backups.
+const AV_CACHE_KEY='at_av_cache';
+const AV_TTL_MIN={
+  GLOBAL_QUOTE:1,              // premium is realtime; a minute is plenty
+  TIME_SERIES_INTRADAY:15,     // requested with entitlement:delayed anyway
+  REALTIME_OPTIONS:5,
+  TIME_SERIES_DAILY:720, TIME_SERIES_DAILY_ADJUSTED:720,
+  EMA:720, SMA:720, ATR:720, BBANDS:720, RSI:720, VWAP:720,
+  EARNINGS_CALENDAR:720,
+  OVERVIEW:1440,               // fundamentals move quarterly
+};
+let _avMem=null;
+let _avLastWasCache=false;
+let _avStats={hit:0,miss:0};
+
+function avTtlMin(fn){return AV_TTL_MIN[fn]!=null?AV_TTL_MIN[fn]:15;}
+function avCacheLoad(){
+  if(_avMem)return _avMem;
+  try{_avMem=JSON.parse(localStorage.getItem(AV_CACHE_KEY)||'{}');}catch(e){_avMem={};}
+  return _avMem;
+}
+function avCacheSave(){
+  try{localStorage.setItem(AV_CACHE_KEY,JSON.stringify(_avMem||{}));}
+  catch(e){
+    // Out of quota — a stale cache is never worth breaking saving over.
+    _avMem={};
+    try{localStorage.removeItem(AV_CACHE_KEY);}catch(_e){}
+  }
+}
+function avCacheGet(fn,qsKey){
+  const c=avCacheLoad(), k=fn+'|'+qsKey, e=c[k];
+  if(!e)return null;
+  const ageMin=(Date.now()-e.t)/60000;
+  if(ageMin>avTtlMin(fn)){delete c[k];return null;}
+  return{data:e.d,ageMin};
+}
+function avCachePut(fn,qsKey,data){
+  // A full EMA history can be hundreds of KB; past a point it is not worth the
+  // quota it would cost everything else.
+  let size=0;
+  try{size=JSON.stringify(data).length;}catch(e){return;}
+  if(size>300000)return;
+  const c=avCacheLoad();
+  c[fn+'|'+qsKey]={t:Date.now(),d:data};
+  const keys=Object.keys(c);
+  if(keys.length>160){
+    keys.sort((a,b)=>c[a].t-c[b].t).slice(0,keys.length-120).forEach(k=>delete c[k]);
+  }
+  avCacheSave();
+}
+function avCacheClear(){
+  _avMem={};_avStats={hit:0,miss:0};
+  try{localStorage.removeItem(AV_CACHE_KEY);}catch(e){}
+  if(typeof toast==='function')toast('Cached market data cleared — the next analysis will fetch everything fresh.','ok',6000);
+}
+function avCacheInfo(){
+  const c=avCacheLoad(),keys=Object.keys(c);
+  let bytes=0;try{bytes=JSON.stringify(c).length;}catch(e){}
+  return{entries:keys.length,kb:Math.round(bytes/1024),hits:_avStats.hit,misses:_avStats.miss};
+}
+
+// Rate-limit pause that costs nothing when the last call came from cache.
+// Eight of these at 1.2s each were most of the wait on a repeat analysis.
+function avPace(ms){return _avLastWasCache?Promise.resolve():delay(ms||1200);}
+
+async function avGetRest(avFn,params,force){
   const key=((state.settings&&state.settings.avApiKey)||'').trim();
   if(!key)throw new Error('NO_API_KEY');
   const qs=new URLSearchParams();
@@ -6445,11 +6516,20 @@ async function avGetRest(avFn,params){
   Object.keys(params||{}).forEach(k=>{
     const v=params[k];
     if(k==='return_full_data')return;            // connector-only flag, not an API param
+    if(k==='_force')return;
     if(v===undefined||v===null||v==='')return;
     qs.set(k,v);
   });
   // EARNINGS_CALENDAR is CSV-only; everything else should come back as JSON
   if(avFn!=='EARNINGS_CALENDAR'&&!qs.get('datatype'))qs.set('datatype','json');
+  // Cache key is built BEFORE the key is appended, so the secret never lands
+  // in localStorage.
+  const qsKey=qs.toString();
+  if(!force){
+    const hit=avCacheGet(avFn,qsKey);
+    if(hit){_avLastWasCache=true;_avStats.hit++;return hit.data;}
+  }
+  _avLastWasCache=false;_avStats.miss++;
   qs.set('apikey',key);
   let res;
   try{res=await fetch('https://www.alphavantage.co/query?'+qs.toString(),{cache:'no-store'});}
@@ -6457,20 +6537,27 @@ async function avGetRest(avFn,params){
   if(!res.ok)throw new Error('HTTP_'+res.status);
   const text=await res.text();
   const head=text.slice(0,120).trim().toLowerCase();
-  if(avFn==='EARNINGS_CALENDAR'||head.startsWith('symbol,'))return{_csv:text};
+  if(avFn==='EARNINGS_CALENDAR'||head.startsWith('symbol,')){
+    const csv={_csv:text};
+    avCachePut(avFn,qsKey,csv);
+    return csv;
+  }
   let obj;
   try{obj=JSON.parse(text);}catch(e){throw new Error('AV_PARSE_ERR');}
   if(obj['Error Message'])throw new Error('NO_DATA');
+  // Never cache a rate-limit or error body — it would be served as data for
+  // the next twelve hours.
   if(obj['Note']||obj['Information'])throw new Error('RATE_LIMIT');
+  avCachePut(avFn,qsKey,obj);
   return obj;
 }
 
 async function avGet(params){
-  const {function:fn,...rest}=params;
+  const {function:fn,_force,...rest}=params;
   // The connector used COMPANY_OVERVIEW; the REST API calls it OVERVIEW.
   const restMap={COMPANY_OVERVIEW:'OVERVIEW'};
   const avFn=restMap[fn]||fn;
-  return avGetRest(avFn,rest);
+  return avGetRest(avFn,rest,!!_force);
 }
 
 // ─ Parse earnings CSV, return days-to-earnings (null = none found in 90d)
@@ -6571,7 +6658,7 @@ async function oreAnalyze(){
     if(quote['Information']||quote['Note'])throw new Error('RATE_LIMIT');
     const q=quote['Global Quote'];
     if(!q||!q['05. price'])throw new Error('NO_DATA');
-    await delay(1200);
+    await avPace();
 
     // ── Fetch today's 1-min intraday (entitlement:delayed) for live price & today's candle
     // GLOBAL_QUOTE without entitlement returns previous session's close — this gives real today data
@@ -6604,27 +6691,27 @@ async function oreAnalyze(){
         }
       }
     }catch(e){}
-    await delay(1200);
+    await avPace();
 
     oreProgress('Fetching daily OHLCV…');
     const daily=await avGet({function:'TIME_SERIES_DAILY',symbol:ticker,outputsize:'compact'});
     if(daily['Information']||daily['Note'])throw new Error('RATE_LIMIT');
     const ts=daily['Time Series (Daily)'];
     const dates=Object.keys(ts).sort().reverse();
-    await delay(1200);
+    await avPace();
 
     oreProgress('Fetching EMAs…');
     const ema9Data=await avGet({function:'EMA',symbol:ticker,interval:'daily',time_period:9,series_type:'close'});
-    await delay(1200);
+    await avPace();
     oreProgress('Fetching EMA 20…');
     const ema20Data=await avGet({function:'EMA',symbol:ticker,interval:'daily',time_period:20,series_type:'close'});
-    await delay(1200);
+    await avPace();
     oreProgress('Fetching EMA 50…');
     const ema50Data=await avGet({function:'EMA',symbol:ticker,interval:'daily',time_period:50,series_type:'close'});
-    await delay(1200);
+    await avPace();
     oreProgress('Fetching EMA 200…');
     const ema200Data=await avGet({function:'EMA',symbol:ticker,interval:'daily',time_period:200,series_type:'close'});
-    await delay(1200);
+    await avPace();
 
     oreProgress('Checking earnings calendar…');
     let daysToEarnings=null;
@@ -6632,7 +6719,7 @@ async function oreAnalyze(){
       const ec=await avGet({function:'EARNINGS_CALENDAR',symbol:ticker,horizon:'3month'});
       if(ec._csv)daysToEarnings=parseEarningsCSV(ec._csv,ticker);
     }catch(e){}
-    await delay(1200);
+    await avPace();
 
     oreProgress('Fetching company overview…');
     let overview={};
@@ -6877,6 +6964,34 @@ function oreFillLevel(label,val){
   oreUpdateScenario();
 }
 
+// Three ways the same idea can be exited. Which one you take is a decision
+// made from what the stock is doing, so the card shows all three rather than
+// assuming one — the risk is identical in every case.
+//
+//   full   every share to the target
+//   once   a third off at T1, the rest runs to target
+//   scaled a third at T1, a third at T2, the rest to target
+function oreIdeaProfit(id){
+  const entry=parseFloat(id.entry), target=parseFloat(id.target), n=parseInt(id.shares,10)||0;
+  if(!isFinite(entry)||!isFinite(target)||n<=0)return{full:0,once:0,scaled:0};
+  const full=parseFloat((n*Math.abs(target-entry)).toFixed(2));
+  let sc=null;
+  try{if(typeof scaleThirds==='function')sc=scaleThirds(n);}catch(e){}
+  if(!sc){const a=Math.floor(n/3);sc={t1:a,t2:a,run:n-2*a};}
+  const t1=parseFloat(id.t1), t2=parseFloat(id.t2);
+  if(!isFinite(t1)||!isFinite(t2))return{full:full,once:full,scaled:full};
+  const once=parseFloat((
+      sc.t1*Math.abs(t1-entry)
+    + (n-sc.t1)*Math.abs(target-entry)
+  ).toFixed(2));
+  const scaled=parseFloat((
+      sc.t1*Math.abs(t1-entry)
+    + sc.t2*Math.abs(t2-entry)
+    + sc.run*Math.abs(target-entry)
+  ).toFixed(2));
+  return{full:full,once:once,scaled:scaled};
+}
+
 // ─ Generate Swing Trade Ideas (LONG + SHORT) from live ORE data
 function oreGenSwingIdeas(){
   const o=state.ore;if(!o)return;
@@ -6918,10 +7033,16 @@ function oreGenSwingIdeas(){
     // one is information for the profit plan, not a reason to pass the trade.
     let g=grade;
     if(obPct!=null&&obPct<0.34&&rrFirst!=null&&rrFirst<1&&(g==='A'||g==='B+'))g=(g==='A'?'B':'B-');
+    // Two profit numbers, because they are not the same trade. The full-target
+    // figure assumes every share runs to the end — which the ⅓ plan explicitly
+    // does not do. Showing only the big number would flatter every setup.
+    const prof=oreIdeaProfit({entry,t1,t2,target,shares});
     return{dir,entry,stop,t1,t2,target,rr,shares,rps,rpt,rationale,grade:g,name:name||'',
       obstacle:ob,rrFirst,obPct,t1AtObstacle,
       plannedRisk:parseFloat((rps*shares).toFixed(2)),
-      plannedProfit:parseFloat((rpt*shares).toFixed(2))};
+      plannedProfit:prof.full,
+      profitOnce:prof.once,
+      profitScaled:prof.scaled};
   }
 
   // ─ LONG ideas
@@ -7090,6 +7211,7 @@ function oreGenSwingIdeas(){
       target:aFull,
       obstacle:aOb,rrFirst:aRRFirst,
       shares:aShares,plannedRisk:aShares*aRisk,rr:aRR,grade:'—',
+      plannedProfit:(aShares&&aFull)?parseFloat((aShares*Math.abs(aFull-aEntry)).toFixed(2)):null,
       rationale:bits.join(' · '),
       _alert:true,
       _source:(alrt.source||'alert').replace(/_/g,' '),
@@ -7192,10 +7314,18 @@ function oreGenSwingIdeas(){
         <div style="text-align:center"><div style="font-size:9px;color:var(--fg3);text-transform:uppercase;letter-spacing:.05em">T2 (⅔)</div><div style="font-size:12px;font-weight:700;color:var(--gold);font-family:monospace">$${fmt(id.t2,2)}</div></div>
         <div style="text-align:center"><div style="font-size:9px;color:var(--fg3);text-transform:uppercase;letter-spacing:.05em">Full Target</div><div style="font-size:13px;font-weight:700;color:${col};font-family:monospace">$${fmt(id.target,2)}</div></div>
       </div>
+      <div style="display:flex;gap:15px;flex-wrap:wrap;font-size:11px;margin-bottom:8px;padding-top:2px;align-items:baseline">
+        <span style="color:var(--fg3)" title="Identical whichever exit you choose — every share is exposed to the stop">risk <strong id="ore-idea-rk-${i}" style="font-family:var(--mono);color:var(--red)">$${fmt(id.plannedRisk,0)}</strong></span>
+        <span style="color:var(--fg3)" title="Every share held to the target">all to target <strong id="ore-idea-pf-${i}" style="font-family:var(--mono);color:var(--green)">$${fmt(id.plannedProfit||0,0)}</strong></span>
+        ${id.profitOnce!=null?`<span style="color:var(--fg3)" title="A third off at T1, everything else runs to the target">⅓ off, rest runs <strong id="ore-idea-po-${i}" style="font-family:var(--mono);color:var(--green)">$${fmt(id.profitOnce,0)}</strong></span>`:''}
+        ${id.profitScaled!=null?`<span style="color:var(--fg3)" title="A third at T1, a third at T2, the rest to target">full ⅓ plan <strong id="ore-idea-ps-${i}" style="font-family:var(--mono);color:var(--green)">$${fmt(id.profitScaled,0)}</strong></span>`:''}
+        <span style="color:var(--fg3)">= <strong id="ore-idea-nx-${i}" style="font-family:var(--mono)">${id.plannedRisk>0?((id.profitScaled!=null?id.profitScaled:id.plannedProfit)/id.plannedRisk).toFixed(1)+'–'+((id.plannedProfit||0)/id.plannedRisk).toFixed(1):'0'}×</strong> risk</span>
+      </div>
       <div style="font-size:11px;color:var(--fg3);line-height:1.5;margin-bottom:8px">${id.rationale}</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button onclick="oreSwingToTrade(${i})" style="padding:5px 12px;border-radius:6px;border:1px solid ${colBorder};background:${colBg};color:${col};font-size:11px;font-weight:700;cursor:pointer">📋 Log as Trade</button>
         <button onclick="oreSwingToStock(${i})" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--fg2);font-size:11px;cursor:pointer">▶ Open Trade Form</button>
+        <button onclick="oreAlertFromIdea(${i})" title="Tell me as price approaches this entry, and again if it gets there" style="padding:5px 12px;border-radius:6px;border:1px solid rgba(251,185,36,.35);background:var(--gold-bg);color:var(--gold);font-size:11px;cursor:pointer">🔔 Alert at entry</button>
       </div>
     </div>`;
   }).join('')
@@ -7214,7 +7344,12 @@ function oreIdeaShares(i,v){
   const risk=Math.abs((id.entry||0)-(id.stop||0));
   id.shares=n;
   id.plannedRisk=parseFloat((n*risk).toFixed(2));
+  const prof=oreIdeaProfit(id);
+  id.plannedProfit=prof.full;
+  id.profitOnce=prof.once;
+  id.profitScaled=prof.scaled;
   const maxL=state.settings.maxLossPerTrade||200;
+  const set=(k,txt)=>{const el=document.getElementById(k+i);if(el)el.textContent=txt;};
   const rEl=document.getElementById('ore-idea-risk-'+i);
   if(rEl){
     const over=id.plannedRisk>maxL;
@@ -7225,6 +7360,15 @@ function oreIdeaShares(i,v){
   }
   const cEl=document.getElementById('ore-idea-cap-'+i);
   if(cEl)cEl.textContent='$'+fmt(n*(id.entry||0),0)+' capital';
+  // Reward has to move with size too, or the card shows a stale payoff beside
+  // a live risk figure.
+  set('ore-idea-rk-','$'+fmt(id.plannedRisk,0));
+  set('ore-idea-pf-','$'+fmt(prof.full,0));
+  set('ore-idea-po-','$'+fmt(prof.once,0));
+  set('ore-idea-ps-','$'+fmt(prof.scaled,0));
+  set('ore-idea-nx-',(id.plannedRisk>0
+    ? (prof.scaled/id.plannedRisk).toFixed(1)+'–'+(prof.full/id.plannedRisk).toFixed(1)
+    : '0')+'×');
 }
 
 function oreSwingToTrade(idx){
@@ -7420,6 +7564,204 @@ function orePromoteToOptions(){
     if(typeof recalcO==='function')recalcO();
     toast('Options planner prefilled — confirm the strike and expiry against the live chain.','ok',7000);
   },110);
+}
+
+// ── Price alerts ─────────────────────────────────────────────────────
+// Stored under settings rather than as a top-level state key, because
+// saveState() enumerates the fields it writes — a new top-level key would
+// look fine and silently fail to persist, which is exactly how the
+// withdrawals data was lost.
+let _atAlertTimer=null;
+
+function atAlerts(){
+  if(!state.settings.alerts)state.settings.alerts=[];
+  return state.settings.alerts;
+}
+
+function atNotifyPermission(){
+  try{
+    if(typeof Notification==='undefined')return;
+    if(Notification.permission==='default')Notification.requestPermission();
+  }catch(e){}
+}
+function atNotify(title,body){
+  try{
+    if(typeof Notification!=='undefined'&&Notification.permission==='granted'){
+      new Notification(title,{body:body,tag:'at-'+title});
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+
+// Weekday regular session in New York. Holidays are not handled — on those
+// days the quote simply does not move, so nothing fires.
+function atMarketOpenNow(){
+  try{
+    const et=new Date(new Date().toLocaleString('en-US',{timeZone:'America/New_York'}));
+    const d=et.getDay();
+    if(d===0||d===6)return false;
+    const m=et.getHours()*60+et.getMinutes();
+    return m>=570&&m<=960;
+  }catch(e){return true;}
+}
+
+function atAlertAdd(ticker,level,side,label){
+  ticker=(ticker||'').toUpperCase().trim();
+  level=parseFloat(level);
+  if(!ticker||!isFinite(level)||level<=0){toast('Need a ticker and a price level.','warn');return;}
+  const list=atAlerts();
+  if(list.some(a=>a.ticker===ticker&&a.side===side&&Math.abs(a.level-level)<0.01)){
+    toast('That alert already exists on '+ticker+'.','warn');return;
+  }
+  list.push({
+    id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),
+    ticker:ticker, level:parseFloat(level.toFixed(2)), side:(side==='down'?'down':'up'),
+    label:label||'', nearPct:parseFloat(state.settings.alertNearPct)||0.5,
+    active:true, created:new Date().toISOString(),
+    lastFired:null, lastState:'', lastPrice:null,
+  });
+  saveState();
+  atAlertsRender();
+  atNotifyPermission();
+  toast('🔔 Watching '+ticker+' '+(side==='down'?'down to':'up to')+' $'+fmt(level,2),'ok',6000);
+}
+
+function atAlertRemove(id){
+  state.settings.alerts=atAlerts().filter(a=>a.id!==id);
+  saveState();atAlertsRender();
+}
+function atAlertToggle(id){
+  const a=atAlerts().find(x=>x.id===id);
+  if(!a)return;
+  a.active=!a.active;
+  if(a.active){a.lastState='';a.lastFired=null;}
+  saveState();atAlertsRender();
+}
+function atAlertAddManual(){
+  const t=(document.getElementById('at-al-tk')||{}).value;
+  const l=(document.getElementById('at-al-lv')||{}).value;
+  const s=(document.getElementById('at-al-sd')||{}).value;
+  atAlertAdd(t,l,s,'');
+  const tk=document.getElementById('at-al-tk'); if(tk)tk.value='';
+  const lv=document.getElementById('at-al-lv'); if(lv)lv.value='';
+}
+
+// Two stages, because "it is close" is the one you can still act on; "it hit"
+// is often already too late to enter well.
+function atAlertEvaluate(a,price){
+  a.lastPrice=price;
+  const pct=(a.nearPct||0.5)/100;
+  let st='';
+  if(a.side==='down'){
+    const near=a.level*(1+pct);
+    st = price<=a.level ? 'hit' : (price<=near ? 'near' : '');
+  } else {
+    const near=a.level*(1-pct);
+    st = price>=a.level ? 'hit' : (price>=near ? 'near' : '');
+  }
+  if(!st){a.lastState='';return;}
+  if(st===a.lastState)return;                       // already told you this
+  const sinceFire=a.lastFired?(Date.now()-new Date(a.lastFired).getTime()):Infinity;
+  if(st==='near'&&sinceFire<30*60*1000)return;      // don't nag on a level it is hovering at
+  a.lastState=st;
+  a.lastFired=new Date().toISOString();
+  const title=(st==='hit'?'🎯 ':'👀 ')+a.ticker+(st==='hit'?' hit $':' approaching $')+fmt(a.level,2);
+  const body=(a.label?a.label+' — ':'')+'now $'+fmt(price,2);
+  atNotify(title,body);
+  toast(title+' · '+body,st==='hit'?'ok':'warn',14000);
+}
+
+async function atAlertsCheck(manual){
+  const live=atAlerts().filter(a=>a.active);
+  if(!live.length)return;
+  if(!manual&&!atMarketOpenNow())return;
+  const tickers=[];
+  live.forEach(a=>{if(tickers.indexOf(a.ticker)<0)tickers.push(a.ticker);});
+  for(let i=0;i<tickers.length;i++){
+    const t=tickers[i];
+    let price=null;
+    try{
+      const q=await avGet({function:'GLOBAL_QUOTE',symbol:t});
+      price=parseFloat(q&&q['Global Quote']&&q['Global Quote']['05. price']);
+    }catch(e){continue;}
+    if(!isFinite(price))continue;
+    live.filter(a=>a.ticker===t).forEach(a=>atAlertEvaluate(a,price));
+    await avPace(900);
+  }
+  saveState();
+  atAlertsRender();
+}
+
+function atAlertsEl(){
+  let el=document.getElementById('at-alerts-panel');
+  if(!el){
+    const anchor=document.getElementById('ore-swing-ideas');
+    if(!anchor)return null;
+    el=document.createElement('div');
+    el.id='at-alerts-panel';
+    el.style.cssText='margin:14px 18px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden';
+    anchor.parentNode.insertBefore(el,anchor);
+  }
+  return el;
+}
+
+function atAlertsRender(){
+  const el=atAlertsEl(); if(!el)return;
+  const list=atAlerts();
+  const perm=(typeof Notification!=='undefined')?Notification.permission:'unsupported';
+  const open=atMarketOpenNow();
+  let note='';
+  if(perm==='denied')note='Desktop notifications are blocked for this site, so alerts will only appear as a banner here. Re-allow them in the padlock menu beside the address bar.';
+  else if(perm!=='granted'&&list.length)note='Allow notifications when your browser asks, or alerts can only appear while this tab is in front.';
+  else if(!open)note='Outside regular US market hours — checking resumes automatically at 9:30 ET.';
+  el.innerHTML='<div style="padding:10px 13px;background:var(--s2);display:flex;align-items:center;gap:9px;flex-wrap:wrap">'
+      +'<strong style="font-size:12px;letter-spacing:.05em;color:var(--fg2)">🔔 PRICE ALERTS</strong>'
+      +'<span style="font-size:11px;color:'+(open?'var(--green)':'var(--fg3)')+'">'+(open?'watching':'market closed')+'</span>'
+      +'<button onclick="atAlertsCheck(true)" style="margin-left:auto;padding:3px 10px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--fg2);font-size:11px;cursor:pointer">Check now</button>'
+    +'</div>'
+    +'<div style="padding:10px 13px">'
+      +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:9px">'
+        +'<input id="at-al-tk" placeholder="TICKER" style="width:84px;padding:5px 8px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:11px;text-transform:uppercase">'
+        +'<select id="at-al-sd" style="padding:5px 8px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:11px"><option value="up">rises to</option><option value="down">falls to</option></select>'
+        +'<input id="at-al-lv" type="number" step="0.01" placeholder="0.00" style="width:90px;padding:5px 8px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px;text-align:right">'
+        +'<button onclick="atAlertAddManual()" style="padding:5px 12px;border-radius:5px;border:1px solid rgba(251,185,36,.35);background:var(--gold-bg);color:var(--gold);font-size:11px;font-weight:700;cursor:pointer">Add</button>'
+      +'</div>'
+      +(list.length?list.map(a=>{
+        const dist=(a.lastPrice&&a.level)?((a.lastPrice-a.level)/a.level*100):null;
+        const stCol=a.lastState==='hit'?'var(--green)':a.lastState==='near'?'var(--gold)':'var(--fg3)';
+        const stTxt=a.lastState==='hit'?'HIT':a.lastState==='near'?'CLOSE':'waiting';
+        return '<div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px solid var(--border);'+(a.active?'':'opacity:.45')+'">'
+          +'<span style="font-weight:800;font-size:12px;color:var(--blue);min-width:48px">'+a.ticker+'</span>'
+          +'<span style="font-family:var(--mono);font-size:11px;color:var(--fg2)">'+(a.side==='down'?'↓':'↑')+' $'+fmt(a.level,2)+'</span>'
+          +'<span style="font-size:10px;font-weight:700;color:'+stCol+'">'+stTxt+'</span>'
+          +(a.lastPrice?'<span style="font-family:var(--mono);font-size:11px;color:var(--fg3)">now $'+fmt(a.lastPrice,2)+(dist!=null?' ('+(dist>0?'+':'')+dist.toFixed(1)+'%)':'')+'</span>':'')
+          +(a.label?'<span style="font-size:11px;color:var(--fg3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+a.label+'</span>':'')
+          +'<span style="margin-left:auto;display:flex;gap:5px">'
+            +'<button onclick="atAlertToggle(\''+a.id+'\')" title="'+(a.active?'Pause':'Resume')+'" style="padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--fg3);font-size:10px;cursor:pointer">'+(a.active?'⏸':'▶')+'</button>'
+            +'<button onclick="atAlertRemove(\''+a.id+'\')" title="Delete" style="width:20px;height:20px;border-radius:50%;border:1px solid var(--border);background:transparent;color:var(--red);font-size:11px;cursor:pointer;padding:0">×</button>'
+          +'</span>'
+        +'</div>';
+      }).join('')
+      :'<div style="font-size:11px;color:var(--fg3);line-height:1.6">No alerts set. Add one above, or press 🔔 on any swing idea to watch its entry — you get a nudge as price approaches, and again if it reaches the level.</div>')
+      +(note?'<div style="margin-top:9px;font-size:11px;color:var(--fg3);line-height:1.55">'+note+'</div>':'')
+    +'</div>';
+}
+
+function atAlertsStart(){
+  try{clearInterval(_atAlertTimer);}catch(e){}
+  const mins=Math.max(1,parseFloat(state.settings.alertPollMin)||3);
+  _atAlertTimer=setInterval(function(){try{atAlertsCheck();}catch(e){}},mins*60000);
+  atAlertsRender();
+  setTimeout(function(){try{atAlertsCheck();}catch(e){}},8000);
+}
+
+function oreAlertFromIdea(idx){
+  const ideas=window._oreSwingIdeas||[];
+  const id=ideas[idx]; if(!id)return;
+  const o=state.ore; if(!o)return;
+  atAlertAdd(o.ticker,id.entry,id.dir==='LONG'?'up':'down',
+    (id.dir==='LONG'?'Long':'Short')+' entry'+(id.name?' — '+id.name:'')+(id._alert?' ('+id._source+')':''));
 }
 
 // ─ Set selected route
@@ -7876,36 +8218,67 @@ function orePromoteToStock(){
 }
 
 // ─ Save discovery
+// Previously this had no error handling and no visible result beyond a brief
+// toast, with the watchlist far below the fold — so a save that worked and a
+// save that threw looked identical from the user's seat.
 function oreSaveDiscovery(status){
-  const o=state.ore;if(!o)return;
-  const note=document.getElementById('ore-pass-note')?document.getElementById('ore-pass-note').value:'';
-  const d={
-    id:Date.now(),
-    ticker:o.ticker,
-    price:o.price,
-    analysisDate:o.analysisDate,
-    emaAlignment:o.emaAlignment,
-    daysToEarnings:o.daysToEarnings,
-    condition:document.getElementById('ore-condition').value,
-    setup:document.getElementById('ore-setup').value,
-    support:parseFloat(document.getElementById('ore-support').value)||null,
-    resistance:parseFloat(document.getElementById('ore-resistance').value)||null,
-    routeDecision:o.routeDecision||status,
-    stockScenario:o.stockScenario||null,
-    note,status,
-  };
-  state.discoveries.unshift(d);
-  if(state.discoveries.length>100)state.discoveries=state.discoveries.slice(0,100);
-  saveState();
-  renderDiscoveries();
-  const statusLabel={watch:'Watchlist',skipped:'Skipped',rejected:'Rejected'}[status]||status;
-  toast(`✓ ${o.ticker} → ${statusLabel}`,'ok');
+  const o=state.ore;
+  if(!o){toast('No analysis loaded — run a ticker first, then save the decision.','warn',7000);return;}
+  try{
+    if(!Array.isArray(state.discoveries))state.discoveries=[];
+    const val=id=>{const el=document.getElementById(id);return el?el.value:'';};
+    const note=val('ore-pass-note');
+    // Double-click protection: the panel stays open after saving, which made it
+    // easy to log the same decision twice.
+    const recent=state.discoveries[0];
+    if(recent&&recent.ticker===o.ticker&&recent.status===status&&
+       (Date.now()-(parseInt(recent.id,10)||0))<10000){
+      toast(o.ticker+' was already saved a moment ago.','warn',6000);
+      return;
+    }
+    const d={
+      id:Date.now(),
+      ticker:o.ticker,
+      price:o.price,
+      analysisDate:o.analysisDate,
+      emaAlignment:o.emaAlignment,
+      daysToEarnings:o.daysToEarnings,
+      condition:val('ore-condition'),
+      setup:val('ore-setup'),
+      support:parseFloat(val('ore-support'))||null,
+      resistance:parseFloat(val('ore-resistance'))||null,
+      routeDecision:o.routeDecision||status,
+      stockScenario:o.stockScenario||null,
+      note:note,status:status,
+    };
+    state.discoveries.unshift(d);
+    if(state.discoveries.length>100)state.discoveries=state.discoveries.slice(0,100);
+    saveState();
+    // Show it landing: switch to the matching tab and bring the list into view,
+    // so the decision is visibly recorded rather than taken on trust.
+    if(typeof setWlFilter==='function')setWlFilter(status);
+    else renderDiscoveries();
+    const total=state.discoveries.filter(x=>x.status===status).length;
+    const statusLabel={watch:'Watchlist',skipped:'Skipped',rejected:'Rejected'}[status]||status;
+    toast('✓ '+o.ticker+' → '+statusLabel+'  ('+total+' total)','ok',7000);
+    setTimeout(function(){
+      const wrap=document.getElementById('ore-watchlist-wrap');
+      if(wrap&&wrap.scrollIntoView)try{wrap.scrollIntoView({behavior:'smooth',block:'start'});}catch(e){wrap.scrollIntoView();}
+    },120);
+  }catch(err){
+    // A silent throw was indistinguishable from a working save.
+    console.error('[AT] oreSaveDiscovery failed',err);
+    toast('⚠ Could not save that decision: '+(err&&err.message||err),'err',12000);
+  }
 }
 
 // ── WATCHLIST RENDER ─────────────────────────────────────────
 
 let wlFilter='all';
 function setWlFilter(f){
+  // 'watch' | 'skipped' | 'rejected' | 'all' — must match both the data-wf tab
+  // values and the status written by oreSaveDiscovery, or a saved entry lands
+  // in a tab that is never shown.
   wlFilter=f;
   document.querySelectorAll('.ftab[data-wf]').forEach(t=>t.classList.toggle('active',t.dataset.wf===f));
   renderDiscoveries();
@@ -9536,6 +9909,7 @@ async function atAuthInit(){
   renderAll();recalcF();recalcS();recalcO();
   csInitSessions(); // seed Class Sessions if first run
   atAuthInit();     // cloud sync + sign-in (async; never blocks boot)
+  atAlertsStart();  // price alerts — polls only while this tab is open
 })();
 </script>
 
