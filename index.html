@@ -10670,6 +10670,118 @@ function spyRenderFromTrades(acct){
   };
 })();
 
+// ══ BULK TICKER ADD ══════════════════════════════════════════
+// Some screeners offer no export and no copy-paste of rows — only what you can
+// read off the screen. Only the ticker is taken from such a paste: price, volume
+// and levels are fetched properly later, so transcribing them would add a chance
+// of error for no gain. Extraction is deliberately loose and the preview is
+// deliberately opt-out, because a sector word that looks like a ticker should
+// cost one unchecked box, not a junk entry on the watchlist.
+const BULK_NOISE=('INC CORP CRP CO LTD PLC THE AND FOR ETF ETFS FUND FUNDS TRUST REIT REITS COMMON STOCK STOCKS '
+ +'SHARE SHARES CLASS HOLDING HOLDINGS GROUP GRP TECH SCIENCE SCIENCES CAPITAL MEDIA COMMUNITY PERSONAL '
+ +'SERVICE SERVICES FINANCIAL HEALTH HEALTHCARE CONSUMER DEFENSIVE CYCLICAL REAL ESTATE ENERGY UTILITY '
+ +'UTILITIES INDUSTRIAL INDUSTRIALS MATERIAL MATERIALS BIOTECH BEVERAGE BEVERAGES ALCOHOLIC NON PACKAGED '
+ +'GOODS MEDICAL DEVICE DEVICES INSTRUMENT INSTRUMENTS ASSET MANAGEMENT SECTOR PRICE VOLUME CHANGE NAME '
+ +'SYMBOL TICKER USD AVG VOL MKT CAP PE EPS NEW HIGH LOW OPEN CLOSE BUY SELL HOLD B S E M K').split(/\s+/);
+const BULK_NOISE_SET={}; BULK_NOISE.forEach(w=>{BULK_NOISE_SET[w]=1;});
+
+function bulkParse(text){
+  const seen={},out=[];
+  String(text||'').split(/[^A-Za-z.]+/).forEach(tok=>{
+    const t=tok.toUpperCase().replace(/\.+$/,'');
+    if(!t)return;
+    if(!/^[A-Z]{1,5}(\.[A-Z])?$/.test(t))return;
+    if(BULK_NOISE_SET[t])return;
+    if(t.length===1)return;          // single letters are almost never what was meant here
+    if(seen[t])return;
+    seen[t]=1;
+    const have=(state.discoveries||[]).some(d=>String(d.ticker||'').toUpperCase()===t);
+    out.push({t:t,have:have});
+  });
+  return out;
+}
+
+function bulkPreview(){
+  const ta=document.getElementById('bulk-text');
+  if(!ta)return;
+  const rows=bulkParse(ta.value);
+  if(!rows.length){ alert('No tickers found in that text. Paste the rows from the screener, or just type the symbols separated by spaces.'); return; }
+  window._bulkPending=rows;
+  bulkRender();
+}
+function bulkCancel(){ window._bulkPending=null; bulkRender(); }
+
+function bulkConfirm(){
+  const rows=window._bulkPending||[];
+  let added=0,skipped=0;
+  rows.forEach(r=>{
+    const cb=document.getElementById('bulk-cb-'+r.t);
+    if(cb&&!cb.checked){skipped++;return;}
+    if(r.have){skipped++;return;}
+    state.discoveries=state.discoveries||[];
+    state.discoveries.push({
+      id:Date.now()+Math.floor(Math.random()*1000),
+      ticker:r.t,price:null,analysisDate:new Date().toISOString(),
+      emaAlignment:'',daysToEarnings:null,condition:'',setup:'',
+      support:null,resistance:null,routeDecision:'',stockScenario:null,
+      note:'[Added from screener list — not yet analysed]',status:'watch'
+    });
+    added++;
+  });
+  window._bulkPending=null;
+  saveState();
+  try{renderAll();}catch(e){}
+  bulkRender(); try{woRender();}catch(e){}
+  alert('Added '+added+' ticker'+(added!==1?'s':'')+(skipped?(', skipped '+skipped):'')
+    +'.\n\nThey have no levels yet — run each through the Opportunity Review Engine to get entry, stop, targets and fib levels.');
+}
+
+function bulkPanelEl(){
+  let el=document.getElementById('bulk-panel');
+  if(el)return el;
+  const anchor=document.getElementById('screen-ore');
+  if(!anchor)return null;
+  el=document.createElement('div');
+  el.id='bulk-panel';
+  el.style.cssText='margin-bottom:18px';
+  anchor.insertBefore(el,anchor.firstChild);
+  return el;
+}
+
+function bulkRender(){
+  const el=bulkPanelEl(); if(!el)return;
+  const p=window._bulkPending;
+  let body;
+  if(!p){
+    body='<div style="padding:11px 14px">'
+      +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:8px">'
+      +'Paste rows from a screener, or just type symbols. Only the ticker is taken — price, volume and levels are fetched properly when you analyse each name.</div>'
+      +'<textarea id="bulk-text" rows="4" placeholder="CLX MED KOD ECF CELH CMCT CTSO LW MLCI" '
+      +'style="width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:12px"></textarea>'
+      +'<div style="margin-top:8px"><button class="btn" onclick="bulkPreview()">Find tickers</button></div>'
+      +'</div>';
+  }else{
+    const fresh=p.filter(r=>!r.have);
+    body='<div style="padding:11px 14px">'
+      +'<div style="font-size:11px;color:var(--fg3);margin-bottom:8px">Found '+p.length+' — untick anything that is not a ticker.</div>'
+      +'<div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px">'
+      +p.map(r=>'<label style="display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid '
+        +(r.have?'var(--border)':'var(--blue)')+';border-radius:6px;font-size:11px;'
+        +(r.have?'opacity:.55;':'')+'cursor:pointer">'
+        +'<input type="checkbox" id="bulk-cb-'+r.t+'"'+(r.have?'':' checked')+(r.have?' disabled':'')+'>'
+        +'<span style="font-family:var(--mono);font-weight:700">'+r.t+'</span>'
+        +(r.have?'<span style="color:var(--fg3)">already on list</span>':'')
+        +'</label>').join('')
+      +'</div>'
+      +'<div style="display:flex;gap:7px;flex-wrap:wrap">'
+      +'<button class="btn" onclick="bulkConfirm()">Add '+fresh.length+' to the watchlist</button>'
+      +'<button class="btn" onclick="bulkCancel()">Cancel</button></div>'
+      +'</div>';
+  }
+  el.innerHTML='<div class="trade-form" style="margin-bottom:0">'
+    +'<div class="form-hd"><span class="form-title">Add Tickers in Bulk</span></div>'+body+'</div>';
+}
+
 // ══ OPTION ROUTES — DATA LAYER ═══════════════════════════════════
 // Uses HISTORICAL_OPTIONS, not REALTIME_OPTIONS. Realtime options is a higher
 // Alpha Vantage tier, and a key without it gets an ARTIFICIAL SAMPLE CHAIN back
@@ -10809,13 +10921,67 @@ function woNearHigh(d){
   if(hi==null||px==null)return false;
   return px>=hi*(1-woHighPct()/100);
 }
+// Trend, per 13_Opportunity_Review_Engine.md:
+//   price > 9 > 20 > 50 > 200  → bullish stacked
+//   price < 9 < 20 < 50 < 200  → bearish stacked
+//   anything else              → mixed (the documented routing says wait)
+// The stored alignment string is the fallback when the EMA values were not kept.
+function woTrend(d){
+  const px=woPick(d.price),e9=woPick(d.e9),e20=woPick(d.e20),e50=woPick(d.e50),e200=woPick(d.e200);
+  const have=[px,e9,e20,e50,e200].every(v=>v!=null);
+  let trend=null,belowAll=false,aboveAll=false,src='EMA stack';
+  if(have){
+    aboveAll=(px>e9&&e9>e20&&e20>e50&&e50>e200);
+    belowAll=(px<e9&&e9<e20&&e20<e50&&e50<e200);
+    trend=aboveAll?'UP':(belowAll?'DOWN':'MIXED');
+  }else{
+    const al=String(d.emaAlignment||'').toLowerCase();
+    src='stored alignment';
+    if(al.indexOf('bull')>=0){trend='UP';aboveAll=true;}
+    else if(al.indexOf('bear')>=0){trend='DOWN';belowAll=true;}
+    else if(al)trend='MIXED';
+  }
+  return{trend:trend,belowAll:belowAll,aboveAll:aboveAll,src:src,swingDir:woSwingDir(d)};
+}
+
+// Which pivot is more recent tells you the direction of the last completed leg.
+function woSwingDir(d){
+  const hd=d.swingHDate,ld=d.swingLDate;
+  if(!hd||!ld)return null;
+  return (String(ld)>String(hd))?'DOWN':'UP';
+}
+
 function woFibTarget(d,dir){
   const f=d.fibs; if(!f)return null;
+  const sd=woSwingDir(d);
+  // Project only the way the swing actually ran.
+  if(sd&&((dir==='LONG'&&sd!=='UP')||(dir==='SHORT'&&sd!=='DOWN'))){
+    return{blocked:true,swingDir:sd,
+      reason:'the last swing ran '+sd.toLowerCase()+' ('+(d.swingHDate||'?')+' high → '+(d.swingLDate||'?')+' low), '
+        +'so projecting '+(dir==='LONG'?'upward':'downward')+' would measure a move that has already reversed'};
+  }
   const lvl=woExtLevel();
   const v=woPick(f[(dir==='SHORT'?'extDn':'extUp')+lvl]);
   if(v==null)return null;
-  return{value:v,lvl:lvl,label:'fib '+(WO_EXT_LABEL[lvl]||lvl)+' extension',
+  return{value:v,lvl:lvl,label:'fib '+(WO_EXT_LABEL[lvl]||lvl)+' extension',swingDir:sd,
     swingL:woPick(f.swingL,d.swingL),swingH:woPick(f.swingH,d.swingH)};
+}
+
+// Routing gate, per the documented rules in 13_Opportunity_Review_Engine.md.
+// It reports; it does not block. The trader confirms.
+function woGate(plan){
+  const t=plan.trend||{};
+  if(t.trend==='DOWN'&&plan.dir==='LONG'&&t.belowAll)
+    return{s:'REJECT',why:'price is below all EMAs in a downtrend — the rulebook rejects a long here without a catalyst'};
+  if(t.trend==='UP'&&plan.dir==='SHORT'&&t.aboveAll)
+    return{s:'REJECT',why:'price is above all EMAs in an uptrend — the same rule, taken the other way'};
+  if(plan.dirConflict)
+    return{s:'WAIT',why:'the plan direction disagrees with the EMA stack'};
+  if(t.trend==='MIXED')
+    return{s:'WAIT',why:'EMAs are not in clean alignment — the rulebook says wait'};
+  if(!t.trend)
+    return{s:'—',why:'no EMA data stored on this idea — re-analyse it to get a trend read'};
+  return{s:'OK',why:t.trend==='UP'?'bullish stacked':'bearish stacked'};
 }
 
 function woPlan(d){
@@ -10823,19 +10989,28 @@ function woPlan(d){
   let entry=null;
   try{ if(typeof wlEntryOf==='function')entry=woPick(wlEntryOf(d)); }catch(e){}
   if(entry==null)entry=woPick(sc.entry,sc.trigger,d.entry,d.trigger);
-  const dir=String(sc.direction||d.direction||'LONG').toUpperCase().indexOf('SHORT')>=0?'SHORT':'LONG';
+  // Direction follows the trend when it was never stated, instead of defaulting
+  // to LONG — which silently treated every downtrending name as a buy.
+  const stated=sc.direction||d.direction;
+  const trend=woTrend(d);
+  let dir;
+  if(stated)dir=String(stated).toUpperCase().indexOf('SHORT')>=0?'SHORT':'LONG';
+  else dir=(trend.trend==='DOWN')?'SHORT':'LONG';
+  const dirFromTrend=!stated;
+  const dirConflict=!!stated&&((trend.trend==='DOWN'&&dir==='LONG')||(trend.trend==='UP'&&dir==='SHORT'));
   let target=woPick(sc.target,sc.fullTarget,sc.t2,d.target,d.fullTarget);
   let targetSrc=target!=null?'set on the opportunity':null;
   const nearHigh=woNearHigh(d);
   const fib=woFibTarget(d,dir);
   // An existing target is never silently replaced — it may be one you set yourself.
   // The fib projection is offered alongside instead, with one click to adopt it.
-  if(target==null&&nearHigh&&fib){ target=fib.value; targetSrc=fib.label; }
+  if(target==null&&nearHigh&&fib&&!fib.blocked){ target=fib.value; targetSrc=fib.label; }
   if(target==null){ const r=woPick(sc.resistance,d.resistance); if(r!=null){target=r;targetSrc='resistance';} }
   return{entry:entry,
     stop:woPick(sc.stop,sc.invalidation,d.stop,d.invalidation),
     target:target,targetSrc:targetSrc,
     nearHigh:nearHigh,fib:fib,highRef:woHighRef(d),
+    trend:trend,dirFromTrend:dirFromTrend,dirConflict:dirConflict,
     t1:woPick(sc.t1,d.t1),
     dir:dir,
     price:woPick(d.price,sc.price)};
@@ -10847,7 +11022,7 @@ function woUseFib(id){
   const d=(state.discoveries||[]).filter(x=>String(x.id)===String(id))[0];
   if(!d)return;
   const p=woPlan(d);
-  if(!p.fib)return;
+  if(!p.fib||p.fib.blocked)return;
   d.stockScenario=d.stockScenario||{};
   d.stockScenario.target=p.fib.value;
   d.stockScenario.targetSrc=p.fib.label+' ('+fmt(p.fib.swingL,2)+' → '+fmt(p.fib.swingH,2)+')';
@@ -11097,14 +11272,25 @@ function woRender(){
         +'<div style="margin-top:8px"><button class="btn" onclick="woLoadFresh(\''+sym+'\')">Refresh chain</button></div>';
     }
     const did=String(o.d.id||'').replace(/'/g,"\\'");
-    const prov='<div style="font-size:10px;color:var(--fg3);margin:6px 0;line-height:1.6">'
+    const g=woGate(p);
+    const gc=(g.s==='REJECT')?'var(--red)':(g.s==='WAIT'?'var(--gold)':(g.s==='OK'?'var(--green)':'var(--fg3)'));
+    const prov='<div style="font-size:10px;margin:6px 0;line-height:1.6">'
+        +'<span style="font-weight:700;color:'+gc+'">'+g.s+'</span>'
+        +'<span style="color:var(--fg3)"> · '+g.why+'</span>'
+        +(p.trend&&p.trend.trend?('<span style="color:var(--fg3)"> · trend '+p.trend.trend.toLowerCase()+' from the '+p.trend.src+'</span>'):'')
+        +(p.dirFromTrend?'<span style="color:var(--fg3)"> · direction taken from the trend, not stated on the idea</span>':'')
+        +(p.trend&&p.trend.swingDir?('<span style="color:var(--fg3)"> · last swing ran '+p.trend.swingDir.toLowerCase()+'</span>'):'')
+      +'</div>'
+      +((p.fib&&p.fib.blocked)?('<div style="font-size:10px;color:var(--gold);margin-bottom:6px;line-height:1.6">'
+        +'No fib projection offered — '+p.fib.reason+'.</div>'):'')
+      +'<div style="font-size:10px;color:var(--fg3);margin:6px 0;line-height:1.6">'
         +(p.target!=null?('target '+fmt(p.target,2)+(p.targetSrc?(' — '+p.targetSrc):'')):'no target set')
         +(p.nearHigh&&p.highRef!=null?(' · <span style="color:var(--gold)">at or near its high of '+fmt(p.highRef,2)+', so there is no overhead resistance to aim at</span>'):'')
       +'</div>'
-      +((p.nearHigh&&p.fib&&p.target!==p.fib.value)?('<div style="font-size:10px;margin-bottom:6px">'
+      +((p.nearHigh&&p.fib&&!p.fib.blocked&&p.target!==p.fib.value)?('<div style="font-size:10px;margin-bottom:6px">'
         +'<button class="btn" onclick="woUseFib(\''+did+'\')">Use '+p.fib.label+' target '+fmt(p.fib.value,2)+'</button>'
         +'<span style="color:var(--fg3);margin-left:7px">projected from the swing '+fmt(p.fib.swingL,2)+' → '+fmt(p.fib.swingH,2)+'</span></div>'):'')
-      +((p.nearHigh&&!p.fib)?'<div style="font-size:10px;color:var(--gold);margin-bottom:6px;line-height:1.6">'
+      +((p.nearHigh&&!p.fib&&!(p.fib&&p.fib.blocked))?'<div style="font-size:10px;color:var(--gold);margin-bottom:6px;line-height:1.6">'
         +'Near its high, but this was saved before fib levels were captured. Re-analyse it in the Opportunity Review Engine and save again to get a projection target.</div>':'');
     return '<div style="border:1px solid var(--border);border-radius:9px;margin-bottom:8px;overflow:hidden">'
       +'<div onclick="woToggle('+i+')" style="display:flex;gap:11px;align-items:center;padding:9px 13px;cursor:pointer;background:var(--bg2);flex-wrap:wrap">'
@@ -11155,11 +11341,22 @@ function woLoadFresh(sym){ const k=String(sym||'').toUpperCase(); delete woCache
       if(o.swingH!=null)add.swingH=o.swingH;
       if(o.swingL!=null)add.swingL=o.swingL;
       if(o.w52H!=null)add.w52H=o.w52H;
+      ['e9','e20','e50','e200','emaAlignment','atr14'].forEach(k=>{ if(o[k]!=null)add[k]=o[k]; });
       const bars=o.bars||[];
       if(bars.length){
         let hi=0;
         bars.forEach(b=>{const h=parseFloat(b.high); if(isFinite(h)&&h>hi)hi=h;});
         if(hi>0)add.hi=hi;
+        // Which pivot came first decides which way the last leg ran. Without these
+        // dates a fib extension can be projected off a high that was made before
+        // the low — measuring a move that has already reversed.
+        const sh=parseFloat(o.swingH!=null?o.swingH:(o.fibs||{}).swingH);
+        const sl=parseFloat(o.swingL!=null?o.swingL:(o.fibs||{}).swingL);
+        bars.forEach(b=>{
+          const h=parseFloat(b.high), l=parseFloat(b.low);
+          if(isFinite(sh)&&isFinite(h)&&Math.abs(h-sh)<0.005)add.swingHDate=b.time;
+          if(isFinite(sl)&&isFinite(l)&&Math.abs(l-sl)<0.005)add.swingLDate=b.time;
+        });
       }
     }catch(e){}
     return orig.call(this,status,Object.assign(add,extra||{}));
@@ -11638,6 +11835,7 @@ function apexRender(){
     try{apexRender();}catch(e){}
     try{paOrdRender();}catch(e){}
     try{woRender();}catch(e){}
+    try{if(!window._bulkPending)bulkRender();}catch(e){}
     return r;
   };
 })();
