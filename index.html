@@ -1556,7 +1556,7 @@ body::before{
       <div id="spy-rings-container-orders" style="margin-bottom:12px"></div>
 
       <!-- Header -->
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div id="spy-orders-hd" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
           <div style="font-size:15px;font-weight:700;color:var(--purple,#a855f7);letter-spacing:.04em">📊 SPY / XSP Orders Journal</div>
           <div style="font-size:11px;color:var(--fg3);margin-top:2px">E-Trade transaction history · Day-by-day options P&amp;L</div>
@@ -10257,9 +10257,11 @@ async function spyGLFile(input){
 function spyGLPanelEl(){
   let el=document.getElementById('cfg-gl-block');
   if(el){spyGLFillAccounts();return el;}
-  // Belongs beside the SPY orders import, not in Settings. The Settings anchor
-  // stays only as a fallback if that panel ever moves.
-  const anchor=document.getElementById('txn-bridge-preview')
+  // Above the orders journal, not under it — once real transaction rows fill
+  // that list, anything below the header is effectively gone.
+  const head=document.getElementById('spy-orders-hd');
+  const anchor=head
+            || document.getElementById('txn-bridge-preview')
             || document.getElementById('cfg-fee-block');
   if(!anchor||!anchor.parentNode)return null;
   el=document.createElement('div');
@@ -10276,7 +10278,8 @@ function spyGLPanelEl(){
     +'</div>'
     +'<textarea id="cfg-gl-text" rows="3" spellcheck="false" placeholder="…or paste the CSV here" oninput="spyGLPreview()" style="width:100%;box-sizing:border-box;resize:vertical;font-family:var(--mono);font-size:10px;padding:8px;border-radius:7px;border:1px solid var(--border2);background:var(--surface);color:var(--fg)"></textarea>'
     +'<div id="cfg-gl-out" style="margin-top:8px"></div>';
-  anchor.parentNode.insertBefore(el,anchor.nextSibling);
+  if(head)anchor.parentNode.insertBefore(el,anchor);          // before the header
+  else anchor.parentNode.insertBefore(el,anchor.nextSibling);  // fallback: after it
   spyGLFillAccounts();
   return el;
 }
@@ -10323,6 +10326,111 @@ async function atAuthInit(){
   }
   if(typeof atRenderCloudStatus==='function')atRenderCloudStatus();
 }
+
+// ══ SPY ROLL-UP FOR ACCOUNTS WITHOUT FILLS ════════════════════════════
+// The Orders Journal was built on transactionHistory, so an account imported
+// from a Gains & Losses file had trades in the Journal but an empty panel here.
+// The Journal stays the record; this is a view of it. The original renderer is
+// wrapped rather than replaced, so the fills path is untouched.
+function spyAcctMatch(a,b){
+  const A=String(a||'').trim(), B=String(b||'').trim();
+  if(!A||!B)return false;
+  if(A===B)return true;
+  const l4=s=>s.replace(/\D/g,'').slice(-4);
+  return !!l4(A)&&l4(A)===l4(B);          // 'Yaz-3036' vs 'Yaz -3036'
+}
+function spyTradesForAccount(acct){
+  return (state.trades||[]).filter(t=>t.module==='spy_day'&&spyAcctMatch(t.account,acct));
+}
+function spyFmtDate(d){
+  const m=String(d||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m?(m[2]+'/'+m[3]+'/'+m[1]):String(d||'');
+}
+function spyToggleRow(id){const e=document.getElementById(id);if(e)e.hidden=!e.hidden;}
+
+function spyRenderFromTrades(acct){
+  const sum=document.getElementById('txn-summary');
+  const jr=document.getElementById('txn-journal');
+  if(!jr)return;
+  const rows=spyTradesForAccount(acct);
+  if(!rows.length){
+    if(sum)sum.innerHTML='';
+    jr.innerHTML='<div style="text-align:center;color:var(--fg3);padding:30px 0;font-size:13px">No SPY sessions for this account yet.<br><span style="font-size:11px">Import a Gains &amp; Losses file above, or use ⬆ Import CSV for raw transaction history.</span></div>';
+    return;
+  }
+  rows.sort((a,b)=>a.date<b.date?1:-1);
+  let net=0,fees=0,win=0,anyFee=false;
+  rows.forEach(t=>{
+    const n=parseFloat(t.netPL)||0, f=parseFloat(t.feesActual)||0;
+    net+=n; fees+=f; if(n>0)win++; if(f>0)anyFee=true;
+  });
+  const pl=t=>parseFloat(t.netPL)||0;
+  const best=rows.reduce((a,b)=>pl(b)>pl(a)?b:a);
+  const worst=rows.reduce((a,b)=>pl(b)<pl(a)?b:a);
+  const dates=rows.map(t=>t.date).sort();
+  const tile=(l,v,c)=>'<div style="border:1px solid var(--border);border-radius:9px;padding:10px 12px;text-align:center;background:var(--bg2)">'
+    +'<div style="font-size:9px;letter-spacing:.09em;color:var(--fg3);text-transform:uppercase;margin-bottom:4px">'+l+'</div>'
+    +'<div style="font-family:var(--mono);font-size:15px;font-weight:800;color:'+(c||'var(--fg)')+'">'+v+'</div></div>';
+  if(sum)sum.innerHTML=
+     tile('Net P/L',(net>=0?'+':'-')+'$'+fmt(Math.abs(net),2),net>=0?'var(--green)':'var(--red)')
+    // Never show $0 commissions on G&L data — the figures arrive already net,
+    // and a zero here would read as free trading.
+    +tile('Commissions',anyFee?('-$'+fmt(fees,2)):'included',anyFee?'var(--red)':'var(--fg3)')
+    +tile('Win Days',win+' / '+rows.length,(win*2>=rows.length)?'var(--green)':'var(--red)')
+    +tile('Best Day',(pl(best)>=0?'+':'-')+'$'+fmt(Math.abs(pl(best)),2),'var(--green)')
+    +tile('Worst Day',(pl(worst)>=0?'+':'-')+'$'+fmt(Math.abs(pl(worst)),2),'var(--red)')
+    +tile('Date Range',dates[0]+' to '+dates[dates.length-1],'var(--fg2)');
+  jr.innerHTML=rows.map(t=>{
+    const n=pl(t), f=parseFloat(t.feesActual)||0;
+    const c=n>=0?'var(--green)':'var(--red)';
+    const rid='spyrow-'+(t.id||Math.random().toString(36).slice(2));
+    const counts={};
+    (t.legs||[]).forEach(l=>{const m=String(l.sym||'').match(/^([A-Z]+)/);if(m)counts[m[1]]=(counts[m[1]]||0)+(parseInt(l.qty,10)||0);});
+    const badges=Object.keys(counts).map(k=>'<span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:9px;border:1px solid '+(k==='XSP'?'var(--blue)':'#a855f7')+';color:'+(k==='XSP'?'var(--blue)':'#a855f7')+'">'+k+'×'+counts[k]+'</span>').join(' ');
+    const legs=(t.legs||[]).map(l=>'<div style="display:flex;gap:10px;font-size:11px;padding:4px 0;border-top:1px solid var(--border)">'
+        +'<span style="flex:1;color:var(--fg2)">'+(l.sym||'')+'</span>'
+        +'<span style="color:var(--fg3);min-width:50px">'+(l.qty||0)+' ct</span>'
+        +'<span style="font-family:var(--mono);min-width:86px;text-align:right;color:'+(((l.pl||0)>=0)?'var(--green)':'var(--red)')+'">'+(((l.pl||0)>=0)?'+':'')+fmt(l.pl||0,2)+'</span>'
+      +'</div>').join('')
+      ||'<div style="font-size:11px;color:var(--fg3);padding:4px 0">No per-position detail recorded for this session.</div>';
+    return '<div style="border:1px solid var(--border);border-radius:9px;margin-bottom:8px;overflow:hidden">'
+      +'<div onclick="spyToggleRow(\''+rid+'\')" style="display:flex;align-items:center;gap:12px;padding:11px 14px;cursor:pointer;background:var(--bg2);flex-wrap:wrap">'
+        +'<span style="font-family:var(--mono);font-size:12px;font-weight:700">'+spyFmtDate(t.date)+'</span>'
+        +badges
+        +'<span style="font-size:11px;color:var(--fg3)">'+((t.legs||[]).length)+' position'+(((t.legs||[]).length)!==1?'s':'')+'</span>'
+        +'<span style="font-size:11px;color:var(--fg3)">comm: '+(f>0?('-$'+fmt(f,2)):'included')+'</span>'
+        +'<span style="margin-left:auto;font-family:var(--mono);font-size:14px;font-weight:800;color:'+c+'">'+(n>=0?'+':'-')+'$'+fmt(Math.abs(n),2)+'</span>'
+        +'<span style="color:var(--fg3);font-size:11px">▾</span>'
+      +'</div>'
+      +'<div id="'+rid+'" hidden style="padding:4px 14px 12px">'+legs+'</div>'
+    +'</div>';
+  }).join('');
+}
+
+(function(){
+  const orig=window.renderTransactionJournal;
+  window.renderTransactionJournal=function(){
+    const sel=document.getElementById('txn-acct-select');
+    const acct=sel?sel.value:'';
+    let hasFills=false;
+    try{hasFills=!!(typeof findTxnForAccount==='function'&&findTxnForAccount(acct));}catch(e){}
+    if(hasFills&&typeof orig==='function')return orig.apply(this,arguments);
+    return spyRenderFromTrades(acct);
+  };
+  // The account rings read today's P/L from fills only, which is why an
+  // account imported from G&L showed "No data today" despite having trades.
+  const origToday=window.getTodayPnl;
+  window.getTodayPnl=function(acctName){
+    let r=null;
+    try{r=(typeof origToday==='function')?origToday.apply(this,arguments):null;}catch(e){}
+    if(r)return r;
+    const today=new Date().toISOString().slice(0,10);
+    const rows=spyTradesForAccount(acctName).filter(t=>t.date===today);
+    if(!rows.length)return null;
+    let n=0; rows.forEach(t=>{n+=parseFloat(t.netPL)||0;});
+    return{date:today,netPnl:n,fromTrades:true};
+  };
+})();
 
 (function init(){
   loadState();
