@@ -10670,6 +10670,481 @@ function spyRenderFromTrades(acct){
   };
 })();
 
+// ══ PA ORDERS IMPORT (paired open/close export) ═════════════════════
+// This export is strictly better than the fills CSV: two rows per trade sharing a
+// created_on, mov_type giving the real side, fill times to the second, and a
+// profit column already net of commission. So direction, fees and hold time all
+// come from the file instead of being inferred or assumed.
+//   mov_type 1 = buy to open   2 = sell to close    (LONG)
+//   mov_type 3 = sell to open  4 = buy to close     (SHORT)
+const PAORD_MULT={ES:50,MES:5,NQ:20,MNQ:2,YM:5,MYM:0.5,RTY:50,M2K:5,CL:1000,MCL:100,GC:100,MGC:10};
+
+function paOrdCells(line){
+  const out=[];let cur='',q=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){ if(q&&line[i+1]==='"'){cur+='"';i++;} else q=!q; }
+    else if(ch===','&&!q){out.push(cur);cur='';}
+    else cur+=ch;
+  }
+  out.push(cur);
+  return out.map(s=>s.trim());
+}
+function paOrdLooks(text){
+  const first=String(text||'').split(/\r?\n/)[0]||'';
+  const h=first.toLowerCase();
+  return h.indexOf('mov_type')>=0&&h.indexOf('price_done')>=0&&h.indexOf('created_on')>=0;
+}
+function paOrdSym(raw){
+  const s=String(raw||'').toUpperCase().replace(/^CM\./,'');
+  const m=s.match(/^([A-Z]{1,3})[FGHJKMNQUVXZ]\d+$/);
+  return m?m[1]:s.replace(/[^A-Z]/g,'').slice(0,3);
+}
+function paOrdTime(raw){
+  const m=String(raw||'').match(/^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{2}):(\d{2}):(\d{2})/);
+  if(!m)return null;
+  const mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].indexOf(m[1]);
+  if(mo<0)return null;
+  // Read the clock as written. Converting through Date would shift an evening
+  // fill into the next UTC day and mis-date the session.
+  return{date:m[3]+'-'+String(mo+1).padStart(2,'0')+'-'+String(m[2]).padStart(2,'0'),
+         time:m[4]+':'+m[5]+':'+m[6]};
+}
+function paOrdParse(text){
+  const lines=String(text||'').split(/\r?\n/).filter(l=>l.trim());
+  if(!lines.length)return{trades:[],warn:['The file is empty.']};
+  const hd=paOrdCells(lines[0]).map(s=>s.toLowerCase());
+  const ix=n=>hd.indexOf(n);
+  const cName=ix('name'),cSym=ix('symbol'),cT=ix('mov_time'),cMT=ix('mov_type'),
+        cQ=ix('exec_qty'),cP=ix('price_done'),cPts=ix('points'),cPr=ix('profit'),cC=ix('created_on');
+  if(cMT<0||cP<0||cC<0)return{trades:[],warn:['That file does not have the mov_type / price_done / created_on columns this importer needs.']};
+  const groups={},warn=[];
+  for(let i=1;i<lines.length;i++){
+    const c=paOrdCells(lines[i]);
+    if(!c[cC]||!c[cMT])continue;
+    const k=(c[cName]||'')+'|'+c[cC];
+    (groups[k]=groups[k]||[]).push(c);
+  }
+  const trades=[];
+  Object.keys(groups).forEach(k=>{
+    const g=groups[k];
+    const o=g.filter(c=>c[cMT]==='1'||c[cMT]==='3')[0];
+    const x=g.filter(c=>c[cMT]==='2'||c[cMT]==='4')[0];
+    if(!o||!x){warn.push('Skipped an unpaired order group at '+(g[0][cC]||'?')+' \u2014 it has no matching open and close.');return;}
+    const ot=paOrdTime(o[cT]),xt=paOrdTime(x[cT]);
+    if(!ot){warn.push('Skipped a group with an unreadable timestamp: '+(o[cT]||'?'));return;}
+    const dir=(o[cMT]==='1')?'LONG':'SHORT';
+    const qty=Math.abs(parseFloat(o[cQ])||0);
+    const entry=parseFloat(o[cP]),exit=parseFloat(x[cP]);
+    const sym=paOrdSym(o[cSym]);
+    const mult=PAORD_MULT[sym]||null;
+    const net=cPr>=0&&x[cPr]!==''?parseFloat(x[cPr]):null;
+    const pts=cPts>=0&&x[cPts]!==''?parseFloat(x[cPts]):null;
+    let gross=null,fee=null,feeNote=false;
+    if(pts!=null&&mult)gross=parseFloat((pts*mult).toFixed(2));
+    if(gross!=null&&net!=null){
+      fee=parseFloat((gross-net).toFixed(2));
+      // A fee outside a plausible band means a wrong multiplier, not a strange
+      // commission. Fall back rather than record a number that looks precise.
+      const per=qty?fee/qty:fee;
+      if(!(per>=0&&per<=25)){fee=null;gross=null;feeNote=true;}
+    }
+    if(fee==null){
+      fee=parseFloat((qty*(futFeeRate?futFeeRate():3.10)).toFixed(2));
+      if(net!=null)gross=parseFloat((net+fee).toFixed(2));
+      if(feeNote)warn.push('Used your configured fee rate for '+sym+' on '+ot.date+' \u2014 the file\'s points column did not square with a known contract multiplier.');
+    }
+    // Use the exit's own date, not the entry's: an overnight hold would otherwise
+    // compute as negative and clamp to zero.
+    trades.push({srcKey:k,account:(o[cName]||'').trim(),date:ot.date,entryTime:ot.time,
+      exitTime:xt?xt.time:'',exitDate:xt?xt.date:'',symbol:sym,direction:dir,qty:qty,entry:entry,exitPrice:exit,
+      points:pts,grossPL:gross,netPL:net,feesActual:fee,
+      holdSec:(ot&&xt)?Math.max(0,(new Date(xt.date+'T'+xt.time)-new Date(ot.date+'T'+ot.time))/1000):null});
+  });
+  trades.sort((a,b)=>(a.date+a.entryTime).localeCompare(b.date+b.entryTime));
+  return{trades:trades,warn:warn};
+}
+
+// Match the file's account label to one already configured. The export writes
+// PA-APEX-4687-12 while the app holds "PA -APEX-4687-12", so compare on digits.
+function paOrdMatchAcct(raw){
+  const digits=String(raw||'').replace(/\D/g,'');
+  const tail=digits.slice(-6);
+  const pool=[].concat(state.settings.paAccounts||[],state.settings.evalAccounts||[]).filter(a=>a&&String(a).trim());
+  let hit=pool.filter(a=>String(a).replace(/\D/g,'')===digits)[0];
+  if(!hit&&tail)hit=pool.filter(a=>String(a).replace(/\D/g,'').slice(-6)===tail)[0];
+  return hit||null;
+}
+
+function paOrdLoad(input){
+  const f=input&&input.files&&input.files[0];
+  if(!f)return;
+  const r=new FileReader();
+  r.onload=function(){
+    try{
+      const text=String(r.result||'');
+      if(!paOrdLooks(text)){
+        alert('That does not look like a PA orders export. This importer expects the columns name, order_id, symbol, mov_time, mov_type, exec_qty, price_done, points, profit, created_on.');
+        return;
+      }
+      const p=paOrdParse(text);
+      if(!p.trades.length){alert((p.warn||['No trades were found in that file.']).join('\n'));return;}
+      window._paOrdPending=p;
+      paOrdRender();
+    }catch(e){alert('Could not read that file: '+e.message);}
+  };
+  r.onerror=function(){alert('Could not read that file.');};
+  r.readAsText(f);
+  input.value='';
+}
+
+function paOrdExisting(acct){
+  return (state.trades||[]).filter(t=>t.module==='futures'&&String(t.account||'').trim()===String(acct).trim());
+}
+
+function paOrdConfirm(fileAcct,target,mode){
+  const p=window._paOrdPending; if(!p)return;
+  const rows=p.trades.filter(t=>t.account===fileAcct);
+  if(!rows.length)return;
+  if(!target){alert('Pick which account these trades belong to first.');return;}
+  const total=rows.reduce((s,t)=>s+(t.netPL||0),0);
+  if(mode==='replace'){
+    const had=paOrdExisting(target).length;
+    const prior=parseFloat((state.settings.accountPriorPL||{})[target])||0;
+    if(!confirm('Replace all '+had+' existing futures trades on '+target+' with the '+rows.length+' in this file?\n\n'
+      +'File total: $'+fmt(total,2)+'\n'
+      +(prior?('Your prior-period figure of $'+fmt(prior,2)+' will be set to 0, because this file covers that period.\n'):'')
+      +'\nThis cannot be undone.'))return;
+    state.trades=(state.trades||[]).filter(t=>!(t.module==='futures'&&String(t.account||'').trim()===String(target).trim()));
+    if(prior){ state.settings.accountPriorPL=state.settings.accountPriorPL||{}; state.settings.accountPriorPL[target]=0; }
+  }
+  let added=0,skipped=0;
+  rows.forEach(t=>{
+    const dupe=(state.trades||[]).some(e=>e.module==='futures'&&e.srcKey===t.srcKey);
+    if(dupe){skipped++;return;}
+    state.trades.push({
+      id:(Date.now().toString(36)+Math.random().toString(36).slice(2,6)),
+      module:'futures',date:t.date,entryTime:t.entryTime,exitTime:t.exitTime,exitDate:t.exitDate,
+      account:target,instrument:t.symbol,symbol:t.symbol,ticker:t.symbol,
+      direction:t.direction,entry:t.entry,stop:null,t1:null,target:null,qty:t.qty,
+      feesPlanned:0,feesActual:t.feesActual,exit:t.exitPrice,exitPrice:t.exitPrice,
+      grossPL:t.grossPL,netPL:t.netPL,rr:0,regime:'',setup:'',
+      scaleT1:null,scaleT2:null,scaleRun:null,emotion:'',grade:'',rulesFollowed:'',
+      thesis:'[Imported from PA orders export]',lesson:'',
+      importedFromCSV:true,srcKey:t.srcKey,holdSec:t.holdSec
+    });
+    added++;
+  });
+  saveState();
+  window._paOrdPending=null;
+  try{renderAll();}catch(e){}
+  try{paOrdRender();}catch(e){}
+  alert('Imported '+added+' trade'+(added!==1?'s':'')+' to '+target
+    +(skipped?('\n'+skipped+' already present, left alone.'):'')
+    +'\nNet $'+fmt(total,2));
+}
+
+function paOrdDismiss(){ window._paOrdPending=null; paOrdRender(); }
+
+function paOrdPanelEl(){
+  let el=document.getElementById('paord-panel');
+  if(el)return el;
+  const anchor=document.getElementById('screen-futures');
+  if(!anchor)return null;
+  el=document.createElement('div');
+  el.id='paord-panel';
+  el.style.cssText='margin-bottom:18px';
+  const apex=document.getElementById('apex-panel');
+  if(apex&&apex.parentNode===anchor)anchor.insertBefore(el,apex.nextSibling);
+  else anchor.insertBefore(el,anchor.firstChild);
+  return el;
+}
+
+function paOrdRender(){
+  const el=paOrdPanelEl(); if(!el)return;
+  const p=window._paOrdPending;
+  let body='';
+  if(!p){
+    body='<div style="padding:11px 14px">'
+      +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">'
+      +'Import a paired orders export \u2014 the one with <span style="font-family:var(--mono)">mov_type</span> and <span style="font-family:var(--mono)">created_on</span> columns. '
+      +'It carries the real long/short side, fill times, and profit already net of commission, so none of that has to be guessed at.</div>'
+      +'<label class="btn" style="cursor:pointer;display:inline-block">Choose orders file'
+      +'<input type="file" accept=".csv,text/csv" onchange="paOrdLoad(this)" style="display:none"></label>'
+      +'</div>';
+  }else{
+    const accts={};
+    p.trades.forEach(t=>{(accts[t.account]=accts[t.account]||[]).push(t);});
+    body='<div style="padding:11px 14px">'
+      +Object.keys(accts).map(a=>{
+        const rows=accts[a];
+        const target=paOrdMatchAcct(a);
+        const net=rows.reduce((s,t)=>s+(t.netPL||0),0);
+        const fees=rows.reduce((s,t)=>s+(t.feesActual||0),0);
+        const days={};rows.forEach(t=>days[t.date]=(days[t.date]||0)+(t.netPL||0));
+        const dayKeys=Object.keys(days).sort();
+        const longs=rows.filter(t=>t.direction==='LONG').length;
+        const wins=rows.filter(t=>(t.netPL||0)>0).length;
+        const holds=rows.map(t=>t.holdSec).filter(h=>h!=null).sort((x,y)=>x-y);
+        const med=holds.length?holds[Math.floor(holds.length/2)]:null;
+        const had=target?paOrdExisting(target).length:0;
+        const prior=target?(parseFloat((state.settings.accountPriorPL||{})[target])||0):0;
+        const pool=[].concat(state.settings.paAccounts||[],state.settings.evalAccounts||[]).filter(x=>x&&String(x).trim());
+        const sel='paord-t-'+a.replace(/[^A-Za-z0-9]/g,'');
+        return '<div style="border:1px solid var(--blue);border-radius:9px;padding:11px 13px;margin-bottom:9px">'
+          +'<div style="font-weight:800;font-size:12px;color:var(--blue);margin-bottom:7px">'+a+' \u2014 '+rows.length+' trades in this file</div>'
+          +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:7px;font-size:11px;margin-bottom:9px">'
+            +'<div><span style="color:var(--fg3)">Net</span><br><span style="font-family:var(--mono);font-weight:700;color:'+(net>=0?'var(--green)':'var(--red)')+'">$'+fmt(net,2)+'</span></div>'
+            +'<div><span style="color:var(--fg3)">Commission in it</span><br><span style="font-family:var(--mono)">$'+fmt(fees,2)+'</span></div>'
+            +'<div><span style="color:var(--fg3)">Trading days</span><br><span style="font-family:var(--mono)">'+dayKeys.length+'</span></div>'
+            +'<div><span style="color:var(--fg3)">Long / short</span><br><span style="font-family:var(--mono)">'+longs+' / '+(rows.length-longs)+'</span></div>'
+            +'<div><span style="color:var(--fg3)">Win rate</span><br><span style="font-family:var(--mono)">'+(rows.length?(wins/rows.length*100).toFixed(1):'0')+'%</span></div>'
+            +(med!=null?'<div><span style="color:var(--fg3)">Median hold</span><br><span style="font-family:var(--mono)">'+(med<90?Math.round(med)+'s':(med/60).toFixed(1)+'m')+'</span></div>':'')
+          +'</div>'
+          +'<div style="font-size:11px;color:var(--fg3);margin-bottom:7px">'+dayKeys[0]+' to '+dayKeys[dayKeys.length-1]+'</div>'
+          +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;margin-bottom:8px">'
+            +'<span style="color:var(--fg3)">Import into</span>'
+            +'<select id="'+sel+'" style="padding:4px 7px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:11px">'
+            +'<option value="">\u2014 pick an account \u2014</option>'
+            +pool.map(x=>'<option value="'+x.replace(/"/g,'&quot;')+'"'+(x===target?' selected':'')+'>'+x+'</option>').join('')
+            +'</select>'
+            +(target?'<span style="color:var(--fg3)">matched on account number</span>':'<span style="color:var(--gold)">no match found \u2014 choose one</span>')
+          +'</div>'
+          +(target&&had?'<div style="font-size:11px;color:var(--gold);line-height:1.6;margin-bottom:8px">'+target+' already holds '+had+' futures trade'+(had!==1?'s':'')+(prior?(' and a prior-period figure of $'+fmt(prior,2)):'')+'. '
+            +'If this file is the full history, replace \u2014 that clears the prior-period figure too, so nothing is counted twice. If it only covers recent days, add.</div>':'')
+          +'<div style="display:flex;gap:7px;flex-wrap:wrap">'
+            +'<button class="btn" onclick="paOrdConfirm(\''+a.replace(/'/g,"\\'")+'\',document.getElementById(\''+sel+'\').value,\'add\')">Add '+rows.length+' trades</button>'
+            +'<button class="btn" style="border-color:var(--red);color:var(--red)" onclick="paOrdConfirm(\''+a.replace(/'/g,"\\'")+'\',document.getElementById(\''+sel+'\').value,\'replace\')">Replace account history</button>'
+          +'</div></div>';
+      }).join('')
+      +((p.warn&&p.warn.length)?'<div style="font-size:11px;color:var(--gold);line-height:1.6;margin-bottom:8px">'+p.warn.map(w=>'\u2022 '+w).join('<br>')+'</div>':'')
+      +'<button class="btn" onclick="paOrdDismiss()">Cancel</button>'
+      +'</div>';
+  }
+  el.innerHTML='<div class="trade-form" style="margin-bottom:0">'
+    +'<div class="form-hd"><span class="form-title">Import PA Orders</span>'
+    +(p?'<span class="gov-badge" style="color:var(--blue);border-color:var(--blue)">ready to review</span>':'')+'</div>'
+    +body+'</div>';
+}
+
+// ══ APEX PA RULE COMPLIANCE ════════════════════════════════════════
+// Consistency rules apply to PA and Live accounts, not to Evaluations. The
+// penalties are severe — a contract-scaling breach costs the payout, resets the
+// account to the previous day's close, and adds eight compliant days — so these
+// are checked continuously rather than remembered.
+//
+// Only two account sizes have figures confirmed from Apex's own documentation.
+// Everything else is editable rather than guessed at, because a wrong drawdown
+// here would produce a confidently wrong safety net.
+const APEX_KNOWN={50000:{dd:2500,max:10},150000:{dd:5000,max:17}};
+
+function apexCfg(acct){
+  if(!state.settings.apexAccounts)state.settings.apexAccounts={};
+  if(!state.settings.apexAccounts[acct]){
+    state.settings.apexAccounts[acct]={size:50000,dd:2500,maxContracts:10,firm:'Apex',bracketed:true,oneDir:true};
+  }
+  const c=state.settings.apexAccounts[acct];
+  if(c.firm==null)c.firm='Apex';
+  if(c.bracketed==null)c.bracketed=true;
+  if(c.oneDir==null)c.oneDir=true;
+  return c;
+}
+function apexSetCfg(acct,field,v){
+  const c=apexCfg(acct);
+  if(field==='firm'){c.firm=String(v||'Apex');}
+  else if(field==='bracketed'||field==='oneDir'){c[field]=!!v;}
+  else{
+    const n=parseFloat(v);
+    c[field]=isFinite(n)?n:0;
+    if(field==='size'&&APEX_KNOWN[c.size]){c.dd=APEX_KNOWN[c.size].dd;c.maxContracts=APEX_KNOWN[c.size].max;}
+  }
+  saveState(); apexRender();
+}
+
+function apexEval(acct){
+  const c=apexCfg(acct);
+  const rs=(state.trades||[]).filter(t=>t.module==='futures'&&String(t.account||'').trim()===String(acct).trim());
+  const prior=parseFloat((state.settings.accountPriorPL||{})[acct])||0;
+  const days={},dirDays={};
+  let worstTrade=0,maxPos=0,withStop=0;
+  const sizes={};
+  rs.forEach(t=>{
+    const pl=parseFloat(t.netPL)||0, q=Math.abs(parseFloat(t.qty)||0);
+    const d=String(t.direction||'').toUpperCase();
+    if(d==='LONG'||d==='SHORT'){(dirDays[t.date]=dirDays[t.date]||{})[d]=1;}
+    if(!days[t.date])days[t.date]=0;
+    days[t.date]+=pl;
+    if(pl<worstTrade)worstTrade=pl;
+    if(q>maxPos)maxPos=q;
+    if(q)sizes[q]=1;
+    if(t.stop!=null&&String(t.stop).trim()!=='')withStop++;
+  });
+  const dayVals=Object.keys(days).map(k=>days[k]);
+  const profit=parseFloat((rs.reduce((s,t)=>s+(parseFloat(t.netPL)||0),0)+prior).toFixed(2));
+  const balance=c.size+profit;
+  const safety=c.size+c.dd+100;
+  const cleared=balance>=safety;
+  const scalingCap=cleared?c.maxContracts:Math.floor(c.maxContracts/2);
+  const best=dayVals.length?Math.max.apply(null,dayVals):0;
+  const worstDay=dayVals.length?Math.min.apply(null,dayVals):0;
+  const maeLimit=Math.max(profit*0.30,c.dd*0.30);
+  return{acct:acct,cfg:c,trades:rs.length,profit:profit,balance:balance,safety:safety,
+    cleared:cleared,scalingCap:scalingCap,maxPos:maxPos,best:best,worstDay:worstDay,
+    consistency:profit>0?(best/profit):0,minTotalForBest:best/0.30,
+    worstTrade:worstTrade,maeLimit:maeLimit,days:dayVals.length,
+    sizes:Object.keys(sizes).map(Number).sort((a,b)=>a-b),
+    withStop:withStop,toPayout:Math.max(0,safety-balance),
+    mixedDays:Object.keys(dirDays).filter(d=>dirDays[d].LONG&&dirDays[d].SHORT).sort()};
+}
+
+function apexRuleRows(e){
+  const R=[];
+  const add=(ok,rule,detail,warn)=>R.push({ok:ok,rule:rule,detail:detail,warn:warn});
+  add(e.maxPos<=e.scalingCap,'Contract scaling',
+      'largest position '+e.maxPos+' of '+e.scalingCap+' allowed'+(e.cleared?' (threshold cleared)':' until balance $'+fmt(e.safety,0)));
+  add(e.maxPos<=e.cfg.maxContracts,'Max contracts',e.maxPos+' of '+e.cfg.maxContracts);
+  add(e.profit<=0||e.consistency<=0.30,'30% consistency',
+      'best day $'+fmt(e.best,2)+' = '+(e.consistency*100).toFixed(2)+'% · needs $'+fmt(e.minTotalForBest,2)+' total');
+  add(Math.abs(e.worstTrade)<=e.maeLimit,'30% negative P&L',
+      'worst trade $'+fmt(e.worstTrade,2)+' vs $'+fmt(e.maeLimit,2)+' limit');
+  add(e.days===0||e.worstDay>=50,'Day counts only at $50+ profit','smallest day $'+fmt(e.worstDay,2));
+  add(e.sizes.length<=2,'Contract size consistency','sizes used: '+(e.sizes.join(', ')||'—'),e.sizes.length>2);
+  add(e.days>=8,'8 trading days',e.days+' recorded');
+  // Apex requires a stop on every trade. A bracketed (OCO) order carries one by
+  // construction, so the rule is met at the broker even when the imported log
+  // has no level — that is a capture gap, which costs R:R analysis, not the rule.
+  if(e.cfg.bracketed){
+    add(true,'Stop on every trade',
+        'bracketed OCO orders'+(e.withStop<e.trades?' · '+(e.trades-e.withStop)+' imported without a level, so R:R can\'t be scored':''),
+        e.withStop<e.trades);
+  }else{
+    add(e.withStop===e.trades&&e.trades>0,'Stop on every trade',
+        e.withStop+' of '+e.trades+' have a recorded level',true);
+  }
+  // The rule bars opposing positions held AT THE SAME TIME — hedging. Going long,
+  // closing flat, then going short is permitted, so same-day direction changes are
+  // not a breach and must not be flagged as one. Overlap can only be proven with
+  // fill timestamps, which the log doesn't carry, so this reports the flat-between
+  // check it can actually run and names what it cannot.
+  // Each trade is its own bracketed order, long or short, taken one at a time.
+  // Apex bars only opposing positions held simultaneously, so taking a short
+  // after a long is closed is ordinary trading and is reported as such — the
+  // count is context, not a caution.
+  if(e.cfg.oneDir){
+    add(true,'One position at a time',
+        e.mixedDays.length?('long and short both traded on '+e.mixedDays.length+' day'+(e.mixedDays.length!==1?'s':'')+', one at a time'):'single direction throughout',
+        false);
+  }
+  add(e.toPayout<=0,'Safety net for a $500 payout',
+      e.toPayout>0?('$'+fmt(e.toPayout,2)+' more needed'):'eligible');
+  return R;
+}
+
+function apexToggle(i){
+  const el=document.getElementById('apex-d-'+i);
+  if(el)el.hidden=!el.hidden;
+}
+
+function apexPanelEl(){
+  let el=document.getElementById('apex-panel');
+  if(el)return el;
+  const anchor=document.getElementById('screen-futures');
+  if(!anchor)return null;
+  el=document.createElement('div');
+  el.id='apex-panel';
+  el.style.cssText='margin-bottom:18px';
+  anchor.insertBefore(el,anchor.firstChild);
+  return el;
+}
+
+// Other prop firms have their own consistency, drawdown and scaling rules, and
+// applying Apex's to them would produce a confident wrong answer. So an account
+// set to another firm is listed without being judged.
+const APEX_FIRMS=['Apex','Topstep','TradeDay','Tradeify','Take Profit Trader','Earn2Trade','Other'];
+function apexFirmSelect(e){
+  const a=e.acct.replace(/'/g,"\\'");
+  return '<span>firm</span><select onchange="apexSetCfg(\''+a+'\',\'firm\',this.value)" style="padding:3px 6px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:11px">'
+    +APEX_FIRMS.map(f=>'<option value="'+f+'"'+(e.cfg.firm===f?' selected':'')+'>'+f+'</option>').join('')
+    +'</select>';
+}
+function apexOtherFirmCard(e,i){
+  return '<div style="border:1px solid var(--border);border-radius:9px;margin-bottom:8px;overflow:hidden">'
+    +'<div onclick="apexToggle('+i+')" style="display:flex;align-items:center;gap:12px;padding:10px 13px;cursor:pointer;background:var(--bg2);flex-wrap:wrap">'
+      +'<span style="font-weight:800;font-size:12px;color:var(--blue)">'+e.acct+'</span>'
+      +'<span style="font-size:11px;color:var(--fg3)">'+e.cfg.firm+'</span>'
+      +'<span style="font-family:var(--mono);font-size:11px;color:'+(e.profit>=0?'var(--green)':'var(--red)')+'">'+(e.profit>=0?'+':'')+fmt(e.profit,2)+'</span>'
+      +'<span style="margin-left:auto;font-size:11px;color:var(--fg3)">not checked ▾</span>'
+    +'</div>'
+    +'<div id="apex-d-'+i+'" hidden style="padding:11px 13px">'
+      +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">'+e.cfg.firm+' sets its own consistency, drawdown and scaling rules. Checking this account against Apex\'s would tell you it is compliant when it may not be, so it is left unchecked. '+e.trades+' trade'+(e.trades!==1?'s':'')+' recorded, $'+fmt(e.profit,2)+' profit.</div>'
+      +'<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--fg3)">'+apexFirmSelect(e)+'</div>'
+    +'</div></div>';
+}
+
+function apexRender(){
+  const el=apexPanelEl(); if(!el)return;
+  const accts=(state.settings.paAccounts||[]).filter(n=>n&&String(n).trim());
+  if(!accts.length){el.innerHTML='';return;}
+  const evals=accts.map(apexEval);
+  let fails=0,totalProfit=0,toGo=0;
+  const bodies=evals.map((e,i)=>{
+    if(String(e.cfg.firm||'Apex')!=='Apex')return apexOtherFirmCard(e,i);
+    const rows=apexRuleRows(e);
+    const bad=rows.filter(r=>!r.ok&&!r.warn).length;
+    const warn=rows.filter(r=>!r.ok&&r.warn).length;
+    fails+=bad; totalProfit+=e.profit; toGo+=e.toPayout;
+    const chip=(bad?('<span style="color:var(--red);font-weight:700">'+bad+' breach'+(bad!==1?'es':'')+'</span>')
+      :(warn?('<span style="color:var(--gold);font-weight:700">'+warn+' to tidy</span>')
+      :'<span style="color:var(--green);font-weight:700">compliant</span>'));
+    return '<div style="border:1px solid '+(bad?'var(--red)':'var(--border)')+';border-radius:9px;margin-bottom:8px;overflow:hidden">'
+      +'<div onclick="apexToggle('+i+')" style="display:flex;align-items:center;gap:12px;padding:10px 13px;cursor:pointer;background:var(--bg2);flex-wrap:wrap">'
+        +'<span style="font-weight:800;font-size:12px;color:var(--blue)">'+e.acct+'</span>'
+        +'<span style="font-family:var(--mono);font-size:12px">$'+fmt(e.balance,2)+'</span>'
+        +'<span style="font-family:var(--mono);font-size:11px;color:'+(e.profit>=0?'var(--green)':'var(--red)')+'">'+(e.profit>=0?'+':'')+fmt(e.profit,2)+'</span>'
+        +'<span style="font-size:11px;color:var(--fg3)">max '+e.scalingCap+' contracts now</span>'
+        +(e.toPayout>0?'<span style="font-size:11px;color:var(--gold)">$'+fmt(e.toPayout,2)+' to payout</span>'
+                      :'<span style="font-size:11px;color:var(--green)">payout eligible</span>')
+        +'<span style="margin-left:auto;font-size:11px">'+chip+' ▾</span>'
+      +'</div>'
+      +'<div id="apex-d-'+i+'" hidden style="padding:9px 13px 12px">'
+        +rows.map(r=>'<div style="display:flex;gap:10px;align-items:baseline;font-size:11px;padding:3px 0;border-top:1px solid var(--border)">'
+          +'<span style="font-weight:700;min-width:40px;color:'+(r.ok?'var(--green)':(r.warn?'var(--gold)':'var(--red)'))+'">'+(r.ok?'PASS':(r.warn?'NOTE':'FAIL'))+'</span>'
+          +'<span style="min-width:170px;color:var(--fg2)">'+r.rule+'</span>'
+          +'<span style="color:var(--fg3)">'+r.detail+'</span>'
+        +'</div>').join('')
+        +'<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:9px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--fg3)">'
+          +'<span>Account size $</span><input type="number" value="'+e.cfg.size+'" onchange="apexSetCfg(\''+e.acct.replace(/'/g,"\\'")+'\',\'size\',this.value)" style="width:84px;padding:3px 6px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px">'
+          +'<span>drawdown $</span><input type="number" value="'+e.cfg.dd+'" onchange="apexSetCfg(\''+e.acct.replace(/'/g,"\\'")+'\',\'dd\',this.value)" style="width:74px;padding:3px 6px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px">'
+          +'<span>max contracts</span><input type="number" value="'+e.cfg.maxContracts+'" onchange="apexSetCfg(\''+e.acct.replace(/'/g,"\\'")+'\',\'maxContracts\',this.value)" style="width:56px;padding:3px 6px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px">'
+          +apexFirmSelect(e)
+          +'<label style="display:inline-flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox"'+(e.cfg.bracketed?' checked':'')+' onchange="apexSetCfg(\''+e.acct.replace(/'/g,"\\'")+'\',\'bracketed\',this.checked)"> bracketed orders</label>'
+          +'<label style="display:inline-flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox"'+(e.cfg.oneDir?' checked':'')+' onchange="apexSetCfg(\''+e.acct.replace(/'/g,"\\'")+'\',\'oneDir\',this.checked)"> no hedging</label>'
+          +'<span style="flex:1;min-width:200px">Safety net $'+fmt(e.safety,0)+'. '+(APEX_KNOWN[e.cfg.size]?'Figures confirmed from Apex docs.':'Check the drawdown and contract limit against your plan — only 50k and 150k are confirmed here.')+'</span>'
+        +'</div>'
+      +'</div>'
+    +'</div>';
+  }).join('');
+  el.innerHTML='<div class="trade-form" style="margin-bottom:0">'
+    +'<div class="form-hd"><span class="form-title">Apex Rule Compliance</span>'
+      +'<span class="gov-badge" style="color:'+(fails?'var(--red)':'var(--green)')+';border-color:'+(fails?'var(--red)':'var(--green)')+'">'
+      +(fails?fails+' breach'+(fails!==1?'es':''):accts.length+' account'+(accts.length!==1?'s':'')+' clear')+'</span></div>'
+    +'<div style="padding:11px 14px">'
+      +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">PA and Live accounts only — Evaluations have no consistency rules. Total profit $'+fmt(totalProfit,2)
+        +(toGo>0?' · $'+fmt(toGo,2)+' combined to payout eligibility':' · all eligible')+'.</div>'
+      +bodies
+    +'</div></div>';
+}
+
+(function(){
+  const o=window.renderAll;
+  window.renderAll=function(){
+    let r; try{r=o?o.apply(this,arguments):undefined;}catch(e){}
+    try{apexRender();}catch(e){}
+    try{paOrdRender();}catch(e){}
+    return r;
+  };
+})();
+
 (function init(){
   loadState();
   try{const t=localStorage.getItem('at_theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}
