@@ -7012,7 +7012,15 @@ function oreGenSwingIdeas(){
     if(rps<=0||rpt<=0)return null;
     const rr=parseFloat((rpt/rps).toFixed(2));
     if(rr<minRR){rejected.push((name||(dir+' to $'+fmt(target,2)))+' '+rr+':1');return null;}
-    const shares=Math.floor(maxLoss/rps);
+    // Sizing has to clear BOTH limits. Max loss alone produced 769 shares and
+    // $9,659 of capital on a 26c stop — inside the risk rule, far outside the
+    // ≤$1,500 allocation ceiling in the swing checklist. The tighter of the two
+    // wins, and the card says which one bound it.
+    const maxCap=parseFloat(state.settings.maxCapitalPerTrade)||1500;
+    const byRisk=Math.floor(maxLoss/rps);
+    const byCap=entry>0?Math.floor(maxCap/entry):byRisk;
+    const shares=Math.max(1,Math.min(byRisk,byCap));
+    const sizedBy=(byCap<byRisk)?'capital':'risk';
     const ob=oreFirstObstacle(o,entry,target);
     const rrFirst=ob?parseFloat((Math.abs(ob.v-entry)/rps).toFixed(2)):null;
     // How far into the move the level sits is what decides whether it matters.
@@ -7037,7 +7045,7 @@ function oreGenSwingIdeas(){
     // does not do. Showing only the big number would flatter every setup.
     const prof=oreIdeaProfit({entry,t1,t2,target,shares});
     return{dir,entry,stop,t1,t2,target,rr,shares,rps,rpt,rationale,grade:g,name:name||'',
-      obstacle:ob,rrFirst,obPct,t1AtObstacle,
+      obstacle:ob,rrFirst,obPct,t1AtObstacle,sizedBy:sizedBy,byRisk:byRisk,byCap:byCap,
       plannedRisk:parseFloat((rps*shares).toFixed(2)),
       plannedProfit:prof.full,
       profitOnce:prof.once,
@@ -7304,6 +7312,7 @@ function oreGenSwingIdeas(){
           </span>
           <span id="ore-idea-risk-${i}">$${fmt(id.plannedRisk,0)} risk</span>
           <span id="ore-idea-cap-${i}" style="color:var(--fg3)">$${fmt(id.shares*id.entry,0)} capital</span>
+          ${id.sizedBy==='capital'?`<span style="font-size:10px;color:var(--gold)" title="Held back by your capital ceiling, not by max loss — ${id.byRisk} shares would have fit the $${fmt(state.settings.maxLossPerTrade||200,0)} risk limit">capital-capped</span>`:''}
         </span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px 8px;margin-bottom:8px">
@@ -7501,8 +7510,7 @@ function oreRenderOptions(){
     setupNow.toLowerCase().includes('short')||setupNow.toLowerCase().includes('resist');
   const dir=bear?'SHORT':'LONG';
   const entry=o.price;
-  let target=resistance||null;
-  if(!target&&atr)target=parseFloat((bear?(entry-atr*2):(entry+atr*2)).toFixed(2));
+  const target=oreOptTarget(o,bear,entry,support,resistance);
   const strike=(entry&&target)?parseFloat(((entry+target)/2).toFixed(2)):null;
   const em=d=>atr?parseFloat((atr*Math.sqrt(d)).toFixed(2)):null;
   const em21=em(21);
@@ -7531,38 +7539,148 @@ function oreRenderOptions(){
       +'</div>'
       +'<div style="margin-top:11px;display:flex;gap:7px;flex-wrap:wrap">'
         +'<button onclick="orePromoteToOptions()" style="padding:6px 13px;border-radius:6px;border:1px solid rgba(167,139,250,.4);background:rgba(167,139,250,.12);color:#A78BFA;font-size:11px;font-weight:700;cursor:pointer">▶ Open Options Planner</button>'
-        +'<button onclick="oreSaveDiscovery(\'watch\')" style="padding:6px 13px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--fg2);font-size:11px;cursor:pointer">⏳ Watchlist instead</button>'
+        +'<button onclick="oreSaveOptionToWatchlist()" style="padding:6px 13px;border-radius:6px;border:1px solid rgba(251,185,36,.4);background:var(--gold-bg);color:var(--gold);font-size:11px;font-weight:700;cursor:pointer">⏳ Watch this option</button>'
       +'</div>'
       +'<div style="margin-top:9px;font-size:11px;color:var(--fg3);line-height:1.55">Check the strike against the actual chain before committing — the halfway strike is a starting neighbourhood, not a quote. Open interest and spread width decide whether it is tradeable.</div>'
     +'</div>';
 }
 
+// Where the trade is going — which is never the level it has to break to get
+// started. Resistance is the TRIGGER for a long; using it as the target gave
+// the trade nowhere to go, and on a short it put the target above the entry,
+// on the wrong side of the trade entirely. The target must be beyond the
+// trigger and in the direction of the thesis, or it is not a target.
+function oreOptTarget(o,bear,entry,support,resistance){
+  const f=o.fibs||{}, atr=o.atr14||null;
+  const cands=bear
+    ? [f.extDn127,f.extDn162,support,(atr?entry-atr*2:null)]
+    : [f.extUp127,f.extUp162,resistance,(atr?entry+atr*2:null)];
+  for(let i=0;i<cands.length;i++){
+    const v=parseFloat(cands[i]);
+    if(!isFinite(v))continue;
+    if(bear?(v<entry*0.995):(v>entry*1.005))return parseFloat(v.toFixed(2));
+  }
+  return null;
+}
+
+// Map the chart read onto the options form's own regime vocabulary.
+function oreOptRegime(o,cond){
+  const al=(o.emaAlignment||'').toLowerCase();
+  const c=(cond||'').toLowerCase();
+  if(o.daysToEarnings!=null&&o.daysToEarnings<=14)return'EARNINGS CATALYST';
+  if(c.indexOf('pattern')>=0)return'BREAKOUT';
+  if(al.indexOf('bullish')>=0)return'TREND UP';
+  if(al.indexOf('bearish')>=0)return'TREND DOWN';
+  if(al.indexOf('compressed')>=0)return'RANGE';
+  if(c.indexOf('ranging')>=0||c.indexOf('consolidat')>=0)return'RANGE';
+  return'CHOPPY';
+}
+
+// Enough time for the move to actually happen: distance divided by average
+// daily range, doubled because nothing moves in a straight line, then snapped
+// to a Friday. Pulled back inside earnings rather than held through them.
+function oreOptExpiry(o,moveNeeded){
+  const atr=o.atr14||0;
+  let days=(atr>0&&moveNeeded)?Math.ceil(Math.abs(moveNeeded)/atr)*2:21;
+  days=Math.max(14,Math.min(70,days));
+  if(o.daysToEarnings!=null&&o.daysToEarnings>3&&o.daysToEarnings<days)days=o.daysToEarnings-2;
+  const d=new Date();
+  d.setDate(d.getDate()+days);
+  d.setDate(d.getDate()+((5-d.getDay()+7)%7));   // next Friday
+  return d.toISOString().slice(0,10);
+}
+
+// The same plan the Options panel shows, saved to the watchlist so it sits
+// alongside stock setups and gets the same distance-to-trigger treatment.
+function oreSaveOptionToWatchlist(){
+  const o=state.ore;
+  if(!o){toast('Run an analysis first.','warn');return;}
+  const val=id=>{const e=document.getElementById(id);return e?e.value:'';};
+  const atr=o.atr14||null, fibs=o.fibs||{};
+  const support=parseFloat(val('ore-support'))||null;
+  const resistance=parseFloat(val('ore-resistance'))||null;
+  const cond=val('ore-condition'), setup=val('ore-setup');
+  const bear=(o.emaAlignment||'').toLowerCase().indexOf('bear')>=0
+          || cond.toLowerCase().indexOf('trending down')>=0
+          || setup.toLowerCase().indexOf('short')>=0
+          || setup.toLowerCase().indexOf('resist')>=0;
+  const entry=o.price;
+  const target=oreOptTarget(o,bear,entry,support,resistance);
+  const strike=(entry&&target)?parseFloat(((entry+target)/2).toFixed(2)):null;
+  const expiry=oreOptExpiry(o,target?(target-entry):null);
+  // What the underlying has to do before this is live. That becomes the
+  // watchlist's trigger level, so proximity works the same as for a stock.
+  const trigger=bear?(support||entry):(resistance||entry);
+  const type=bear?'PUT':'CALL';
+  oreSaveDiscovery('watch',{
+    routeDecision:'options',
+    direction:bear?'SHORT':'LONG',
+    optionPlan:{type:type,strike:strike,expiry:expiry,target:target,underlyingNow:entry,
+                daysToEarnings:(o.daysToEarnings!=null?o.daysToEarnings:null)},
+    stockScenario:{entry:trigger,stop:null,target:target,direction:bear?'SHORT':'LONG'},
+  });
+}
+
 function orePromoteToOptions(){
   const o=state.ore;
   if(!o){toast('Run an analysis first.','warn');return;}
+  const g=id=>document.getElementById(id);
+  const val=id=>{const e=g(id);return e?e.value:'';};
   const atr=o.atr14||null;
-  const resistance=parseFloat((document.getElementById('ore-resistance')||{}).value)||null;
-  const bear=(o.emaAlignment||'').toLowerCase().includes('bear');
+  const fibs=o.fibs||{};
+  const support=parseFloat(val('ore-support'))||null;
+  const resistance=parseFloat(val('ore-resistance'))||null;
+  const cond=val('ore-condition'), setup=val('ore-setup');
+  const bear=(o.emaAlignment||'').toLowerCase().indexOf('bear')>=0
+          || cond.toLowerCase().indexOf('trending down')>=0
+          || setup.toLowerCase().indexOf('short')>=0
+          || setup.toLowerCase().indexOf('resist')>=0;
   const entry=o.price;
-  let target=resistance||(atr?(bear?entry-atr*2:entry+atr*2):null);
-  const strike=(entry&&target)?((entry+target)/2).toFixed(2):null;
+  const target=oreOptTarget(o,bear,entry,support,resistance);
+  // Invalidation from support, buffered by a quarter ATR.
+  let invalid=support?parseFloat((support-(atr?atr*0.25:support*0.01)).toFixed(2)):null;
+  if(bear&&resistance)invalid=parseFloat((resistance+(atr?atr*0.25:resistance*0.01)).toFixed(2));
+  const strike=(entry&&target)?parseFloat(((entry+target)/2).toFixed(2)):null;
+  // 20-day swing range — the "last 20 candles" the strike logic leans on.
+  const swing=(fibs.swingH&&fibs.swingL)?parseFloat((fibs.swingH-fibs.swingL).toFixed(2)):(atr?parseFloat((atr*10).toFixed(2)):null);
+  // Which EMA is closest to price is the one actually guiding the move.
+  const emaPairs=[[9,oreEma(o,9)],[20,oreEma(o,20)],[50,oreEma(o,50)],[200,oreEma(o,200)]]
+    .filter(p=>p[1]&&isFinite(p[1]));
+  emaPairs.sort((a,b)=>Math.abs(a[1]-entry)-Math.abs(b[1]-entry));
+  const emaRef=emaPairs.length?emaPairs[0][0]:null;
+  const expiry=oreOptExpiry(o,target?(target-entry):null);
+
+  const bits=[];
+  bits.push((bear?'Bearish':'Bullish')+' read: EMA stack '+(o.emaAlignment||'mixed')+(emaRef?', price tracking the '+emaRef+' EMA at $'+fmt(emaPairs[0][1],2):'')+'.');
+  if(support)bits.push('Support $'+fmt(support,2)+(fibs.fib618?' (61.8% fib $'+fmt(fibs.fib618,2)+')':'')+'.');
+  if(resistance)bits.push('Resistance $'+fmt(resistance,2)+'.');
+  if(swing)bits.push('20-day range $'+fmt(swing,2)+(atr?', ATR $'+fmt(atr,2):'')+'.');
+  if(strike)bits.push('Halfway strike $'+fmt(strike,2)+' — midway between $'+fmt(entry,2)+' and target $'+fmt(target,2)+'.');
+  if(o.daysToEarnings!=null)bits.push('Earnings in '+o.daysToEarnings+' days'+(o.daysToEarnings<=30?' — expiry set to land before the print.':'.'));
+
   showScreen('options');
   setTimeout(()=>{
-    // Field names differ across the forms, so try the plausible ones and let
-    // the rest fall through rather than throwing.
-    const setFirst=(ids,v)=>{
-      if(v==null||v==='')return;
-      for(let i=0;i<ids.length;i++){const el=document.getElementById(ids[i]);if(el){el.value=v;return;}}
-    };
-    setFirst(['o-ticker','o-symbol'],o.ticker);
-    setFirst(['o-date'],new Date().toISOString().slice(0,10));
-    setFirst(['o-stock-price','o-underlying','o-price','o-spot'],entry);
-    setFirst(['o-strike'],strike);
+    const set=(id,v)=>{const e=g(id);if(e&&v!=null&&v!=='')e.value=v;};
+    const setFirst=(ids,v)=>{if(v==null||v==='')return;for(let i=0;i<ids.length;i++){const e=g(ids[i]);if(e){e.value=v;return;}}};
+    setFirst(['o-ticker','o-symbol','o-underlying-ticker'],o.ticker);
+    set('o-date',new Date().toISOString().slice(0,10));
+    set('o-regime',oreOptRegime(o,cond));
+    if(setup)set('o-setup',setup);
+    set('o-price-now',entry);
+    set('o-invalidation',invalid);
+    set('o-price-target',target||'');
+    set('o-avg-day',emaRef);
+    set('o-avg-move',swing);
+    set('o-strike-plan',strike);
+    set('o-strike',strike);
+    set('o-expiry',expiry);
+    set('o-t1',(entry&&target)?parseFloat((entry+(target-entry)/2).toFixed(2)):'');
+    set('o-thesis',bits.join(' '));
     if(typeof setOptType==='function')setOptType(bear?'PUT':'CALL');
     if(typeof setODir==='function')setODir(bear?'BEARISH':'BULLISH');
     if(typeof recalcO==='function')recalcO();
-    toast('Options planner prefilled — confirm the strike and expiry against the live chain.','ok',7000);
-  },110);
+    toast('Options planner filled from the chart — enter the real premium from the chain, then check delta and spread.','ok',9000);
+  },120);
 }
 
 // ── Price alerts ─────────────────────────────────────────────────────
@@ -7763,6 +7881,27 @@ function oreAlertFromIdea(idx){
     (id.dir==='LONG'?'Long':'Short')+' entry'+(id.name?' — '+id.name:'')+(id._alert?' ('+id._source+')':''));
 }
 
+function oreCollapseStock(on){
+  const si=document.getElementById('ore-swing-ideas');
+  const box=si&&si.closest?si.closest('.trade-form'):null;
+  const paths=document.getElementById('ore-setup-compare');
+  [box,paths].forEach(x=>{if(x)x.style.display=on?'none':'';});
+  let note=document.getElementById('ore-stock-rolled');
+  if(on){
+    if(!note&&box&&box.parentNode){
+      note=document.createElement('div');
+      note.id='ore-stock-rolled';
+      note.style.cssText='margin:0 0 20px;padding:9px 14px;border:1px dashed var(--border2);border-radius:9px;font-size:11px;color:var(--fg3);cursor:pointer';
+      note.onclick=function(){oreCollapseStock(false);};
+      note.innerHTML='▸ Stock entry paths and swing ideas rolled up — you chose the options route. <span style="color:var(--blue)">Show them anyway</span>';
+      box.parentNode.insertBefore(note,box);
+    }
+    if(note)note.style.display='';
+  } else if(note){
+    note.style.display='none';
+  }
+}
+
 // ─ Set selected route
 function setOreRoute(route){
   const map={stock:'orb-stock',options:'orb-options',both:'orb-both',wait:'orb-wait',reject:'orb-reject'};
@@ -7780,6 +7919,9 @@ function setOreRoute(route){
   const op=oreOptionsEl();
   if(op)op.hidden=!(route==='options'||route==='both');
   if(route==='options'||route==='both')oreRenderOptions();
+  // On the options route the stock entry paths and swing ideas are noise.
+  // Rolled up rather than removed — one click brings them back.
+  oreCollapseStock(route==='options');
   if(route==='stock'||route==='both')oreUpdateScenario();
   // Every route now shows something. Silence used to read as a broken button.
   if(route==='wait'||route==='reject'){
@@ -8220,7 +8362,7 @@ function orePromoteToStock(){
 // Previously this had no error handling and no visible result beyond a brief
 // toast, with the watchlist far below the fold — so a save that worked and a
 // save that threw looked identical from the user's seat.
-function oreSaveDiscovery(status){
+function oreSaveDiscovery(status,extra){
   const o=state.ore;
   if(!o){toast('No analysis loaded — run a ticker first, then save the decision.','warn',7000);return;}
   try{
@@ -8250,6 +8392,7 @@ function oreSaveDiscovery(status){
       stockScenario:o.stockScenario||null,
       note:note,status:status,
     };
+    if(extra&&typeof extra==='object')Object.assign(d,extra);
     state.discoveries.unshift(d);
     if(state.discoveries.length>100)state.discoveries=state.discoveries.slice(0,100);
     saveState();
@@ -8793,6 +8936,99 @@ function ctaStockCompare(d){
   </div>`;
 }
 
+// ── Opportunities on the watchlist board ───────────────────────────────
+// The board only ever showed class-session decisions, so everything saved from
+// the Opportunity Review Engine lived at the bottom of another screen. Same
+// store, shown where you look for it — and ordered by what is closest to
+// triggering, because that is the only ordering that changes what you do next.
+function wlEntryOf(d){
+  const sc=d.stockScenario||{};
+  const e=parseFloat(sc.entry);
+  if(isFinite(e))return e;
+  const r=parseFloat(d.resistance);
+  return isFinite(r)?r:null;
+}
+function wlProx(d){
+  const entry=wlEntryOf(d);
+  const px=(window._wlPrices||{})[(d.ticker||'').toUpperCase()];
+  if(!entry||!isFinite(px))return null;
+  const pct=((px-entry)/entry)*100;
+  return{entry:entry,px:px,pct:pct,abs:Math.abs(pct)};
+}
+
+async function wlRefreshPrices(){
+  const btn=document.getElementById('wl-refresh');
+  if(btn){btn.disabled=true;btn.textContent='Checking…';}
+  if(!window._wlPrices)window._wlPrices={};
+  const seen=[];
+  const list=(state.discoveries||[]).filter(d=>d.status==='watch');
+  for(let i=0;i<list.length;i++){
+    const t=(list[i].ticker||'').toUpperCase();
+    if(!t||seen.indexOf(t)>=0)continue;
+    seen.push(t);
+    try{
+      const q=await avGet({function:'GLOBAL_QUOTE',symbol:t});
+      const p=parseFloat(q&&q['Global Quote']&&q['Global Quote']['05. price']);
+      if(isFinite(p))window._wlPrices[t]=p;
+    }catch(e){}
+    await avPace(900);          // free when the quote came from cache
+  }
+  window._wlPricesAt=new Date().toLocaleTimeString();
+  if(btn){btn.disabled=false;btn.textContent='↻ Check prices';}
+  watchlistRender();
+}
+
+function wlOppsHtml(){
+  const all=(state.discoveries||[]);
+  const watching=all.filter(d=>d.status==='watch');
+  const priced=watching.map(d=>({d:d,p:wlProx(d)})).filter(x=>x.p);
+  priced.sort((a,b)=>a.p.abs-b.p.abs);
+  const stamp=window._wlPricesAt?('last checked '+window._wlPricesAt):'prices not checked yet';
+  let html='<div style="margin-bottom:22px">'
+    +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:9px;padding-bottom:6px;border-bottom:1px solid var(--border)">'
+      +'<span style="font-weight:700;font-size:13px;color:var(--blue)">🎯 Opportunities — Watching ('+watching.length+')</span>'
+      +'<span style="font-size:11px;color:var(--fg3)">'+stamp+'</span>'
+      +'<button id="wl-refresh" onclick="wlRefreshPrices()" style="margin-left:auto;padding:4px 11px;border-radius:6px;border:1px solid var(--border2);background:transparent;color:var(--fg2);font-size:11px;cursor:pointer">↻ Check prices</button>'
+    +'</div>';
+  if(!watching.length){
+    return html+'<div style="font-size:12px;color:var(--fg3);padding:10px 0">Nothing on the watchlist. Save an opportunity from the Opportunities screen and it appears here.</div></div>';
+  }
+  if(priced.length){
+    html+='<div style="font-size:11px;color:var(--fg3);margin-bottom:7px">Closest to triggering first · ● at entry · ○ within 3%</div>';
+    html+=priced.map(x=>{
+      const d=x.d,p=x.p;
+      const at=p.abs<=1, near=p.abs<=3;
+      const col=at?'var(--gold)':near?'var(--blue)':'var(--fg3)';
+      const tag=at?'● AT ENTRY':near?'○ CLOSE':(p.pct>0?'above':'below');
+      return '<div style="display:flex;align-items:center;gap:11px;padding:7px 10px;margin-bottom:5px;border:1px solid '+(at?'rgba(245,166,35,.45)':'var(--border)')+';border-radius:8px;background:'+(at?'var(--gold-bg)':'var(--s1)')+';flex-wrap:wrap">'
+        +'<span style="font-weight:800;font-size:14px;color:var(--blue);min-width:56px">'+(d.ticker||'')+'</span>'
+        +'<span style="font-size:10px;font-weight:700;color:'+col+';min-width:74px">'+tag+'</span>'
+        +'<span style="font-family:var(--mono);font-size:11px;color:var(--fg2)">$'+fmt(p.px,2)+' vs entry $'+fmt(p.entry,2)+'</span>'
+        +'<span style="font-family:var(--mono);font-size:11px;font-weight:700;color:'+col+'">'+(p.pct>=0?'+':'')+p.pct.toFixed(1)+'%</span>'
+        +(d.optionPlan?'<span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:9px;border:1px solid #A78BFA;color:#A78BFA">'+d.optionPlan.type+' $'+fmt(d.optionPlan.strike,2)+(d.optionPlan.expiry?' · '+d.optionPlan.expiry.slice(5):'')+'</span>':'')
+        +(d.setup?'<span style="font-size:11px;color:var(--fg3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+d.setup+'</span>':'')
+        +'<span style="margin-left:auto;display:flex;gap:5px">'
+          +'<button onclick="oreAnalyzeDiscovery('+d.id+')" style="padding:3px 9px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--fg2);font-size:10px;cursor:pointer">↻ Analyze</button>'
+          +(wlEntryOf(d)?'<button onclick="atAlertAdd(\''+(d.ticker||'')+'\','+wlEntryOf(d)+',\''+((p.pct<0)?'up':'down')+'\',\'Watchlist entry\')" style="padding:3px 9px;border-radius:5px;border:1px solid rgba(251,185,36,.35);background:var(--gold-bg);color:var(--gold);font-size:10px;cursor:pointer">🔔</button>':'')
+        +'</span>'
+      +'</div>';
+    }).join('');
+  }
+  const unpriced=watching.filter(d=>!wlProx(d));
+  if(unpriced.length){
+    html+='<div style="font-size:11px;color:var(--fg3);margin:9px 0 5px">'+unpriced.length+' without a price check'+(priced.length?'':' — press Check prices')+(unpriced.some(d=>!wlEntryOf(d))?' or an entry level':'')+'</div>';
+    html+='<div style="display:flex;gap:6px;flex-wrap:wrap">'+unpriced.map(d=>
+      '<span onclick="oreAnalyzeDiscovery('+d.id+')" title="Analyze '+(d.ticker||'')+'" style="cursor:pointer;font-size:11px;font-weight:700;color:var(--fg2);border:1px solid var(--border);border-radius:14px;padding:3px 10px">'+(d.ticker||'')+'</span>').join('')+'</div>';
+  }
+  const other=all.filter(d=>d.status!=='watch');
+  if(other.length){
+    html+='<div style="font-size:11px;color:var(--fg3);margin:12px 0 5px">Skipped or rejected ('+other.length+')</div>'
+      +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+other.map(d=>
+        '<span style="font-size:11px;color:var(--fg3);border:1px solid var(--border);border-radius:14px;padding:3px 10px;opacity:.7">'+(d.ticker||'')+' · '+d.status+'</span>').join('')+'</div>';
+  }
+  return html+'</div>';
+}
+
 // ── Watchlist Render (upgraded to use classSessions) ─────────
 function watchlistRender(){
   const el=document.getElementById('watchlist-content');if(!el)return;
@@ -8832,9 +9068,11 @@ function watchlistRender(){
     }).join('')}</div>`;
   }
   const hasAny=Object.values(groups).some(g=>g.length);
-  el.innerHTML=hasAny
-    ?renderGroup('🎯 Trading',groups.trade,'var(--green)')+renderGroup('⏳ Watching',groups.watch,'var(--gold)')+renderGroup('✕ Passed',groups.pass,'var(--fg3)')
-    :'<div style="color:var(--fg3);text-align:center;padding:48px 0;font-size:14px">No decisions yet.<br><span style="font-size:12px">Open Class Trade Analysis and use Trade / Watch / Pass buttons.</span></div>';
+  el.innerHTML=wlOppsHtml()
+    +(hasAny
+      ?'<div style="font-weight:700;font-size:13px;color:var(--fg2);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border)">📚 From Class Sessions</div>'
+        +renderGroup('🎯 Trading',groups.trade,'var(--green)')+renderGroup('⏳ Watching',groups.watch,'var(--gold)')+renderGroup('✕ Passed',groups.pass,'var(--fg3)')
+      :'<div style="color:var(--fg3);padding:14px 0;font-size:12px">No class-session decisions yet — those appear here once you use Trade / Watch / Pass in Class Trade Analysis.</div>');
 }
 // ─────────────────────────────────────────────────────────────
 
