@@ -10788,18 +10788,73 @@ function woFetchChain(sym,cb){
 // one — a fabricated strike is worse than a blank.
 function woPick(){ for(let i=0;i<arguments.length;i++){const v=arguments[i];if(v!=null&&v!==''&&isFinite(parseFloat(v)))return parseFloat(v);} return null; }
 
+// A stock at or near its high has no overhead resistance to aim at, so a
+// resistance-derived target has nothing to measure from and comes back too short.
+// There, the swing projection is the target. Extensions are measured from the
+// swing low through the swing high: extUp162 = swingH + (swingH - swingL) * 0.618.
+const WO_EXT_LABEL={127:'1.272',162:'1.618',200:'2.0'};
+function woExtLevel(){ const v=parseInt(state.settings.woFibExt,10); return (v===127||v===162||v===200)?v:162; }
+function woSetExt(v){ state.settings.woFibExt=parseInt(v,10)||162; saveState(); woRender(); }
+function woHighPct(){ const v=parseFloat(state.settings.woHighPct); return isFinite(v)&&v>0?v:3; }
+
+// "Near the high" is judged against the best high actually on record for the name
+// — 52-week where stored, otherwise the measured swing high. Trading above it
+// counts too: that is the blue-sky case this rule exists for.
+function woHighRef(d){
+  const f=d.fibs||{};
+  return woPick(d.w52H,d.hi,f.swingH,d.swingH);
+}
+function woNearHigh(d){
+  const hi=woHighRef(d), px=woPick(d.price,(d.stockScenario||{}).price);
+  if(hi==null||px==null)return false;
+  return px>=hi*(1-woHighPct()/100);
+}
+function woFibTarget(d,dir){
+  const f=d.fibs; if(!f)return null;
+  const lvl=woExtLevel();
+  const v=woPick(f[(dir==='SHORT'?'extDn':'extUp')+lvl]);
+  if(v==null)return null;
+  return{value:v,lvl:lvl,label:'fib '+(WO_EXT_LABEL[lvl]||lvl)+' extension',
+    swingL:woPick(f.swingL,d.swingL),swingH:woPick(f.swingH,d.swingH)};
+}
+
 function woPlan(d){
   const sc=d.stockScenario||d.scenario||{};
   let entry=null;
   try{ if(typeof wlEntryOf==='function')entry=woPick(wlEntryOf(d)); }catch(e){}
   if(entry==null)entry=woPick(sc.entry,sc.trigger,d.entry,d.trigger);
   const dir=String(sc.direction||d.direction||'LONG').toUpperCase().indexOf('SHORT')>=0?'SHORT':'LONG';
+  let target=woPick(sc.target,sc.fullTarget,sc.t2,d.target,d.fullTarget);
+  let targetSrc=target!=null?'set on the opportunity':null;
+  const nearHigh=woNearHigh(d);
+  const fib=woFibTarget(d,dir);
+  // An existing target is never silently replaced — it may be one you set yourself.
+  // The fib projection is offered alongside instead, with one click to adopt it.
+  if(target==null&&nearHigh&&fib){ target=fib.value; targetSrc=fib.label; }
+  if(target==null){ const r=woPick(sc.resistance,d.resistance); if(r!=null){target=r;targetSrc='resistance';} }
   return{entry:entry,
     stop:woPick(sc.stop,sc.invalidation,d.stop,d.invalidation),
-    target:woPick(sc.target,sc.fullTarget,sc.t2,d.target,d.fullTarget),
+    target:target,targetSrc:targetSrc,
+    nearHigh:nearHigh,fib:fib,highRef:woHighRef(d),
     t1:woPick(sc.t1,d.t1),
     dir:dir,
     price:woPick(d.price,sc.price)};
+}
+
+// Adopting the fib target writes it to the opportunity so the stock plan and the
+// option routes read the same number — they must never disagree.
+function woUseFib(id){
+  const d=(state.discoveries||[]).filter(x=>String(x.id)===String(id))[0];
+  if(!d)return;
+  const p=woPlan(d);
+  if(!p.fib)return;
+  d.stockScenario=d.stockScenario||{};
+  d.stockScenario.target=p.fib.value;
+  d.stockScenario.targetSrc=p.fib.label+' ('+fmt(p.fib.swingL,2)+' → '+fmt(p.fib.swingH,2)+')';
+  d.target=p.fib.value;
+  saveState();
+  try{renderAll();}catch(e){}
+  woRender();
 }
 
 function woNearest(rows,exp,type,want){
@@ -10829,6 +10884,21 @@ function woRoute(rec,exp,plan){
   const cost=parseFloat((prem*100).toFixed(2));
   const intrinsic=call?Math.max(0,plan.target-c.k):Math.max(0,c.k-plan.target);
   const atExpiry=parseFloat((intrinsic*100-cost).toFixed(2));
+  // Breakeven at expiry: strike plus premium paid (minus, for puts). When the
+  // target sits the wrong side of this, the trade cannot pay off on a hold to
+  // expiration even if the direction is exactly right — the premium is larger than
+  // the move being forecast. That is the most useful line here, so it is stated as
+  // a price and a shortfall rather than left to be inferred from a negative number.
+  const be=parseFloat((call?(c.k+prem):(c.k-prem)).toFixed(2));
+  const beShort=parseFloat((call?(be-plan.target):(plan.target-be)).toFixed(2));
+  const needsFast=beShort>0;
+  // Bracketed orders are placed in option prices, not stock prices, so the three
+  // numbers actually needed are: what you pay, what you sell at, where the stop
+  // sits — all as premium. Two sell prices, because the same stock target is worth
+  // very different amounts early (time value intact) and at expiry (intrinsic only).
+  const sellSoon=(c.d!=null&&plan.entry!=null)?parseFloat((prem+c.d*(plan.target-plan.entry)).toFixed(2)):null;
+  const sellExpiry=parseFloat(intrinsic.toFixed(2));
+  const stopPrem=(c.d!=null&&plan.stop!=null&&plan.entry!=null)?parseFloat(Math.max(0,prem+c.d*(plan.stop-plan.entry)).toFixed(2)):null;
   let ifSoon=null;
   if(c.d!=null&&plan.entry!=null)ifSoon=parseFloat((c.d*(plan.target-plan.entry)*100).toFixed(2));
   let lossAtStop=null,valAtStop=null;
@@ -10841,6 +10911,8 @@ function woRoute(rec,exp,plan){
   const cap=parseFloat(state.settings.maxCapitalPerTrade)||1500;
   return{exp:exp,days:woDaysOut(exp),strike:c.k,type:type,half:half,
     bid:c.b,ask:c.a,mark:c.m,delta:c.d,iv:c.iv,theta:c.th,oi:c.oi,vol:c.v,
+    be:be,beShort:beShort,needsFast:needsFast,prem:prem,
+    sellSoon:sellSoon,sellExpiry:sellExpiry,stopPrem:stopPrem,
     cost:cost,atExpiry:atExpiry,ifSoon:ifSoon,lossAtStop:lossAtStop,rr:rr,spread:spread,
     overCap:cost>cap,
     thin:(c.oi!=null&&c.oi<200)||(spread!=null&&spread>15),
@@ -10848,6 +10920,49 @@ function woRoute(rec,exp,plan){
 }
 
 function woRoutes(rec,plan){ return (rec.exps||[]).map(e=>woRoute(rec,e,plan)); }
+
+// The halfway strike is one point on a curve, not the answer. When the target is a
+// small move, every strike at or beyond halfway can be underwater at expiry while
+// nearer-the-money strikes pay — showing only the halfway pick hides the trades
+// that work. This walks the strikes from around entry through the halfway strike
+// so the crossover is visible.
+function woLadder(rec,exp,plan){
+  if(plan.entry==null||plan.target==null)return[];
+  const call=plan.dir==='LONG', type=call?'call':'put';
+  const half=(plan.entry+plan.target)/2;
+  const all=rec.rows.filter(r=>r.e===exp&&r.t===type&&r.k!=null).sort((a,b)=>a.k-b.k);
+  if(!all.length)return[];
+  const lo=Math.min(plan.entry,half), hi=Math.max(plan.entry,half);
+  let idx=[];
+  all.forEach((r,i)=>{ if(r.k>=lo-0.001&&r.k<=hi+0.001)idx.push(i); });
+  if(!idx.length){
+    let bi=0,bd=Math.abs(all[0].k-half);
+    all.forEach((r,i)=>{const d=Math.abs(r.k-half); if(d<bd){bd=d;bi=i;}});
+    idx=[bi];
+  }
+  // Reach further toward the money, where the profitable strikes sit, than away.
+  const first=Math.max(0,idx[0]-(call?2:1));
+  const last=Math.min(all.length-1,idx[idx.length-1]+(call?1:2));
+  const halfStrike=woNearest(rec.rows,exp,type,half);
+  const out=[];
+  for(let i=first;i<=last&&out.length<6;i++){
+    const c=all[i];
+    const p=woPick(c.a,c.m,c.l);
+    if(p==null||p<=0)continue;
+    const cost=parseFloat((p*100).toFixed(2));
+    const intr=call?Math.max(0,plan.target-c.k):Math.max(0,c.k-plan.target);
+    const atE=parseFloat((intr*100-cost).toFixed(2));
+    const bE=parseFloat((call?(c.k+p):(c.k-p)).toFixed(2));
+    const cap=parseFloat(state.settings.maxCapitalPerTrade)||1500;
+    out.push({k:c.k,prem:p,cost:cost,atExpiry:atE,be:bE,oi:c.oi,delta:c.d,
+      spread:(c.a!=null&&c.b!=null&&c.m)?parseFloat(((c.a-c.b)/c.m*100).toFixed(1)):null,
+      isHalf:(halfStrike&&c.k===halfStrike.k),overCap:cost>cap});
+  }
+  let best=null;
+  out.forEach(r=>{ if(!r.overCap&&(best==null||r.atExpiry>best))best=r.atExpiry; });
+  out.forEach(r=>{ r.best=(best!=null&&r.atExpiry===best&&r.atExpiry>0); });
+  return out;
+}
 
 // ══ OPTION ROUTES — PANEL ═════════════════════════════════════
 // Chains load per symbol on demand, one call each, cached 12 hours. Loading every
@@ -10885,7 +11000,25 @@ function woLoad(sym){
 function woLoadTop(n){ woOpps().slice(0,n).forEach(o=>woLoad(o.d.ticker)); }
 function woToggle(i){ const el=document.getElementById('wo-d-'+i); if(el)el.hidden=!el.hidden; }
 
-function woRouteRow(r){
+function woLadderHtml(rows){
+  if(!rows||rows.length<2)return '';
+  return '<div style="margin-top:6px;padding:6px 8px;background:var(--s2);border-radius:6px">'
+    +'<div style="font-size:10px;color:var(--fg3);margin-bottom:4px">Strike ladder at this expiry — what each would do at your target</div>'
+    +rows.map(x=>'<div style="display:flex;gap:9px;font-size:10px;font-family:var(--mono);padding:2px 0;'
+        +(x.best?'color:var(--green);font-weight:700':(x.isHalf?'color:var(--fg2)':'color:var(--fg3)'))+'">'
+      +'<span style="min-width:52px">$'+fmt(x.k,2)+'</span>'
+      +'<span style="min-width:62px">cost $'+fmt(x.cost,0)+'</span>'
+      +'<span style="min-width:66px;color:'+(x.atExpiry>0?'var(--green)':'var(--red)')+'">'+(x.atExpiry>0?'+':'')+fmt(x.atExpiry,0)+'</span>'
+      +'<span style="min-width:62px">be '+fmt(x.be,2)+'</span>'
+      +'<span style="min-width:46px">OI '+fmt(x.oi||0,0)+'</span>'
+      +(x.isHalf?'<span>← halfway</span>':'')
+      +(x.best?'<span>← best at target</span>':'')
+      +(x.overCap?'<span style="color:var(--gold)">over ceiling</span>':'')
+    +'</div>').join('')
+    +'</div>';
+}
+
+function woRouteRow(r,rec,plan){
   if(r.err)return '<div style="font-size:11px;color:var(--fg3);padding:4px 0;border-top:1px solid var(--border)">'
     +woExpLabel(r)+' — '+r.err+'</div>';
   const good=r.rr!=null&&r.rr>=2;
@@ -10894,10 +11027,19 @@ function woRouteRow(r){
       +'<span style="font-weight:700;color:var(--blue);min-width:150px">'+woExpLabel(r)+'</span>'
       +'<span style="font-family:var(--mono)">$'+fmt(r.strike,2)+' '+r.type+'</span>'
       +'<span style="color:var(--fg3)">cost</span><span style="font-family:var(--mono)">$'+fmt(r.cost,2)+'</span>'
-      +'<span style="color:var(--fg3)">at target</span><span style="font-family:var(--mono);color:'+(r.atExpiry>0?'var(--green)':'var(--red)')+'">'+(r.atExpiry>0?'+':'')+fmt(r.atExpiry,2)+'</span>'
+      +'<span style="color:var(--fg3)">at target by expiry</span><span style="font-family:var(--mono);color:'+(r.atExpiry>0?'var(--green)':'var(--red)')+'">'+(r.atExpiry>0?'+':'')+fmt(r.atExpiry,2)+'</span>'
+      +'<span style="color:var(--fg3)">breakeven</span><span style="font-family:var(--mono);color:'+(r.needsFast?'var(--red)':'var(--fg2)')+'">$'+fmt(r.be,2)+'</span>'
       +(r.lossAtStop!=null?'<span style="color:var(--fg3)">at stop</span><span style="font-family:var(--mono);color:var(--red)">-'+fmt(r.lossAtStop,2)+'</span>':'')
       +(r.rr!=null?'<span style="color:var(--fg3)">R:R</span><span style="font-family:var(--mono);font-weight:700;color:'+(good?'var(--green)':'var(--gold)')+'">'+fmt(r.rr,2)+':1</span>':'')
     +'</div>'
+    +((r.prem!=null)?'<div style="font-size:10px;color:var(--fg2);margin-top:3px;font-family:var(--mono)">'
+      +'bracket: buy '+fmt(r.prem,2)
+      +(r.sellSoon!=null?' · sell '+fmt(r.sellSoon,2)+' if it moves soon':'')
+      +' · '+fmt(r.sellExpiry,2)+' if held to expiry'
+      +(r.stopPrem!=null?' · stop '+fmt(r.stopPrem,2):'')
+      +'</div>':'')
+    +(r.needsFast?'<div style="font-size:10px;color:var(--red);margin-top:3px;line-height:1.5">'
+      +'Your target is $'+fmt(r.beShort,2)+' short of breakeven. Held to expiry this loses even if the target is hit exactly — the premium is bigger than the move you are forecasting. It only pays if the move comes fast, while time value survives.</div>':'')
     +'<div style="font-size:10px;color:var(--fg3);margin-top:3px;line-height:1.5">'
       +'bid '+fmt(r.bid,2)+' / ask '+fmt(r.ask,2)
       +(r.spread!=null?' · spread '+fmt(r.spread,1)+'%':'')
@@ -10907,7 +11049,9 @@ function woRouteRow(r){
       +(r.ifSoon!=null?' · if it gets there soon, roughly '+(r.ifSoon>0?'+':'')+'$'+fmt(r.ifSoon,2)+' (estimate, ignores decay)':'')
       +(r.thin?' <span style="color:var(--gold)">· thin — wide spread or low open interest</span>':'')
       +(r.overCap?' <span style="color:var(--gold)">· over your per-trade capital ceiling</span>':'')
-    +'</div></div>';
+    +'</div>'
+    +((rec&&plan)?woLadderHtml(woLadder(rec,r.exp,plan)):'')
+    +'</div>';
 }
 function woExpLabel(r){
   return r.exp+(r.days!=null?(' · '+r.days+'d'):'')+(r.monthly?' monthly':'');
@@ -10949,9 +11093,19 @@ function woRender(){
         +'halfway strike '+fmt(p.half!=null?p.half:((p.entry+p.target)/2),2)
         +' = (entry '+fmt(p.entry,2)+' + target '+fmt(p.target,2)+') / 2'
         +(rec.asOf?(' · chain as of '+rec.asOf+' close'):'')+'</div>'
-        +routes.map(woRouteRow).join('')
+        +routes.map(x=>woRouteRow(x,rec,p)).join('')
         +'<div style="margin-top:8px"><button class="btn" onclick="woLoadFresh(\''+sym+'\')">Refresh chain</button></div>';
     }
+    const did=String(o.d.id||'').replace(/'/g,"\\'");
+    const prov='<div style="font-size:10px;color:var(--fg3);margin:6px 0;line-height:1.6">'
+        +(p.target!=null?('target '+fmt(p.target,2)+(p.targetSrc?(' — '+p.targetSrc):'')):'no target set')
+        +(p.nearHigh&&p.highRef!=null?(' · <span style="color:var(--gold)">at or near its high of '+fmt(p.highRef,2)+', so there is no overhead resistance to aim at</span>'):'')
+      +'</div>'
+      +((p.nearHigh&&p.fib&&p.target!==p.fib.value)?('<div style="font-size:10px;margin-bottom:6px">'
+        +'<button class="btn" onclick="woUseFib(\''+did+'\')">Use '+p.fib.label+' target '+fmt(p.fib.value,2)+'</button>'
+        +'<span style="color:var(--fg3);margin-left:7px">projected from the swing '+fmt(p.fib.swingL,2)+' → '+fmt(p.fib.swingH,2)+'</span></div>'):'')
+      +((p.nearHigh&&!p.fib)?'<div style="font-size:10px;color:var(--gold);margin-bottom:6px;line-height:1.6">'
+        +'Near its high, but this was saved before fib levels were captured. Re-analyse it in the Opportunity Review Engine and save again to get a projection target.</div>':'');
     return '<div style="border:1px solid var(--border);border-radius:9px;margin-bottom:8px;overflow:hidden">'
       +'<div onclick="woToggle('+i+')" style="display:flex;gap:11px;align-items:center;padding:9px 13px;cursor:pointer;background:var(--bg2);flex-wrap:wrap">'
         +'<span style="font-weight:800;font-size:12px;color:var(--blue)">'+sym+'</span>'
@@ -10960,7 +11114,7 @@ function woRender(){
         +'<span style="font-size:10px;color:var(--fg3)">'+(p.dir==='SHORT'?'puts':'calls')+'</span>'
         +'<span style="margin-left:auto;font-size:11px;color:var(--fg3)">'+(rec?'priced':'not priced')+' ▾</span>'
       +'</div>'
-      +'<div id="wo-d-'+i+'" hidden style="padding:4px 13px 11px">'+inner+'</div></div>';
+      +'<div id="wo-d-'+i+'" hidden style="padding:4px 13px 11px">'+prov+inner+'</div></div>';
   }).join('');
   el.innerHTML='<div class="trade-form" style="margin-bottom:0">'
     +'<div class="form-hd"><span class="form-title">Option Routes</span>'
@@ -10970,16 +11124,47 @@ function woRender(){
         +'<span>Expiries at</span>'
         +dd.map((v,i)=>'<input type="number" value="'+v+'" onchange="woSetDay('+i+',this.value)" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px">').join('')
         +'<span>days out · the last two prefer monthlies so the three routes differ</span>'
+        +'<span style="margin-left:12px">At highs, project to</span>'
+        +'<select onchange="woSetExt(this.value)" style="padding:3px 6px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:11px">'
+        +[127,162,200].map(v=>'<option value="'+v+'"'+(woExtLevel()===v?' selected':'')+'>fib '+WO_EXT_LABEL[v]+'</option>').join('')
+        +'</select>'
         +'<button class="btn" style="margin-left:auto" onclick="woLoadTop(3)">Price top 3</button>'
       +'</div>'
       +body
       +'<div style="font-size:10px;color:var(--fg3);line-height:1.6;margin-top:7px">'
-        +'One contract. “At target” is intrinsic value at expiration if the full target is reached, minus what you paid — the floor, with no time value left. '
-        +'“At stop” uses delta for the move from entry to your stock stop and never exceeds the premium. Both are estimates from the previous session’s greeks, not quotes you can fill at.'
+        +'One contract. “At target by expiry” is intrinsic value at expiration if the full target is reached, minus what you paid — the floor, with no time value left. It goes negative when the premium costs more than the move is worth, which is the signal that the setup is a stock trade rather than an options one. '
+        +'“At stop” uses delta for the move from entry to your stock stop and never exceeds the premium. Both are estimates from the previous session’s greeks, not quotes you can fill at. '
+        +'The ladder matters when the target is a small move: the halfway strike can sit beyond breakeven while nearer-the-money strikes still pay, and only the ladder shows you where that line falls.'
       +'</div>'
     +'</div></div>';
 }
 function woLoadFresh(sym){ const k=String(sym||'').toUpperCase(); delete woCache()[k]; woLoad(k); }
+
+// Fib levels live on the ORE's current analysis, not on the saved idea, so a
+// watchlist opportunity used to lose them the moment it was saved — which is why
+// a projection target could not be offered later. Capture them at save time.
+// Anything the caller passes still wins.
+(function(){
+  const orig=window.oreSaveDiscovery;
+  if(typeof orig!=='function')return;
+  window.oreSaveDiscovery=function(status,extra){
+    const add={};
+    try{
+      const o=state.ore||{};
+      if(o.fibs)add.fibs=o.fibs;
+      if(o.swingH!=null)add.swingH=o.swingH;
+      if(o.swingL!=null)add.swingL=o.swingL;
+      if(o.w52H!=null)add.w52H=o.w52H;
+      const bars=o.bars||[];
+      if(bars.length){
+        let hi=0;
+        bars.forEach(b=>{const h=parseFloat(b.high); if(isFinite(h)&&h>hi)hi=h;});
+        if(hi>0)add.hi=hi;
+      }
+    }catch(e){}
+    return orig.call(this,status,Object.assign(add,extra||{}));
+  };
+})();
 
 // ══ PA ORDERS IMPORT (paired open/close export) ═════════════════════
 // This export is strictly better than the fills CSV: two rows per trade sharing a
