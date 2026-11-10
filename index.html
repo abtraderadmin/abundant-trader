@@ -10670,6 +10670,317 @@ function spyRenderFromTrades(acct){
   };
 })();
 
+// ══ OPTION ROUTES — DATA LAYER ═══════════════════════════════════
+// Uses HISTORICAL_OPTIONS, not REALTIME_OPTIONS. Realtime options is a higher
+// Alpha Vantage tier, and a key without it gets an ARTIFICIAL SAMPLE CHAIN back
+// — symbol XXYYZZ, strike 20.00, mark 100.10, expiration 2099-99-99 — with a 200
+// status and no error field. Rendering that would put invented premiums in front
+// of a real sizing decision, so woLooksFake() rejects it outright. Previous-session
+// greeks are the right trade-off for multi-week holds: a strike choice does not
+// turn on an intraday tick.
+const WO_TTL_MS=12*60*60*1000;
+const WO_DEFAULT_DAYS=[28,30,60];
+
+function woDays(){
+  const d=state.settings.woDays;
+  return (Array.isArray(d)&&d.length===3)?d.map(Number):WO_DEFAULT_DAYS.slice();
+}
+function woSetDay(i,v){
+  const d=woDays(),n=parseInt(v,10);
+  if(isFinite(n)&&n>0)d[i]=n;
+  state.settings.woDays=d; saveState(); woRender();
+}
+function woNum(v){ const n=parseFloat(v); return isFinite(n)?n:null; }
+
+// A monthly expiry is the third Friday. Asking for 4 weeks and 1 month would
+// otherwise land on the same contract; preferring a monthly for the middle bucket
+// keeps the three routes genuinely different.
+function woIsMonthly(ds){
+  const p=String(ds||'').split('-');
+  if(p.length!==3)return false;
+  const d=new Date(Date.UTC(+p[0],+p[1]-1,+p[2]));
+  if(d.getUTCDay()!==5)return false;
+  return +p[2]>=15&&+p[2]<=21;
+}
+function woDaysOut(ds){
+  const p=String(ds||'').split('-');
+  if(p.length!==3)return null;
+  const t=new Date(); t.setHours(0,0,0,0);
+  return Math.round((Date.UTC(+p[0],+p[1]-1,+p[2])-Date.UTC(t.getFullYear(),t.getMonth(),t.getDate()))/86400000);
+}
+
+// Pick three distinct expiries from what the chain actually lists, nearest at or
+// beyond each day target. Never returns the same contract twice.
+function woPickExpiries(all){
+  const exps=all.slice().sort();
+  const want=woDays(), out=[];
+  want.forEach((wd,i)=>{
+    const monthlyPref=(i>0);
+    let pick=null;
+    if(monthlyPref)pick=exps.filter(e=>woDaysOut(e)>=wd&&woIsMonthly(e)&&out.indexOf(e)<0)[0];
+    if(!pick)pick=exps.filter(e=>woDaysOut(e)>=wd&&out.indexOf(e)<0)[0];
+    if(pick)out.push(pick);
+  });
+  return out;
+}
+
+function woLooksFake(rows,msg){
+  if(/artificial|premium endpoint|subscribe/i.test(String(msg||'')))return true;
+  if(!rows||!rows.length)return false;
+  return rows.some(r=>String(r.symbol||'').toUpperCase()==='XXYYZZ'
+    ||/^(2099|9999)/.test(String(r.expiration||''))
+    ||String(r.expiration||'').indexOf('99-99')>=0
+    ||String(r.contractID||'').toUpperCase().indexOf('XXYYZZ')===0);
+}
+
+function woCache(){ if(!state.settings.woChains)state.settings.woChains={}; return state.settings.woChains; }
+
+// Only the contracts actually shown are kept. A full chain is megabytes and would
+// blow the storage quota after a handful of symbols.
+function woReduce(rows,exps){
+  const keep=[];
+  exps.forEach(e=>{
+    rows.filter(r=>r.expiration===e).forEach(r=>{
+      keep.push({e:r.expiration,k:woNum(r.strike),t:String(r.type||'').toLowerCase(),
+        b:woNum(r.bid),a:woNum(r.ask),m:woNum(r.mark),l:woNum(r.last),
+        oi:woNum(r.open_interest),v:woNum(r.volume),
+        d:woNum(r.delta),iv:woNum(r.implied_volatility),th:woNum(r.theta)});
+    });
+  });
+  return keep;
+}
+
+function woFetchChain(sym,cb){
+  const key=String(sym||'').toUpperCase();
+  const c=woCache()[key];
+  if(c&&c.at&&(Date.now()-c.at)<WO_TTL_MS&&c.rows&&c.rows.length){cb(null,c);return;}
+  const ak=(state.settings.avApiKey||'').trim();
+  if(!ak){cb('No Alpha Vantage API key is saved in Settings.');return;}
+  const url='https://www.alphavantage.co/query?function=HISTORICAL_OPTIONS&symbol='
+    +encodeURIComponent(key)+'&apikey='+encodeURIComponent(ak);
+  fetch(url).then(r=>r.json()).then(j=>{
+    const rows=(j&&j.data)||[];
+    const msg=(j&&(j.message||j.Information||j.Note||j['Error Message']))||'';
+    if(!rows.length){
+      cb(msg?('Alpha Vantage returned no chain for '+key+': '+String(msg).slice(0,200))
+            :('No option chain came back for '+key+'.'));
+      return;
+    }
+    if(woLooksFake(rows,msg)){
+      cb('That key does not have options data — Alpha Vantage sent back its sample chain '
+        +'(strike 20, mark 100.10, expiration 2099-99-99) instead of real contracts. '
+        +'Nothing is shown rather than pricing a trade off invented numbers. '
+        +'Realtime and historical options sit on a higher tier than quotes.');
+      return;
+    }
+    const exps=woPickExpiries([...new Set(rows.map(r=>r.expiration).filter(Boolean))]);
+    if(!exps.length){cb('No expiries at or beyond your day targets are listed for '+key+'.');return;}
+    const rec={at:Date.now(),asOf:(rows[0]&&rows[0].date)||'',exps:exps,rows:woReduce(rows,exps)};
+    woCache()[key]=rec;
+    try{saveState();}catch(e){}
+    cb(null,rec);
+  }).catch(e=>cb('Could not reach Alpha Vantage: '+e.message));
+}
+
+// ══ OPTION ROUTES — PLAN + MATHS ═════════════════════════════════
+// A route needs entry, stop and full target. When the target is missing the
+// halfway strike cannot be computed, and the panel says so instead of guessing
+// one — a fabricated strike is worse than a blank.
+function woPick(){ for(let i=0;i<arguments.length;i++){const v=arguments[i];if(v!=null&&v!==''&&isFinite(parseFloat(v)))return parseFloat(v);} return null; }
+
+function woPlan(d){
+  const sc=d.stockScenario||d.scenario||{};
+  let entry=null;
+  try{ if(typeof wlEntryOf==='function')entry=woPick(wlEntryOf(d)); }catch(e){}
+  if(entry==null)entry=woPick(sc.entry,sc.trigger,d.entry,d.trigger);
+  const dir=String(sc.direction||d.direction||'LONG').toUpperCase().indexOf('SHORT')>=0?'SHORT':'LONG';
+  return{entry:entry,
+    stop:woPick(sc.stop,sc.invalidation,d.stop,d.invalidation),
+    target:woPick(sc.target,sc.fullTarget,sc.t2,d.target,d.fullTarget),
+    t1:woPick(sc.t1,d.t1),
+    dir:dir,
+    price:woPick(d.price,sc.price)};
+}
+
+function woNearest(rows,exp,type,want){
+  const c=rows.filter(r=>r.e===exp&&r.t===type&&r.k!=null);
+  if(!c.length)return null;
+  let best=c[0],bd=Math.abs(c[0].k-want);
+  c.forEach(r=>{const dd=Math.abs(r.k-want); if(dd<bd){bd=dd;best=r;}});
+  return best;
+}
+
+// One contract, 100 shares. Two profit figures are given because they answer
+// different questions and can differ a lot:
+//   atExpiry  — intrinsic value if the target is reached and the option is held
+//               to expiration. No time value left, so this is the floor.
+//   ifSoon    — delta-based estimate for the target being hit in the next few
+//               days, while time value survives. Ignores theta and any IV change,
+//               so it is an estimate and labelled as one, never a promise.
+function woRoute(rec,exp,plan){
+  const call=plan.dir==='LONG';
+  const type=call?'call':'put';
+  const half=(plan.entry!=null&&plan.target!=null)?((plan.entry+plan.target)/2):null;
+  if(half==null)return{exp:exp,err:'needs a full target'};
+  const c=woNearest(rec.rows,exp,type,half);
+  if(!c)return{exp:exp,err:'no '+type+' listed'};
+  const prem=woPick(c.a,c.m,c.l);
+  if(prem==null||prem<=0)return{exp:exp,strike:c.k,err:'no premium quoted'};
+  const cost=parseFloat((prem*100).toFixed(2));
+  const intrinsic=call?Math.max(0,plan.target-c.k):Math.max(0,c.k-plan.target);
+  const atExpiry=parseFloat((intrinsic*100-cost).toFixed(2));
+  let ifSoon=null;
+  if(c.d!=null&&plan.entry!=null)ifSoon=parseFloat((c.d*(plan.target-plan.entry)*100).toFixed(2));
+  let lossAtStop=null,valAtStop=null;
+  if(c.d!=null&&plan.stop!=null&&plan.entry!=null){
+    valAtStop=Math.max(0,cost+c.d*(plan.stop-plan.entry)*100);
+    lossAtStop=parseFloat((cost-valAtStop).toFixed(2));
+  }
+  const spread=(c.a!=null&&c.b!=null&&c.m)?parseFloat(((c.a-c.b)/c.m*100).toFixed(1)):null;
+  const rr=(atExpiry>0&&lossAtStop&&lossAtStop>0)?parseFloat((atExpiry/lossAtStop).toFixed(2)):null;
+  const cap=parseFloat(state.settings.maxCapitalPerTrade)||1500;
+  return{exp:exp,days:woDaysOut(exp),strike:c.k,type:type,half:half,
+    bid:c.b,ask:c.a,mark:c.m,delta:c.d,iv:c.iv,theta:c.th,oi:c.oi,vol:c.v,
+    cost:cost,atExpiry:atExpiry,ifSoon:ifSoon,lossAtStop:lossAtStop,rr:rr,spread:spread,
+    overCap:cost>cap,
+    thin:(c.oi!=null&&c.oi<200)||(spread!=null&&spread>15),
+    monthly:woIsMonthly(exp)};
+}
+
+function woRoutes(rec,plan){ return (rec.exps||[]).map(e=>woRoute(rec,e,plan)); }
+
+// ══ OPTION ROUTES — PANEL ═════════════════════════════════════
+// Chains load per symbol on demand, one call each, cached 12 hours. Loading every
+// watchlist name on render would burn the API budget on names nowhere near entry.
+function woOpps(){
+  const ds=(state.discoveries||[]).filter(d=>d&&d.ticker&&String(d.status||'')!=='rejected');
+  const out=ds.map(d=>{
+    const plan=woPlan(d);
+    let prox=null;
+    try{ if(typeof wlProx==='function'){const p=wlProx(d); prox=(p&&p.pct!=null)?p.pct:(typeof p==='number'?p:null);} }catch(e){}
+    if(prox==null&&plan.entry&&plan.price)prox=Math.abs((plan.price-plan.entry)/plan.entry)*100;
+    return{d:d,plan:plan,prox:prox};
+  });
+  out.sort((a,b)=>{
+    if(a.prox==null&&b.prox==null)return 0;
+    if(a.prox==null)return 1; if(b.prox==null)return -1;
+    return a.prox-b.prox;
+  });
+  return out;
+}
+
+function woLoad(sym){
+  const k=String(sym||'').toUpperCase();
+  window._woBusy=window._woBusy||{};
+  window._woErr=window._woErr||{};
+  if(window._woBusy[k])return;
+  window._woBusy[k]=1; delete window._woErr[k];
+  woRender();
+  woFetchChain(k,function(err){
+    delete window._woBusy[k];
+    if(err)window._woErr[k]=err;
+    woRender();
+  });
+}
+function woLoadTop(n){ woOpps().slice(0,n).forEach(o=>woLoad(o.d.ticker)); }
+function woToggle(i){ const el=document.getElementById('wo-d-'+i); if(el)el.hidden=!el.hidden; }
+
+function woRouteRow(r){
+  if(r.err)return '<div style="font-size:11px;color:var(--fg3);padding:4px 0;border-top:1px solid var(--border)">'
+    +woExpLabel(r)+' — '+r.err+'</div>';
+  const good=r.rr!=null&&r.rr>=2;
+  return '<div style="padding:6px 0;border-top:1px solid var(--border)">'
+    +'<div style="display:flex;gap:9px;align-items:baseline;flex-wrap:wrap;font-size:11px">'
+      +'<span style="font-weight:700;color:var(--blue);min-width:150px">'+woExpLabel(r)+'</span>'
+      +'<span style="font-family:var(--mono)">$'+fmt(r.strike,2)+' '+r.type+'</span>'
+      +'<span style="color:var(--fg3)">cost</span><span style="font-family:var(--mono)">$'+fmt(r.cost,2)+'</span>'
+      +'<span style="color:var(--fg3)">at target</span><span style="font-family:var(--mono);color:'+(r.atExpiry>0?'var(--green)':'var(--red)')+'">'+(r.atExpiry>0?'+':'')+fmt(r.atExpiry,2)+'</span>'
+      +(r.lossAtStop!=null?'<span style="color:var(--fg3)">at stop</span><span style="font-family:var(--mono);color:var(--red)">-'+fmt(r.lossAtStop,2)+'</span>':'')
+      +(r.rr!=null?'<span style="color:var(--fg3)">R:R</span><span style="font-family:var(--mono);font-weight:700;color:'+(good?'var(--green)':'var(--gold)')+'">'+fmt(r.rr,2)+':1</span>':'')
+    +'</div>'
+    +'<div style="font-size:10px;color:var(--fg3);margin-top:3px;line-height:1.5">'
+      +'bid '+fmt(r.bid,2)+' / ask '+fmt(r.ask,2)
+      +(r.spread!=null?' · spread '+fmt(r.spread,1)+'%':'')
+      +(r.delta!=null?' · delta '+fmt(r.delta,2):'')
+      +(r.iv!=null?' · IV '+fmt(r.iv*100,0)+'%':'')
+      +(r.oi!=null?' · OI '+fmt(r.oi,0):'')
+      +(r.ifSoon!=null?' · if it gets there soon, roughly '+(r.ifSoon>0?'+':'')+'$'+fmt(r.ifSoon,2)+' (estimate, ignores decay)':'')
+      +(r.thin?' <span style="color:var(--gold)">· thin — wide spread or low open interest</span>':'')
+      +(r.overCap?' <span style="color:var(--gold)">· over your per-trade capital ceiling</span>':'')
+    +'</div></div>';
+}
+function woExpLabel(r){
+  return r.exp+(r.days!=null?(' · '+r.days+'d'):'')+(r.monthly?' monthly':'');
+}
+
+function woPanelEl(){
+  let el=document.getElementById('wo-panel');
+  if(el)return el;
+  const anchor=document.getElementById('screen-watchlist');
+  if(!anchor)return null;
+  el=document.createElement('div');
+  el.id='wo-panel';
+  el.style.cssText='margin-bottom:18px';
+  anchor.insertBefore(el,anchor.firstChild);
+  return el;
+}
+
+function woRender(){
+  const el=woPanelEl(); if(!el)return;
+  const opps=woOpps();
+  const busy=window._woBusy||{}, errs=window._woErr||{};
+  const dd=woDays();
+  if(!opps.length){ el.innerHTML=''; return; }
+  const body=opps.map((o,i)=>{
+    const sym=String(o.d.ticker).toUpperCase();
+    const rec=woCache()[sym];
+    const p=o.plan;
+    const proxTxt=o.prox!=null?(fmt(o.prox,2)+'% from entry'):'entry not set';
+    let inner='';
+    if(busy[sym])inner='<div style="font-size:11px;color:var(--fg3);padding:7px 0">Loading the chain…</div>';
+    else if(errs[sym])inner='<div style="font-size:11px;color:var(--gold);padding:7px 0;line-height:1.6">'+errs[sym]+'</div>';
+    else if(!rec)inner='<div style="padding:7px 0"><button class="btn" onclick="woLoad(\''+sym+'\')">Price the three expiries</button>'
+      +'<span style="font-size:10px;color:var(--fg3);margin-left:8px">one API call, cached 12h</span></div>';
+    else if(p.target==null)inner='<div style="font-size:11px;color:var(--gold);padding:7px 0;line-height:1.6">'
+      +'This one has no full target set, so the halfway strike can\'t be worked out. Set a target on the opportunity and reload.</div>';
+    else{
+      const routes=woRoutes(rec,p);
+      inner='<div style="font-size:10px;color:var(--fg3);margin:5px 0">'
+        +'halfway strike '+fmt(p.half!=null?p.half:((p.entry+p.target)/2),2)
+        +' = (entry '+fmt(p.entry,2)+' + target '+fmt(p.target,2)+') / 2'
+        +(rec.asOf?(' · chain as of '+rec.asOf+' close'):'')+'</div>'
+        +routes.map(woRouteRow).join('')
+        +'<div style="margin-top:8px"><button class="btn" onclick="woLoadFresh(\''+sym+'\')">Refresh chain</button></div>';
+    }
+    return '<div style="border:1px solid var(--border);border-radius:9px;margin-bottom:8px;overflow:hidden">'
+      +'<div onclick="woToggle('+i+')" style="display:flex;gap:11px;align-items:center;padding:9px 13px;cursor:pointer;background:var(--bg2);flex-wrap:wrap">'
+        +'<span style="font-weight:800;font-size:12px;color:var(--blue)">'+sym+'</span>'
+        +'<span style="font-size:11px;color:'+(o.prox!=null&&o.prox<=2?'var(--green)':'var(--fg3)')+'">'+proxTxt+'</span>'
+        +(p.entry!=null?'<span style="font-family:var(--mono);font-size:10px;color:var(--fg3)">e '+fmt(p.entry,2)+(p.stop!=null?' / s '+fmt(p.stop,2):'')+(p.target!=null?' / t '+fmt(p.target,2):'')+'</span>':'')
+        +'<span style="font-size:10px;color:var(--fg3)">'+(p.dir==='SHORT'?'puts':'calls')+'</span>'
+        +'<span style="margin-left:auto;font-size:11px;color:var(--fg3)">'+(rec?'priced':'not priced')+' ▾</span>'
+      +'</div>'
+      +'<div id="wo-d-'+i+'" hidden style="padding:4px 13px 11px">'+inner+'</div></div>';
+  }).join('');
+  el.innerHTML='<div class="trade-form" style="margin-bottom:0">'
+    +'<div class="form-hd"><span class="form-title">Option Routes</span>'
+    +'<span class="gov-badge" style="color:var(--blue);border-color:var(--blue)">closest to trigger first</span></div>'
+    +'<div style="padding:10px 14px">'
+      +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--fg3);margin-bottom:9px">'
+        +'<span>Expiries at</span>'
+        +dd.map((v,i)=>'<input type="number" value="'+v+'" onchange="woSetDay('+i+',this.value)" style="width:52px;padding:3px 5px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px">').join('')
+        +'<span>days out · the last two prefer monthlies so the three routes differ</span>'
+        +'<button class="btn" style="margin-left:auto" onclick="woLoadTop(3)">Price top 3</button>'
+      +'</div>'
+      +body
+      +'<div style="font-size:10px;color:var(--fg3);line-height:1.6;margin-top:7px">'
+        +'One contract. “At target” is intrinsic value at expiration if the full target is reached, minus what you paid — the floor, with no time value left. '
+        +'“At stop” uses delta for the move from entry to your stock stop and never exceeds the premium. Both are estimates from the previous session’s greeks, not quotes you can fill at.'
+      +'</div>'
+    +'</div></div>';
+}
+function woLoadFresh(sym){ const k=String(sym||'').toUpperCase(); delete woCache()[k]; woLoad(k); }
+
 // ══ PA ORDERS IMPORT (paired open/close export) ═════════════════════
 // This export is strictly better than the fills CSV: two rows per trade sharing a
 // created_on, mov_type giving the real side, fill times to the second, and a
@@ -11141,6 +11452,7 @@ function apexRender(){
     let r; try{r=o?o.apply(this,arguments):undefined;}catch(e){}
     try{apexRender();}catch(e){}
     try{paOrdRender();}catch(e){}
+    try{woRender();}catch(e){}
     return r;
   };
 })();
