@@ -1617,7 +1617,6 @@ body::before{
           <option value="askslim">📈 AskSlim</option>
           <option value="motley_fool">🎭 Motley Fool</option>
           <option value="wealthcharts">📉 WealthCharts</option>
-          <option value="mbg">🔷 MBG</option>
           <option value="other">✎ Other / my own list</option>
         </select>
         <div style="font-size:11px;color:var(--fg3);margin:-4px 0 8px;line-height:1.6">The source is recorded on every ticker and on any trade you log from it — so you can tell later which service actually earns its keep. Acorn reports are read in full (entry, stop, targets). For the others, paste anything and the symbols are pulled out; uncheck anything it grabs by mistake.</div>
@@ -9899,8 +9898,404 @@ async function atManualPull(){
   toast('☁ Loaded '+cloudN+' trades from the cloud.','ok',9000);
 }
 
+// ── Commissions block on the Settings screen ────────────────────────────
+// The same controls exist in the import dialog, but a one-time repair of data
+// you already hold does not belong behind an import button.
+function futFeeSettingsEl(){
+  const anchor=document.getElementById('cfg-cloud-status');
+  if(!anchor||!anchor.parentNode)return null;
+  let el=document.getElementById('cfg-fee-block');
+  if(!el){
+    el=document.createElement('div');
+    el.id='cfg-fee-block';
+    el.style.cssText='margin-top:16px;padding-top:14px;border-top:1px solid var(--border)';
+    anchor.parentNode.insertBefore(el,anchor.nextSibling);
+  }
+  const pending=(state.trades||[]).filter(t=>
+    t.module==='futures' && !t.feesBackfilled &&
+    !(parseFloat(t.feesActual)>0) && Math.abs(parseFloat(t.qty)||0)>0);
+  let contracts=0;
+  pending.forEach(t=>{contracts+=Math.abs(parseFloat(t.qty)||0);});
+  const fee=futFeeRate();
+  const owed=contracts*fee;
+  el.innerHTML='<div style="font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--fg2);margin-bottom:7px">FUTURES COMMISSIONS</div>'
+    +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">The broker order export carries no fee column, so commissions are applied here. Gross P/L is always kept alongside, so the two stay separable.</div>'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:9px">'
+      +'<label for="cfg-fee" style="font-size:11px;color:var(--fg3)">Per contract, round turn $</label>'
+      +'<input id="cfg-fee" type="number" step="0.01" min="0" value="'+fee+'" oninput="futSetFee(this.value);futFeeSettingsEl();" style="width:80px;padding:5px 8px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px;text-align:right">'
+    +'</div>'
+    +(pending.length
+      ? '<div style="font-size:11px;color:var(--gold);line-height:1.6;margin-bottom:8px">'
+        +pending.length+' futures trade'+(pending.length!==1?'s':'')+' · '+contracts+' contracts have no commissions recorded. Applying them reduces net P/L by <strong>$'+owed.toFixed(2)+'</strong>.</div>'
+        +'<button onclick="futApplyFeesBackfill();futFeeSettingsEl();" style="padding:6px 13px;border-radius:6px;border:1px solid rgba(245,166,35,.4);background:var(--gold-bg);color:var(--gold);font-size:11px;font-weight:700;cursor:pointer">Apply commissions to '+pending.length+' trades</button>'
+      : '<div style="font-size:11px;color:var(--green)">✓ Every futures trade has commissions recorded.</div>')
+    ;
+  return el;
+}
+
+// ── E*TRADE Gains & Losses importer ──────────────────────────────────
+// Chosen over the fills export because positions arrive already matched buy to
+// sell — no FIFO pairing, which is where the earlier import went wrong.
+//
+// Two findings this depends on, both verified against the transaction history:
+//   1. Cost and proceeds are NET of commissions, so the gain is final.
+//   2. Only the position header rows carry full precision. The per-lot Gain
+//      column is rounded and drifts a few cents a month; recomputing from lot
+//      cost and proceeds drifts the other way. Headers tie to the cent.
+//      Lot rows are still needed — they hold the dates, headers show "--".
+function spyParseGL(text){
+  const lines=String(text||'').split(/\r?\n/);
+  let i=lines.findIndex(l=>l.replace(/^﻿/,'').trim().indexOf('TAXABLE G&L DETAILS')===0);
+  if(i<0)return{err:'This does not look like a Gains & Losses export — no "TAXABLE G&L DETAILS" section.'};
+  i+=2;                                   // skip the section line and its header row
+  const positions=[]; let cur=null;
+  for(;i<lines.length;i++){
+    const raw=lines[i];
+    if(!raw||!raw.trim())continue;
+    const t=raw.trim();
+    if(t.indexOf('Total,')===0||t==='Total'||t.indexOf('Generated at')===0)break;
+    const c=oreCsvSplit(raw);
+    const indented=/^\s{2,}/.test(raw)||/^\s*"?\s{2,}/.test(raw)||/^\s+Sell|^\s+Buy/i.test(raw);
+    if(!indented&&c[0]&&c[0].trim()){
+      const qty=parseInt(c[1],10);
+      const cost=parseFloat(c[4]), proc=parseFloat(c[7]), gain=parseFloat(c[8]);
+      if(!isFinite(gain))continue;
+      cur={sym:c[0].trim(),qty:isFinite(qty)?qty:0,cost:cost,proceeds:proc,gain:gain,dates:{}};
+      positions.push(cur);
+      continue;
+    }
+    if(cur&&c.length>5){
+      const acq=(c[2]||'').trim();                     // acquired
+      const d=(c[5]||'').trim();                       // sold
+      const m=d.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      if(m){
+        const iso=m[3]+'-'+m[1]+'-'+m[2];
+        const q=parseInt(c[1],10);
+        cur.dates[iso]=(cur.dates[iso]||0)+(isFinite(q)?q:0);
+        // Bought and sold the same session: that is a day trade. Held across
+        // days it is a swing, and it does not belong in a SPY session row.
+        if(acq&&acq!==d)cur.heldOvernight=true;
+        cur.lots=(cur.lots||0)+1;
+      }
+    }
+  }
+  if(!positions.length)return{err:'No closed positions found in that file.'};
+  const days={}; let split=0; const others=[];
+  positions.forEach(p=>{
+    const ds=Object.keys(p.dates);
+    if(!ds.length)return;
+    const k=spyGLClassify(p.sym);
+    // Only a same-session SPY/XSP option is a SPY day trade. A stock sale, or
+    // an option held overnight, is a different kind of trade and goes to its
+    // own module — otherwise selling a share would land in a day-trading row.
+    const isSpyDay = k.isOpt && k.dayUnderlying && !p.heldOvernight;
+    if(!isSpyDay){
+      const d=ds.sort()[ds.length-1];
+      const q=p.qty||0;
+      const mult=k.isOpt?100:1;
+      others.push({
+        date:d, module:k.isOpt?'options':'stock',
+        symbol:k.under||p.sym, optType:k.cp, qty:q,
+        entry:q?parseFloat((p.cost/(q*mult)).toFixed(4)):null,
+        exitPrice:q?parseFloat((p.proceeds/(q*mult)).toFixed(4)):null,
+        netPL:parseFloat(p.gain.toFixed(2)),
+        held:!!p.heldOvernight, raw:p.sym,
+      });
+      return;
+    }
+    if(ds.length===1){
+      const d=ds[0];
+      if(!days[d])days[d]={date:d,qty:0,netPL:0,legs:[]};
+      days[d].qty+=p.qty; days[d].netPL+=p.gain;
+      days[d].legs.push({sym:p.sym,qty:p.qty,pl:parseFloat(p.gain.toFixed(2))});
+    } else {
+      // A position closed across several sessions — split it by contracts, which
+      // is an approximation, and say so rather than hiding it.
+      split++;
+      const totalQ=ds.reduce((s,d)=>s+p.dates[d],0)||1;
+      ds.forEach(d=>{
+        const share=p.gain*(p.dates[d]/totalQ);
+        if(!days[d])days[d]={date:d,qty:0,netPL:0,legs:[]};
+        days[d].qty+=p.dates[d]; days[d].netPL+=share;
+        days[d].legs.push({sym:p.sym+' (part)',qty:p.dates[d],pl:parseFloat(share.toFixed(2))});
+      });
+    }
+  });
+  const out=Object.keys(days).sort().map(d=>{
+    const v=days[d];
+    v.netPL=parseFloat(v.netPL.toFixed(2));
+    const syms={};
+    v.legs.forEach(l=>{const m=l.sym.match(/^([A-Z]+)/);if(m)syms[m[1]]=1;});
+    v.symbol=Object.keys(syms).sort().join('/')||'SPY';
+    return v;
+  });
+  others.sort((a,b)=>a.date<b.date?-1:1);
+  return{days:out,others:others,positions:positions.length,split:split};
+}
+
+// What kind of position is this line? The G&L export carries stocks, ETFs and
+// options together — the search criteria is every security type — so the
+// symbol is the only thing that says which.
+function spyGLClassify(sym){
+  const s=String(sym||'').trim();
+  const m=s.match(/^([A-Z][A-Z.]{0,5})\b/);
+  const under=m?m[1]:'';
+  const isOpt=/\b(Call|Put)\b/i.test(s)&&/\$\s*[\d,.]+/.test(s);
+  const cp=/\bPut\b/i.test(s)?'PUT':(/\bCall\b/i.test(s)?'CALL':null);
+  // The index products traded intraday in this system.
+  const dayUnderlying=['SPY','XSP','SPX','QQQ'].indexOf(under)>=0;
+  return{under:under,isOpt:isOpt,cp:cp,dayUnderlying:dayUnderlying};
+}
+
+// Every account the app already knows about. Offering these as a list rather
+// than a text box is the real fix for the name-matching bug — 'Yaz -3036' and
+// 'Yaz-3036' are different accounts as far as the data is concerned, and no
+// amount of care while typing makes that safe.
+function spyKnownAccounts(){
+  const out=[];
+  const add=n=>{n=String(n||'').trim();if(n&&out.indexOf(n)<0)out.push(n);};
+  (state.trades||[]).forEach(t=>{if(t.module==='spy_day')add(t.account);});
+  (state.settings.cashAccounts||[]).forEach(add);
+  Object.keys(state.transactionHistory||{}).forEach(add);
+  const sel=document.getElementById('txn-acct-select');
+  if(sel&&sel.options)Array.prototype.forEach.call(sel.options,o=>add(o.value));
+  return out.sort();
+}
+
+function spyGLAcct(){
+  const sel=document.getElementById('cfg-gl-acct');
+  if(!sel)return'';
+  if(sel.value==='__other__'){
+    const t=document.getElementById('cfg-gl-acct-other');
+    return ((t&&t.value)||'').trim();
+  }
+  return (sel.value||'').trim();
+}
+
+function spyGLAcctChange(){
+  const sel=document.getElementById('cfg-gl-acct');
+  const t=document.getElementById('cfg-gl-acct-other');
+  if(t)t.style.display=(sel&&sel.value==='__other__')?'':'none';
+  spyGLPreview();
+}
+
+function spyGLPreview(){
+  const ta=document.getElementById('cfg-gl-text');
+  const out=document.getElementById('cfg-gl-out');
+  if(!ta||!out)return;
+  const res=spyParseGL(ta.value);
+  window._spyGLDays=null;
+  if(res.err){out.innerHTML='<div style="color:var(--red);font-size:11px;line-height:1.6">⚠ '+res.err+'</div>';return;}
+  const acct=spyGLAcct();
+  const existing=(state.trades||[]).filter(t=>t.module==='spy_day');
+  let total=0,fresh=0,mismatch=0;
+  const rowsHtml=res.days.map(d=>{
+    // The broker's own figure is the reference. Where a session already in the
+    // app disagrees, say so loudly — those came from pairing raw fills, which
+    // is exactly the kind of thing that can be quietly wrong.
+    const match=existing.find(t=>t.date===d.date&&(t.account||'')===acct);
+    const dup=!!match;
+    const have=match?(parseFloat(match.netPL)||0):0;
+    const delta=dup?parseFloat((d.netPL-have).toFixed(2)):0;
+    const off=dup&&Math.abs(delta)>=0.01;
+    if(off)mismatch++;
+    if(!dup){total+=d.netPL;fresh++;}
+    d._dup=dup; d._off=off; d._have=have; d._delta=delta; d._id=match?match.id:null;
+    const col=d.netPL>=0?'var(--green)':'var(--red)';
+    const tag=!dup?'NEW':(off?'DISAGREES':'MATCHES');
+    const tagCol=!dup?'var(--green)':(off?'var(--red)':'var(--fg3)');
+    return '<div style="display:flex;gap:10px;align-items:center;padding:4px 0;border-top:1px solid var(--border);'+(dup&&!off?'opacity:.45':'')+'">'
+      +'<span style="font-family:var(--mono);font-size:11px;min-width:84px">'+d.date+'</span>'
+      +'<span style="font-size:11px;color:var(--fg3);min-width:62px">'+d.qty+' ct</span>'
+      +'<span style="font-family:var(--mono);font-size:11px;color:'+col+';min-width:86px;text-align:right">'+(d.netPL>=0?'+':'')+fmt(d.netPL,2)+'</span>'
+      +'<span style="font-size:10px;font-weight:700;color:'+tagCol+';min-width:72px">'+tag+'</span>'
+      +(off
+        ? '<span style="font-size:10px;color:var(--red)">app has '+fmt(have,2)+' · out by '+(delta>=0?'+':'')+fmt(delta,2)+'</span>'
+        : '<span style="font-size:10px;color:var(--fg3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+d.legs.map(l=>l.sym).join(' · ')+'</span>')
+    +'</div>';
+  }).join('');
+  window._spyGLDays=res.days;
+  window._spyGLOthers=res.others||[];
+  // Anything that is not a same-session index option is listed separately, so
+  // a stock sale can never be filed as a day-trading session.
+  let othersHtml='';
+  if(window._spyGLOthers.length){
+    const existingAll=(state.trades||[]);
+    let freshO=0;
+    othersHtml='<div style="margin-top:11px;padding-top:9px;border-top:1px solid var(--border)">'
+      +'<div style="font-size:11px;font-weight:700;color:var(--gold);margin-bottom:5px">NOT SPY DAY TRADES — '+window._spyGLOthers.length+' position'+(window._spyGLOthers.length!==1?'s':'')+'</div>'
+      +window._spyGLOthers.map(o=>{
+        const dup=existingAll.some(t=>t.date===o.date&&(t.account||'')===acct&&t.module===o.module&&(t.symbol||'')===o.symbol&&Math.abs((parseFloat(t.netPL)||0)-o.netPL)<0.01);
+        o._dup=dup; if(!dup)freshO++;
+        const col=o.netPL>=0?'var(--green)':'var(--red)';
+        return '<div style="display:flex;gap:9px;align-items:center;padding:3px 0;font-size:11px;'+(dup?'opacity:.45':'')+'">'
+          +'<span style="font-family:var(--mono);min-width:84px">'+o.date+'</span>'
+          +'<span style="font-weight:700;min-width:48px;color:var(--blue)">'+o.symbol+'</span>'
+          +'<span style="color:var(--fg3);min-width:58px">'+(o.module==='stock'?'stock':(o.optType||'option'))+'</span>'
+          +'<span style="color:var(--fg3);min-width:44px">'+o.qty+'</span>'
+          +'<span style="font-family:var(--mono);color:'+col+';min-width:80px;text-align:right">'+(o.netPL>=0?'+':'')+fmt(o.netPL,2)+'</span>'
+          +(o.held?'<span style="font-size:10px;color:var(--gold)">held overnight</span>':'')
+          +'<span style="font-size:10px;color:var(--fg3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+o.raw+'</span>'
+        +'</div>';
+      }).join('')
+      +'<div style="font-size:11px;color:var(--fg3);margin-top:6px;line-height:1.55">These are stock sales or options held past the session, so they go to their own modules rather than into a SPY day row.</div>'
+      +(freshO?'<button onclick="spyGLConfirmOthers()" style="margin-top:7px;padding:5px 12px;border-radius:6px;border:1px solid rgba(245,166,35,.4);background:var(--gold-bg);color:var(--gold);font-size:11px;font-weight:700;cursor:pointer">Import '+freshO+' separately</button>':'<div style="font-size:11px;color:var(--fg3);margin-top:5px">All already in the journal.</div>')
+      +'</div>';
+  }
+  out.innerHTML=rowsHtml
+    +'<div style="margin-top:9px;font-size:11px;color:var(--fg3);line-height:1.6">'
+      +res.positions+' closed positions → '+res.days.length+' sessions · <strong>'+fresh+' new</strong>, total '
+      +'<strong style="color:'+(total>=0?'var(--green)':'var(--red)')+'">'+(total>=0?'+':'')+fmt(total,2)+'</strong>'
+      +(res.split?' · ⚠ '+res.split+' position(s) closed across several days and were split by contract count — approximate.':'')
+      +'<br>These figures are already net of commissions.'
+    +'</div>'
+    +(mismatch?'<div style="margin-top:7px;font-size:11px;color:var(--red);line-height:1.6">⚠ '+mismatch+' session'+(mismatch!==1?'s':'')+' already in the app disagree'+(mismatch===1?'s':'')+' with the broker. The broker is right — these were built by pairing raw fills. Correcting keeps your notes, grade and emotion.</div>':'')
+    +'<div style="margin-top:9px;display:flex;gap:7px;flex-wrap:wrap">'
+    +(fresh?'<button onclick="spyGLConfirm()" style="padding:6px 13px;border-radius:6px;border:1px solid rgba(34,197,94,.4);background:rgba(34,197,94,.12);color:var(--green);font-size:11px;font-weight:700;cursor:pointer">Import '+fresh+' session'+(fresh!==1?'s':'')+'</button>':'')
+    +(mismatch?'<button onclick="spyGLRepair()" style="padding:6px 13px;border-radius:6px;border:1px solid rgba(244,63,94,.4);background:rgba(244,63,94,.1);color:var(--red);font-size:11px;font-weight:700;cursor:pointer">Correct '+mismatch+' to match the broker</button>':'')
+    +'</div>'
+    +othersHtml;
+}
+
+function spyGLConfirm(){
+  const days=window._spyGLDays||[];
+  const acct=spyGLAcct();
+  if(!acct){toast('Enter the account name first — exactly as E*TRADE writes it.','warn',8000);return;}
+  const add=days.filter(d=>!d._dup);
+  if(!add.length){toast('Nothing new to import.','warn');return;}
+  if(!state.trades)state.trades=[];
+  const now=Date.now();
+  add.forEach((d,i)=>{
+    state.trades.unshift({
+      id:(now+i).toString(36),module:'spy_day',
+      date:d.date,account:acct,
+      symbol:d.symbol,ticker:d.symbol,direction:'MIXED',
+      qty:d.qty,
+      grossPL:d.netPL,netPL:d.netPL,feesActual:0,
+      rr:0,regime:'',setup:'',
+      emotion:'',grade:'',rulesFollowed:'',
+      legs:d.legs,
+      thesis:'[E-Trade Gains & Losses import — '+d.legs.length+' position'+(d.legs.length!==1?'s':'')+', '+d.qty+' contracts. Figures are net of commissions.]',
+      lesson:'',importedFromGL:true,
+    });
+  });
+  saveState();
+  try{renderAll();}catch(e){}
+  spyGLPreview();
+  toast('✓ Imported '+add.length+' SPY session'+(add.length!==1?'s':'')+' into '+acct,'ok',9000);
+}
+
+// Correct P/L only. A session's grade, emotion, notes and lesson are the
+// trader's own record and are never touched by an import.
+function spyGLRepair(){
+  const days=(window._spyGLDays||[]).filter(d=>d._off&&d._id);
+  if(!days.length){toast('Nothing to correct.','warn');return;}
+  let net=0; days.forEach(d=>{net+=d._delta;});
+  if(!confirm(
+    'Correct '+days.length+' session'+(days.length!==1?'s':'')+' to the broker\'s figures?\n\n'+
+    'Total change to recorded P/L: '+(net>=0?'+':'')+net.toFixed(2)+'\n\n'+
+    'Your grade, emotion, notes and lesson on each session are kept.'
+  ))return;
+  days.forEach(d=>{
+    const t=(state.trades||[]).find(x=>x.id===d._id);
+    if(!t)return;
+    t.netPL=d.netPL;
+    t.grossPL=d.netPL;
+    t.feesActual=0;
+    t.qty=d.qty;
+    t.legs=d.legs;
+    t.symbol=d.symbol;
+    t.correctedFromGL=new Date().toISOString().slice(0,10);
+    t.thesis=(t.thesis||'')+' [corrected to broker Gains & Losses '+t.correctedFromGL+']';
+  });
+  saveState();
+  try{renderAll();}catch(e){}
+  spyGLPreview();
+  toast('✓ '+days.length+' session'+(days.length!==1?'s':'')+' corrected — P/L moved '+(net>=0?'+':'')+net.toFixed(2),'ok',10000);
+}
+
+// Stock sales and swing options from the same export, logged to their own
+// modules so Performance counts them as what they are.
+function spyGLConfirmOthers(){
+  const acct=spyGLAcct();
+  if(!acct){toast('Pick the account first.','warn',7000);return;}
+  const add=(window._spyGLOthers||[]).filter(o=>!o._dup);
+  if(!add.length){toast('Nothing new to import.','warn');return;}
+  if(!state.trades)state.trades=[];
+  const now=Date.now();
+  add.forEach((o,i)=>{
+    state.trades.unshift({
+      id:(now+i).toString(36)+'g',module:o.module,
+      date:o.date,account:acct,
+      symbol:o.symbol,ticker:o.symbol,
+      direction:'LONG',optType:o.optType||'',
+      entry:o.entry,exitPrice:o.exitPrice,exit:o.exitPrice,
+      qty:o.qty,
+      grossPL:o.netPL,netPL:o.netPL,feesActual:0,
+      rr:0,regime:'',setup:o.held?'Swing / held overnight':'',
+      emotion:'',grade:'',rulesFollowed:'',
+      thesis:'[E-Trade Gains & Losses — '+o.raw+'. Net of commissions.]',
+      lesson:'',importedFromGL:true,
+    });
+  });
+  saveState();
+  try{renderAll();}catch(e){}
+  spyGLPreview();
+  toast('✓ Imported '+add.length+' non-day position'+(add.length!==1?'s':'')+' into '+acct,'ok',9000);
+}
+
+async function spyGLFile(input){
+  const f=input&&input.files&&input.files[0];
+  if(!f)return;
+  try{
+    const ta=document.getElementById('cfg-gl-text');
+    if(ta){ta.value=await f.text();spyGLPreview();}
+  }catch(e){toast('Could not read that file: '+e.message,'err',9000);}
+  input.value='';
+}
+
+function spyGLPanelEl(){
+  let el=document.getElementById('cfg-gl-block');
+  if(el){spyGLFillAccounts();return el;}
+  // Belongs beside the SPY orders import, not in Settings. The Settings anchor
+  // stays only as a fallback if that panel ever moves.
+  const anchor=document.getElementById('txn-bridge-preview')
+            || document.getElementById('cfg-fee-block');
+  if(!anchor||!anchor.parentNode)return null;
+  el=document.createElement('div');
+  el.id='cfg-gl-block';
+  el.style.cssText='margin:14px 0;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--s2)';
+  el.innerHTML='<div style="font-size:12px;font-weight:700;letter-spacing:.04em;color:#a855f7;margin-bottom:5px">📄 IMPORT GAINS &amp; LOSSES <span style="font-weight:400;color:var(--fg3);letter-spacing:0">— closed positions, already matched</span></div>'
+    +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">Faster and safer than the fills export: positions arrive already paired buy to sell, and the figures are net of commissions. Pull a date range rather than single days.</div>'
+    +'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">'
+      +'<label for="cfg-gl-acct" style="font-size:11px;color:var(--fg3)">Account</label>'
+      +'<select id="cfg-gl-acct" onchange="spyGLAcctChange()" style="padding:5px 8px;border-radius:5px;border:1px solid var(--border2);background:var(--surface);color:var(--fg);font-size:11px"></select>'
+      +'<input id="cfg-gl-acct-other" placeholder="new account name" oninput="spyGLPreview()" style="display:none;width:160px;padding:5px 8px;border-radius:5px;border:1px solid var(--border2);background:var(--surface);color:var(--fg);font-size:11px">'
+      +'<label for="cfg-gl-file" style="cursor:pointer;padding:5px 11px;border-radius:5px;border:1px solid var(--border2);background:var(--surface);color:var(--fg);font-size:11px;font-weight:600">📎 Choose CSV</label>'
+      +'<input type="file" id="cfg-gl-file" accept=".csv,text/csv" style="display:none" onchange="spyGLFile(this)">'
+    +'</div>'
+    +'<textarea id="cfg-gl-text" rows="3" spellcheck="false" placeholder="…or paste the CSV here" oninput="spyGLPreview()" style="width:100%;box-sizing:border-box;resize:vertical;font-family:var(--mono);font-size:10px;padding:8px;border-radius:7px;border:1px solid var(--border2);background:var(--surface);color:var(--fg)"></textarea>'
+    +'<div id="cfg-gl-out" style="margin-top:8px"></div>';
+  anchor.parentNode.insertBefore(el,anchor.nextSibling);
+  spyGLFillAccounts();
+  return el;
+}
+
+function spyGLFillAccounts(){
+  const sel=document.getElementById('cfg-gl-acct');
+  if(!sel)return;
+  const keep=sel.value;
+  const names=spyKnownAccounts();
+  sel.innerHTML=(names.length?names.map(n=>'<option value="'+n.replace(/"/g,'&quot;')+'">'+n+'</option>').join(''):'')
+    +'<option value="__other__">+ a different account…</option>';
+  if(keep)sel.value=keep;
+  const t=document.getElementById('cfg-gl-acct-other');
+  if(t)t.style.display=(sel.value==='__other__')?'':'none';
+}
+
 function atRenderCloudStatus(){
   const el=document.getElementById('cfg-cloud-status'); if(!el)return;
+  futFeeSettingsEl();   // commissions belong in Settings, not behind an import button
   let syncedAt=''; try{syncedAt=localStorage.getItem('at_cloud_synced_at')||'';}catch(e){}
   if(!atSbReady()){el.innerHTML='Cloud library not loaded — running on this device only.';return;}
   if(!atUser){el.innerHTML='<span style="color:var(--gold)">Not signed in</span> — this device only.<br>Reload the app to sign in.';return;}
@@ -9988,6 +10383,9 @@ async function atAuthInit(){
   csInitSessions(); // seed Class Sessions if first run
   atAuthInit();     // cloud sync + sign-in (async; never blocks boot)
   atAlertsStart();  // price alerts — polls only while this tab is open
+  // The SPY orders panel is static markup, so this can be built once at boot
+  // whichever screen happens to be showing.
+  try{spyGLPanelEl();}catch(e){}
 })();
 </script>
 
