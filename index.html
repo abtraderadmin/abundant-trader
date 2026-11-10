@@ -9392,6 +9392,7 @@ function openImportModal(){
   if(evals.length)html+=`<optgroup label="── Eval Accounts ──">${evals.map(n=>`<option value="${n}">${n}</option>`).join('')}</optgroup>`;
   if(pas.length)html+=`<optgroup label="── PA Accounts (Paid/Cash) ──">${pas.map(n=>`<option value="${n}">${n}</option>`).join('')}</optgroup>`;
   sel.innerHTML=html;
+  futFeeEl();
   // Reset state
   const fi=document.getElementById('import-file');if(fi)fi.value='';
   document.getElementById('import-preview').innerHTML='';
@@ -9403,6 +9404,72 @@ function openImportModal(){
 
 function closeImportModal(){
   document.getElementById('import-modal').style.display='none';
+}
+
+// ── Futures commissions ─────────────────────────────────────────────
+// The broker's order export carries no fee column, so every imported futures
+// trade recorded netPL = grossPL and the journal quietly overstated results.
+// Commissions are a fixed cost per contract, so they can be applied here —
+// gross is always preserved so the two stay separable.
+function futFeeRate(){
+  const n=parseFloat(state.settings.futFeePerContract);
+  return (isFinite(n)&&n>=0)?n:3.10;
+}
+function futSetFee(v){
+  const n=parseFloat(v);
+  state.settings.futFeePerContract=(isFinite(n)&&n>=0)?n:0;
+  saveState();
+  if(typeof _importedTrades!=='undefined'&&_importedTrades.length)renderImportPreview(_importedTrades);
+}
+function futFeeEl(){
+  let el=document.getElementById('import-fee-row');
+  if(!el){
+    const sel=document.getElementById('import-account');
+    if(!sel||!sel.parentNode)return null;
+    el=document.createElement('div');
+    el.id='import-fee-row';
+    el.style.cssText='margin-top:11px;font-size:11px;color:var(--fg3);line-height:1.6';
+    el.innerHTML='<label for="import-fee" style="margin-right:7px">Commission per contract, round turn $</label>'
+      +'<input id="import-fee" type="number" step="0.01" min="0" oninput="futSetFee(this.value)" style="width:78px;padding:4px 7px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:11px;text-align:right">'
+      +'<div style="margin-top:5px">The order export has no fee column, so commissions are applied here instead. Set 0 to record gross only.</div>'
+      +'<button onclick="futApplyFeesBackfill()" style="margin-top:8px;padding:4px 11px;border-radius:5px;border:1px solid var(--border2);background:transparent;color:var(--fg2);font-size:11px;cursor:pointer">Apply to futures trades already imported</button>';
+    sel.parentNode.insertBefore(el,sel.nextSibling);
+  }
+  const inp=document.getElementById('import-fee');
+  if(inp)inp.value=futFeeRate();
+  return el;
+}
+
+// One-time repair for trades imported before fees were captured. Guarded twice
+// — by an explicit flag and by any existing fee — so it can never double-charge.
+function futApplyFeesBackfill(){
+  const fee=futFeeRate();
+  if(!(fee>0)){toast('Set a commission above $0 first.','warn',6000);return;}
+  const targets=(state.trades||[]).filter(t=>
+    t.module==='futures' && !t.feesBackfilled &&
+    !(parseFloat(t.feesActual)>0) && Math.abs(parseFloat(t.qty)||0)>0);
+  if(!targets.length){toast('No futures trades are missing commissions.','ok',7000);return;}
+  let contracts=0;
+  targets.forEach(t=>{contracts+=Math.abs(parseFloat(t.qty)||0);});
+  const total=parseFloat((contracts*fee).toFixed(2));
+  if(!confirm(
+    'Apply $'+fee.toFixed(2)+' per contract to '+targets.length+' futures trades?\n\n'+
+    contracts+' contracts × $'+fee.toFixed(2)+' = $'+total.toFixed(2)+'\n\n'+
+    'Recorded net P/L drops by that amount. Gross P/L is kept on every trade, so\n'+
+    'nothing is lost and each one stays reviewable in the Journal.'
+  ))return;
+  targets.forEach(t=>{
+    const q=Math.abs(parseFloat(t.qty)||0);
+    const f=parseFloat((fee*q).toFixed(2));
+    const gross=parseFloat(t.grossPL!=null?t.grossPL:t.netPL)||0;
+    t.grossPL=gross;
+    t.feesActual=f;
+    t.netPL=parseFloat((gross-f).toFixed(2));
+    t.feesBackfilled=true;
+  });
+  saveState();
+  try{renderAll();}catch(e){}
+  toast('✓ Commissions applied to '+targets.length+' trades — net P/L reduced by $'+total.toFixed(2),'ok',10000);
 }
 
 // Normalize broker symbol → INSTRUMENTS key
@@ -9551,7 +9618,13 @@ function renderImportPreview(trades){
     <td colspan="7" style="padding:7px 10px;text-align:right;color:var(--fg2);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Total Gross P/L</td>
     <td style="padding:7px 10px;text-align:right;font-family:var(--mono);font-weight:700;font-size:14px;color:${tc}">${$(total)}</td>
   </tr></tbody></table></div>
-  <div style="font-size:11px;color:var(--fg3);margin-top:8px">⚠ Fees are not in the order export — net P/L will equal gross until you update each trade.</div>`;
+  <div style="font-size:11px;color:var(--fg3);margin-top:8px">${(function(){
+    const f=futFeeRate();
+    if(!(f>0))return '⚠ Commission is set to $0, so these import at gross. Your broker still charges you — the journal will read better than the account.';
+    let c=0;trades.forEach(t=>{c+=Math.abs(t.qty||0);});
+    const tot=c*f;
+    return 'Commissions of $'+f.toFixed(2)+' per contract will be applied on import — '+c+' contracts, $'+tot.toFixed(2)+' total. Net P/L after fees: <strong style="color:'+((total-tot)>=0?'var(--green)':'var(--red)')+'">$'+(total-tot).toFixed(2)+'</strong>.';
+  })()}</div>`;
   document.getElementById('import-preview').innerHTML=html;
 }
 
@@ -9561,21 +9634,26 @@ function confirmImport(){
   const now=Date.now();
   // Sort newest first for unshift
   const sorted=[..._importedTrades].sort((a,b)=>b.date.localeCompare(a.date));
-  const imported=sorted.map((t,i)=>({
-    id:(now+i).toString(36),module:'futures',
-    date:t.date,entryTime:t.entryTime||'',account,
-    instrument:t.instKey,symbol:t.instKey,
-    direction:t.direction,
-    entry:t.entry,stop:null,t1:null,target:null,
-    qty:t.qty,feesPlanned:0,feesActual:0,
-    exit:t.exitPrice,exitPrice:t.exitPrice,
-    grossPL:t.grossPL,netPL:t.grossPL,// fees unknown; user can edit
-    rr:0,regime:'',setup:'',
-    scaleT1:null,scaleT2:null,scaleRun:null,
-    emotion:'',grade:'',rulesFollowed:'',
-    thesis:'[Imported from orders CSV]',lesson:'',
-    importedFromCSV:true,
-  }));
+  const feePer=futFeeRate();
+  const imported=sorted.map((t,i)=>{
+    const fees=parseFloat((feePer*Math.abs(t.qty||0)).toFixed(2));
+    return{
+      id:(now+i).toString(36),module:'futures',
+      date:t.date,entryTime:t.entryTime||'',account,
+      instrument:t.instKey,symbol:t.instKey,
+      direction:t.direction,
+      entry:t.entry,stop:null,t1:null,target:null,
+      qty:t.qty,feesPlanned:fees,feesActual:fees,
+      exit:t.exitPrice,exitPrice:t.exitPrice,
+      grossPL:t.grossPL,netPL:parseFloat((t.grossPL-fees).toFixed(2)),
+      feesBackfilled:true,          // already costed; keep the repair tool off it
+      rr:0,regime:'',setup:'',
+      scaleT1:null,scaleT2:null,scaleRun:null,
+      emotion:'',grade:'',rulesFollowed:'',
+      thesis:'[Imported from orders CSV]',lesson:'',
+      importedFromCSV:true,
+    };
+  });
   // Duplicate check: account + date + entryTime + instrument + entry price
   // entryTime makes same-instrument same-day different-fill non-duplicates;
   // account keeps copier replicas (e.g. acct 12 vs 13) separate.
