@@ -10682,23 +10682,90 @@ const BULK_NOISE=('INC CORP CRP CO LTD PLC THE AND FOR ETF ETFS FUND FUNDS TRUST
  +'SERVICE SERVICES FINANCIAL HEALTH HEALTHCARE CONSUMER DEFENSIVE CYCLICAL REAL ESTATE ENERGY UTILITY '
  +'UTILITIES INDUSTRIAL INDUSTRIALS MATERIAL MATERIALS BIOTECH BEVERAGE BEVERAGES ALCOHOLIC NON PACKAGED '
  +'GOODS MEDICAL DEVICE DEVICES INSTRUMENT INSTRUMENTS ASSET MANAGEMENT SECTOR PRICE VOLUME CHANGE NAME '
- +'SYMBOL TICKER USD AVG VOL MKT CAP PE EPS NEW HIGH LOW OPEN CLOSE BUY SELL HOLD B S E M K').split(/\s+/);
+ +'SYMBOL TICKER USD AVG VOL MKT CAP PE EPS CHG LAST').split(/\s+/);
+// HIGH, LOW, OPEN, CLOSE and NEXT are deliberately NOT filtered. They are column
+// headers, but they are also real tickers — Lowe's, Opendoor, NextDecade — and
+// filtering them silently removed names from a pasted watchlist. The ticker-line
+// path below distinguishes them instead: a company name after the symbol proves
+// it is a symbol.
 const BULK_NOISE_SET={}; BULK_NOISE.forEach(w=>{BULK_NOISE_SET[w]=1;});
 
+// Section headings carry real meaning — a MASTERMIND name is not a DEVELOPING
+// name — so they are preserved rather than flattened into one list.
+// Three paste shapes are accepted:
+//   ###SECTION        followed by symbols (TradingView's own export, and the
+//                     format used when a list is prepared outside the app)
+//   EXCHANGE:SYMBOL   comma-separated, also TradingView
+//   raw page copy     ALL-CAPS heading lines, then "TICKER Company Name 21.95 USD …"
+// Page furniture (footer nav, urls, timestamps, price columns) is dropped.
+const BULK_CHROME=('MADE BY HUMANS|GROWTH OPPORTUNITIES|POLICIES & SECURITY|SYMBOL DISTRIBUTION|'
+ +'LOOK FIRST|COMMUNITY|PRODUCTS|COMPANY|ABOUT|PRICING|MARKET DATA|SUPERCHARTS|SCREENERS|'
+ +'GET STARTED|MAKE A COPY|SEARCH|ULTIMATE|OVERVIEW|EARNINGS|DIVIDENDS|NEWS|FINANCIALS|'
+ +'PERFORMANCE|RISK|TECHNICALS|SYMBOLS|STOCK|SECTORS|MORE').split('|');
+const BULK_SKIP='__skip__';   // sentinel group: anything under page furniture is dropped
+function bulkIsChrome(s){
+  const u=String(s||'').toUpperCase().trim();
+  return BULK_CHROME.some(c=>u===c);
+}
+
 function bulkParse(text){
-  const seen={},out=[];
-  String(text||'').split(/[^A-Za-z.]+/).forEach(tok=>{
-    const t=tok.toUpperCase().replace(/\.+$/,'');
-    if(!t)return;
+  const lines=String(text||'').split(/\r?\n/);
+  const out=[],seen={};
+  let cur='Ungrouped';
+  const push=(tok,g,trusted)=>{
+    if(g===BULK_SKIP)return;
+    const t=String(tok||'').toUpperCase().replace(/\.+$/,'');
     if(!/^[A-Z]{1,5}(\.[A-Z])?$/.test(t))return;
-    if(BULK_NOISE_SET[t])return;
-    if(t.length===1)return;          // single letters are almost never what was meant here
+    if(t.length===1)return;
+    if(!trusted&&BULK_NOISE_SET[t])return;
     if(seen[t])return;
     seen[t]=1;
-    const have=(state.discoveries||[]).some(d=>String(d.ticker||'').toUpperCase()===t);
-    out.push({t:t,have:have});
-  });
+    out.push({t:t,g:g,have:(state.discoveries||[]).some(d=>String(d.ticker||'').toUpperCase()===t)});
+  };
+  const isTickerLine=s=>/^[A-Z]{2,5}[\s,]+\S/.test(String(s||'').trim());
+  // A row of short all-caps tokens is a list of symbols, not a section name.
+  const isSymbolList=s=>{const k=String(s).trim().split(/\s+/);
+    return k.length>=2&&k.every(t=>/^[A-Z]{1,5}(\.[A-Z])?$/.test(t));};
+  for(let i=0;i<lines.length;i++){
+    let s=lines[i].trim();
+    if(!s)continue;
+    const hash=s.match(/^#{2,}\s*(.+?),?\s*$/);
+    if(hash){ const h=hash[1].trim().toUpperCase(); cur=bulkIsChrome(h)?BULK_SKIP:(h||'Ungrouped'); continue; }
+    if(/tradingview\.com|^https?:\/\//i.test(s))continue;
+    if(/^\d{1,2}\/\d{1,2}\/\d{2,4},/.test(s))continue;
+    if(/^[\d.,\-−]+\s*(USD|%)/i.test(s))continue;
+    if(/^\d+\s*symbols?$/i.test(s))continue;
+    if(bulkIsChrome(s)){ cur=BULK_SKIP; continue; }
+    // Heading: no lowercase, not itself a row of symbols, and either long,
+    // multi-word, or followed by a ticker-and-name line. The last test is what
+    // catches short ones like FLAGS.
+    if(/^[A-Z][A-Z0-9 &'\-]*$/.test(s)&&!/[a-z]/.test(s)&&!isSymbolList(s)){
+      const nxt=(lines[i+1]||'').trim();
+      if(s.length>5||s.indexOf(' ')>=0||isTickerLine(nxt)){ cur=s; continue; }
+    }
+    if(s.indexOf(':')>=0&&/[A-Z]{2,}:[A-Z.]{1,6}/.test(s)){
+      (s.match(/[A-Z]{2,}:[A-Z][A-Z.]{0,5}/g)||[]).forEach(m=>push(m.split(':')[1],cur,true));
+      continue;
+    }
+    if(isTickerLine(s)&&/[a-z]/.test(s)){ push(s.split(/[\s,]+/)[0],cur,true); continue; }
+    if(isSymbolList(s)){ s.split(/\s+/).forEach(tok=>push(tok,cur,true)); continue; }
+    s.split(/[^A-Za-z.]+/).forEach(tok=>push(tok,cur,false));
+  }
   return out;
+}
+
+function bulkGroups(rows){
+  const g={},order=[];
+  rows.forEach(r=>{ if(!g[r.g]){g[r.g]=[];order.push(r.g);} g[r.g].push(r); });
+  return{map:g,order:order};
+}
+function bulkToggleGroup(gi,on){
+  const p=window._bulkPending||[];
+  const gs=bulkGroups(p);
+  (gs.map[gs.order[gi]]||[]).forEach(r=>{
+    const cb=document.getElementById('bulk-cb-'+r.t);
+    if(cb&&!cb.disabled)cb.checked=on;
+  });
 }
 
 function bulkPreview(){
@@ -10722,9 +10789,10 @@ function bulkConfirm(){
     state.discoveries.push({
       id:Date.now()+Math.floor(Math.random()*1000),
       ticker:r.t,price:null,analysisDate:new Date().toISOString(),
+      group:(r.g&&r.g!=='Ungrouped')?r.g:'',
       emaAlignment:'',daysToEarnings:null,condition:'',setup:'',
       support:null,resistance:null,routeDecision:'',stockScenario:null,
-      note:'[Added from screener list — not yet analysed]',status:'watch'
+      note:'[Added from watchlist'+((r.g&&r.g!=='Ungrouped')?(' — '+r.g):'')+', not yet analysed]',status:'watch'
     });
     added++;
   });
@@ -10755,24 +10823,35 @@ function bulkRender(){
   if(!p){
     body='<div style="padding:11px 14px">'
       +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:8px">'
-      +'Paste rows from a screener, or just type symbols. Only the ticker is taken — price, volume and levels are fetched properly when you analyse each name.</div>'
-      +'<textarea id="bulk-text" rows="4" placeholder="CLX MED KOD ECF CELH CMCT CTSO LW MLCI" '
+      +'Paste rows from a watchlist or screener, or just type symbols. Section headings are preserved so the watchlist can roll up by group. Only the ticker is taken — price, volume and levels are fetched properly when you analyse each name.</div>'
+      +'<textarea id="bulk-text" rows="6" placeholder="Paste a watchlist. Section headings are kept:&#10;&#10;###MASTERMIND LIST&#10;PRCH ACCO GPN PZZA&#10;&#10;###TIER 1&#10;SIBN KD INSE&#10;&#10;— or paste the rows straight off the page, headings and prices included." '
       +'style="width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-family:var(--mono);font-size:12px"></textarea>'
       +'<div style="margin-top:8px"><button class="btn" onclick="bulkPreview()">Find tickers</button></div>'
       +'</div>';
   }else{
     const fresh=p.filter(r=>!r.have);
+    const gs=bulkGroups(p);
     body='<div style="padding:11px 14px">'
-      +'<div style="font-size:11px;color:var(--fg3);margin-bottom:8px">Found '+p.length+' — untick anything that is not a ticker.</div>'
-      +'<div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px">'
-      +p.map(r=>'<label style="display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid '
-        +(r.have?'var(--border)':'var(--blue)')+';border-radius:6px;font-size:11px;'
-        +(r.have?'opacity:.55;':'')+'cursor:pointer">'
-        +'<input type="checkbox" id="bulk-cb-'+r.t+'"'+(r.have?'':' checked')+(r.have?' disabled':'')+'>'
-        +'<span style="font-family:var(--mono);font-weight:700">'+r.t+'</span>'
-        +(r.have?'<span style="color:var(--fg3)">already on list</span>':'')
-        +'</label>').join('')
-      +'</div>'
+      +'<div style="font-size:11px;color:var(--fg3);margin-bottom:8px">Found '+p.length+' across '+gs.order.length+' group'+(gs.order.length!==1?'s':'')+' — untick anything that is not a ticker, or clear a whole group that came from page furniture.</div>'
+      +gs.order.map((gname,gi)=>{
+        const rows=gs.map[gname];
+        return '<div style="margin-bottom:10px">'
+          +'<div style="display:flex;gap:9px;align-items:baseline;flex-wrap:wrap;margin-bottom:5px">'
+            +'<span style="font-size:11px;font-weight:800;color:var(--blue)">'+gname+'</span>'
+            +'<span style="font-size:10px;color:var(--fg3)">'+rows.length+'</span>'
+            +'<a href="javascript:void(0)" onclick="bulkToggleGroup('+gi+',true)" style="font-size:10px;color:var(--fg3)">all</a>'
+            +'<a href="javascript:void(0)" onclick="bulkToggleGroup('+gi+',false)" style="font-size:10px;color:var(--fg3)">none</a>'
+          +'</div>'
+          +'<div style="display:flex;flex-wrap:wrap;gap:6px">'
+          +rows.map(r=>'<label style="display:inline-flex;align-items:center;gap:5px;padding:3px 7px;border:1px solid '
+            +(r.have?'var(--border)':'var(--blue)')+';border-radius:6px;font-size:11px;'
+            +(r.have?'opacity:.55;':'')+'cursor:pointer">'
+            +'<input type="checkbox" id="bulk-cb-'+r.t+'"'+(r.have?'':' checked')+(r.have?' disabled':'')+'>'
+            +'<span style="font-family:var(--mono);font-weight:700">'+r.t+'</span>'
+            +(r.have?'<span style="color:var(--fg3)">have</span>':'')
+            +'</label>').join('')
+          +'</div></div>';
+      }).join('')
       +'<div style="display:flex;gap:7px;flex-wrap:wrap">'
       +'<button class="btn" onclick="bulkConfirm()">Add '+fresh.length+' to the watchlist</button>'
       +'<button class="btn" onclick="bulkCancel()">Cancel</button></div>'
