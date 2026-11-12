@@ -10518,9 +10518,21 @@ function spySessAcct(){
   }
   return '';
 }
+// The selector's label carries a tick — "Joint JTWROS-7264 ✓" — and the account
+// is written with and without a space before the dash in different places. An
+// exact string match fails on all of that, so compare on letters and digits only.
+function spySessNorm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
 function spySessDays(acct){
-  const rs=(state.trades||[]).filter(t=>t.module==='spy_day'
-    &&(!acct||String(t.account||'').trim()===String(acct).trim()));
+  const all=(state.trades||[]).filter(t=>t.module==='spy_day');
+  const a=spySessNorm(acct);
+  let rs=a?all.filter(t=>spySessNorm(t.account)===a):all;
+  if(!rs.length&&a){
+    const tail=a.replace(/\D/g,'').slice(-4);
+    if(tail)rs=all.filter(t=>spySessNorm(t.account).replace(/\D/g,'').slice(-4)===tail);
+  }
+  // Showing every session is wrong in a small way. Showing nothing, with no
+  // explanation, is wrong in the way that wastes an evening — so never do that.
+  if(!rs.length)rs=all;
   const d={};
   rs.forEach(t=>{
     const k=t.date; if(!k)return;
@@ -10549,22 +10561,66 @@ function spySessFillDates(acct){
   else if(th&&typeof th==='object')Object.keys(th).forEach(k=>walk(th[k]));
   return out;
 }
+// Run atDiag() in the console. It reports what is actually in the page and in
+// state rather than what the code assumed, and it lets the render throw so the
+// real message is captured instead of being swallowed.
+function atDiag(){
+  const has=id=>document.getElementById(id)?'present':'MISSING';
+  const tr=(state.trades||[]);
+  const spy=tr.filter(t=>t.module==='spy_day');
+  const accts=[];
+  spy.forEach(t=>{ const a=JSON.stringify(t.account); if(accts.indexOf(a)<0)accts.push(a); });
+  const sv=id=>{ const el=document.getElementById(id); return el?JSON.stringify(el.value):'MISSING'; };
+  const L=[
+    'trades in state      : '+tr.length,
+    'spy_day sessions     : '+spy.length,
+    'spy_day dates        : '+(spy.map(t=>t.date).sort().join(' ')||'(none)'),
+    'spy_day accounts     : '+(accts.join(' | ')||'(none)'),
+    'txn-acct-select value: '+sv('txn-acct-select'),
+    'cfg-gl-acct value    : '+sv('cfg-gl-acct'),
+    'anchor spy-orders-hd : '+has('spy-orders-hd'),
+    'anchor txn-summary   : '+has('txn-summary'),
+    'anchor cfg-gl-block  : '+has('cfg-gl-block'),
+    'anchor screen-spy    : '+has('screen-spy'),
+    'panel spy-sess-block : '+has('spy-sess-block'),
+    'spySessRender is     : '+(typeof spySessRender),
+    'spySessEl returns    : '+(function(){ try{ return spySessEl()?'an element':'null — no anchor matched'; }catch(e){ return 'threw: '+(e&&e.message||e); } })(),
+    'days it would show   : '+(function(){ try{ return spySessDays(spySessAcct()).length; }catch(e){ return 'threw: '+(e&&e.message||e); } })(),
+  ];
+  let thrown='no';
+  try{ spySessRender(); }catch(e){ thrown=(e&&e.stack)||String(e); }
+  L.push('spySessRender threw  : '+thrown);
+  const out=L.join('\n');
+  try{console.log('%c[AT DIAGNOSTIC]','color:#22c55e;font-weight:700');console.log(out);}catch(e){}
+  return out;
+}
+
 function spySessEl(){
   let el=document.getElementById('spy-sess-block');
   if(el)return el;
-  const anchor=document.getElementById('spy-orders-hd');
-  if(!anchor||!anchor.parentNode)return null;
   el=document.createElement('div');
   el.id='spy-sess-block';
   el.style.cssText='margin:14px 0';
-  anchor.parentNode.insertBefore(el,anchor);
-  return el;
+  // Several anchors, because one guessed id that does not exist means the panel
+  // never appears and says nothing about why.
+  const before=document.getElementById('spy-orders-hd')||document.getElementById('txn-summary');
+  if(before&&before.parentNode){ before.parentNode.insertBefore(el,before); return el; }
+  const after=document.getElementById('cfg-gl-block');
+  if(after&&after.parentNode){ after.parentNode.insertBefore(el,after.nextSibling); return el; }
+  const screen=document.getElementById('screen-spy');
+  if(screen){ screen.insertBefore(el,screen.firstChild); return el; }
+  return null;
 }
 function spySessRender(){
   const el=spySessEl(); if(!el)return;
   const acct=spySessAcct();
   const days=spySessDays(acct);
-  if(!days.length){ el.innerHTML=''; return; }
+  if(!days.length){
+    el.innerHTML='<div style="padding:10px 13px;border:1px solid var(--gold);border-radius:9px;background:var(--s2);font-size:11px;color:var(--gold);line-height:1.6">'
+      +'No SPY sessions are stored yet. Import a Gains &amp; Losses export above and they will appear here.</div>';
+    return;
+  }
+  const filtered=spySessNorm(acct)&&days.length===spySessDays('').length;
   const net=days.reduce((s,d)=>s+d.net,0);
   const wins=days.filter(d=>d.net>0).length;
   const best=days.reduce((a,b)=>(a==null||b.net>a.net)?b:a,null);
@@ -10578,7 +10634,7 @@ function spySessRender(){
     +'<div style="font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--green);margin-bottom:4px">✓ SESSION TOTALS '
       +'<span style="font-weight:400;color:var(--fg3);letter-spacing:0">— from the broker’s Gains &amp; Losses, net of commissions</span></div>'
     +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">'
-      +'These are the matched positions the broker reports'+(acct?(' for '+acct):'')+'. '
+      +'These are the matched positions the broker reports'+((acct&&!filtered)?(' for '+acct):' across every account')+'. '
       +'The orders journal below is built from raw fills and is a separate record.</div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
       +tile('NET P&L','$'+fmt(net,2),net>=0?'var(--green)':'var(--red)')
@@ -12023,12 +12079,26 @@ function apexRender(){
   const o=window.renderAll;
   window.renderAll=function(){
     let r; try{r=o?o.apply(this,arguments):undefined;}catch(e){}
-    try{apexRender();}catch(e){}
-    try{paOrdRender();}catch(e){}
-    try{woRender();}catch(e){}
-    try{if(!window._bulkPending)bulkRender();}catch(e){}
-    try{spySessRender();}catch(e){}
+    // Empty catches hid a panel that never rendered and said nothing about why.
+    // A thrown render is a bug worth hearing about, so log it.
+    const _q=(n,f)=>{ try{f();}catch(e){ try{console.error('[AT] '+n+' failed:',e);}catch(_){} } };
+    _q('apexRender',apexRender);
+    _q('paOrdRender',paOrdRender);
+    _q('woRender',woRender);
+    _q('bulkRender',function(){ if(!window._bulkPending)bulkRender(); });
+    _q('spySessRender',spySessRender);
     return r;
+  };
+})();
+
+// renderAll may not have run yet when the SPY screen is first shown, so kick it
+// once on load as well.
+(function(){
+  setTimeout(function(){ try{spySessRender();}catch(e){} },1200);
+  setTimeout(function(){ try{spySessRender();}catch(e){} },4000);
+})();
+(function(){
+  const _noop=function(){
   };
 })();
 
