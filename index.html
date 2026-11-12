@@ -10218,10 +10218,14 @@ function spyParseGL(text){
     }
   }
   if(!positions.length)return{err:'No closed positions found in that file.'};
-  const days={}; let split=0; const others=[];
+  const days={}; let split=0; const others=[]; const undated=[];
   positions.forEach(p=>{
     const ds=Object.keys(p.dates);
-    if(!ds.length)return;
+    // A position with no readable date used to be dropped here without a word —
+    // not imported, not listed, not counted. In a reconciliation tool that is the
+    // worst kind of failure: the total looks plausible because what is missing
+    // never announces itself. Collect them and say so instead.
+    if(!ds.length){ undated.push({sym:p.sym,qty:p.qty||0,gain:parseFloat((p.gain||0).toFixed(2))}); return; }
     const k=spyGLClassify(p.sym);
     // Only a same-session SPY/XSP option is a SPY day trade. A stock sale, or
     // an option held overnight, is a different kind of trade and goes to its
@@ -10268,7 +10272,7 @@ function spyParseGL(text){
     return v;
   });
   others.sort((a,b)=>a.date<b.date?-1:1);
-  return{days:out,others:others,positions:positions.length,split:split};
+  return{days:out,others:others,positions:positions.length,split:split,undated:undated};
 }
 
 // What kind of position is this line? The G&L export carries stocks, ETFs and
@@ -10385,6 +10389,11 @@ function spyGLPreview(){
       +res.positions+' closed positions → '+res.days.length+' sessions · <strong>'+fresh+' new</strong>, total '
       +'<strong style="color:'+(total>=0?'var(--green)':'var(--red)')+'">'+(total>=0?'+':'')+fmt(total,2)+'</strong>'
       +(res.split?' · ⚠ '+res.split+' position(s) closed across several days and were split by contract count — approximate.':'')
+      +((res.undated&&res.undated.length)?('<br><span style="color:var(--red)">⚠ '+res.undated.length+' position'+(res.undated.length!==1?'s':'')
+        +' had no readable trade date and could not be placed in a session: '
+        +res.undated.map(u=>u.sym+' ('+(u.gain>=0?'+':'')+fmt(u.gain,2)+')').join(' · ')
+        +'. Totalling '+(res.undated.reduce((s,u)=>s+u.gain,0)>=0?'+':'')+fmt(res.undated.reduce((s,u)=>s+u.gain,0),2)
+        +'. Pull the export again with a date range that covers them, or add that day by hand.</span>'):'')
       +'<br>These figures are already net of commissions.'
     +'</div>'
     +(mismatch?'<div style="margin-top:7px;font-size:11px;color:var(--red);line-height:1.6">⚠ '+mismatch+' session'+(mismatch!==1?'s':'')+' already in the app disagree'+(mismatch===1?'s':'')+' with the broker. The broker is right — these were built by pairing raw fills. Correcting keeps your notes, grade and emotion.</div>':'')
@@ -10490,6 +10499,109 @@ async function spyGLFile(input){
     if(ta){ta.value=await f.text();spyGLPreview();}
   }catch(e){toast('Could not read that file: '+e.message,'err',9000);}
   input.value='';
+}
+
+// ══ SPY SESSION TOTALS ══════════════════════════════════════
+// Two stores hold SPY day data and they do not agree. The orders journal below
+// renders E*TRADE transaction history — raw fills, paired by the app. The Gains &
+// Losses import writes finished sessions to state.trades, already matched by the
+// broker and already net of commissions.
+//
+// The broker's own figures are the reference, so this reads those. When a session
+// exists that the fills list has no row for, the totals below are simply wrong,
+// and that is worth naming rather than leaving someone to spot a missing date.
+function spySessAcct(){
+  const ids=['txn-acct-select','cfg-gl-acct'];
+  for(const id of ids){
+    const el=document.getElementById(id);
+    if(el&&el.value&&el.value!=='__other__'&&el.value!=='__all__')return el.value;
+  }
+  return '';
+}
+function spySessDays(acct){
+  const rs=(state.trades||[]).filter(t=>t.module==='spy_day'
+    &&(!acct||String(t.account||'').trim()===String(acct).trim()));
+  const d={};
+  rs.forEach(t=>{
+    const k=t.date; if(!k)return;
+    if(!d[k])d[k]={date:k,net:0,qty:0,syms:{}};
+    d[k].net+=parseFloat(t.netPL)||0;
+    d[k].qty+=Math.abs(parseFloat(t.qty)||0);
+    String(t.symbol||'').split('/').forEach(s=>{if(s)d[k].syms[s]=1;});
+  });
+  return Object.keys(d).sort().map(k=>{
+    d[k].net=parseFloat(d[k].net.toFixed(2));
+    d[k].sym=Object.keys(d[k].syms).sort().join('/');
+    return d[k];
+  });
+}
+// Best effort only — the fills store's shape is not guaranteed, so a day it
+// cannot read is simply not claimed as missing.
+function spySessFillDates(acct){
+  const th=state.transactionHistory;
+  const out={};
+  const walk=a=>{ if(!Array.isArray(a))return;
+    a.forEach(r=>{ if(!r||typeof r!=='object')return;
+      const dt=r.date||r.tradeDate||r.day;
+      const ac=r.account==null?null:String(r.account).trim();
+      if(dt&&(!acct||ac==null||ac===String(acct).trim()))out[String(dt).slice(0,10)]=1; }); };
+  if(Array.isArray(th))walk(th);
+  else if(th&&typeof th==='object')Object.keys(th).forEach(k=>walk(th[k]));
+  return out;
+}
+function spySessEl(){
+  let el=document.getElementById('spy-sess-block');
+  if(el)return el;
+  const anchor=document.getElementById('spy-orders-hd');
+  if(!anchor||!anchor.parentNode)return null;
+  el=document.createElement('div');
+  el.id='spy-sess-block';
+  el.style.cssText='margin:14px 0';
+  anchor.parentNode.insertBefore(el,anchor);
+  return el;
+}
+function spySessRender(){
+  const el=spySessEl(); if(!el)return;
+  const acct=spySessAcct();
+  const days=spySessDays(acct);
+  if(!days.length){ el.innerHTML=''; return; }
+  const net=days.reduce((s,d)=>s+d.net,0);
+  const wins=days.filter(d=>d.net>0).length;
+  const best=days.reduce((a,b)=>(a==null||b.net>a.net)?b:a,null);
+  const worst=days.reduce((a,b)=>(a==null||b.net<a.net)?b:a,null);
+  const fills=spySessFillDates(acct);
+  const gaps=Object.keys(fills).length?days.filter(d=>!fills[d.date]):[];
+  const tile=(lab,val,col)=>'<div style="flex:1;min-width:116px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--s2)">'
+    +'<div style="font-size:9px;letter-spacing:.07em;color:var(--fg3);margin-bottom:3px">'+lab+'</div>'
+    +'<div style="font-family:var(--mono);font-size:14px;font-weight:700;color:'+(col||'var(--fg)')+'">'+val+'</div></div>';
+  el.innerHTML='<div style="padding:12px 14px;border:1px solid var(--green);border-radius:10px;background:var(--s2)">'
+    +'<div style="font-size:12px;font-weight:700;letter-spacing:.04em;color:var(--green);margin-bottom:4px">✓ SESSION TOTALS '
+      +'<span style="font-weight:400;color:var(--fg3);letter-spacing:0">— from the broker’s Gains &amp; Losses, net of commissions</span></div>'
+    +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">'
+      +'These are the matched positions the broker reports'+(acct?(' for '+acct):'')+'. '
+      +'The orders journal below is built from raw fills and is a separate record.</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+      +tile('NET P&L','$'+fmt(net,2),net>=0?'var(--green)':'var(--red)')
+      +tile('SESSIONS',String(days.length))
+      +tile('WIN DAYS',wins+' / '+days.length)
+      +tile('BEST DAY','$'+fmt(best?best.net:0,2),'var(--green)')
+      +tile('WORST DAY','$'+fmt(worst?worst.net:0,2),'var(--red)')
+      +tile('RANGE',days[0].date+' → '+days[days.length-1].date)
+    +'</div>'
+    +(gaps.length?('<div style="font-size:11px;color:var(--gold);line-height:1.6;margin-bottom:9px">'
+      +'⚠ '+gaps.length+' session'+(gaps.length!==1?'s':'')+' below have no row in the fills journal — '
+      +gaps.map(g=>g.date+' ('+(g.net>=0?'+':'')+fmt(g.net,2)+')').join(' · ')
+      +'. Any total taken from that list is short by '
+      +(gaps.reduce((s,g)=>s+g.net,0)>=0?'+':'')+fmt(gaps.reduce((s,g)=>s+g.net,0),2)+'.</div>'):'')
+    +days.slice().reverse().map(d=>'<div style="display:flex;gap:11px;align-items:center;padding:5px 0;border-top:1px solid var(--border);font-size:11px">'
+      +'<span style="font-family:var(--mono);min-width:88px;font-weight:700">'+d.date+'</span>'
+      +'<span style="color:var(--blue);min-width:70px">'+(d.sym||'SPY')+'</span>'
+      +'<span style="color:var(--fg3);min-width:70px">'+d.qty+' ct</span>'
+      +(fills[d.date]?'':'<span style="font-size:10px;color:var(--gold)">not in the list below</span>')
+      +'<span style="margin-left:auto;font-family:var(--mono);font-weight:700;color:'+(d.net>=0?'var(--green)':'var(--red)')+'">'
+        +(d.net>=0?'+':'')+'$'+fmt(d.net,2)+'</span>'
+    +'</div>').join('')
+    +'</div>';
 }
 
 function spyGLPanelEl(){
@@ -11915,6 +12027,7 @@ function apexRender(){
     try{paOrdRender();}catch(e){}
     try{woRender();}catch(e){}
     try{if(!window._bulkPending)bulkRender();}catch(e){}
+    try{spySessRender();}catch(e){}
     return r;
   };
 })();
