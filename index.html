@@ -10595,6 +10595,66 @@ function atDiag(){
   return out;
 }
 
+// Three attempts at locating this panel by id all missed, so this finds it by the
+// text on screen, which cannot be guessed wrong. The panel sums E*TRADE fills and
+// has shown a stale figure since Gains & Losses became the source — a wrong total
+// sitting above the right one is worse than no panel at all, so it is replaced.
+// The orders journal is NOT broken. Given only Gains & Losses sessions it renders
+// them correctly — Yaz-3036 shows all nine days, commissions included. The fault
+// appears only where an account ALSO holds an old fills import: the fills win, and
+// they stopped being updated when G&L became the source. So the stale rows are the
+// problem, not the panel, and the fix is to clear them for that account.
+function spyFillsRows(acct){
+  const th=state.transactionHistory;
+  const a=spySessNorm(acct);
+  const hit=r=>{ if(!r||typeof r!=='object')return false;
+    const ra=r.account==null?'':spySessNorm(r.account);
+    return ra&&ra===a; };
+  let n=0;
+  if(Array.isArray(th))th.forEach(r=>{ if(hit(r))n++; });
+  else if(th&&typeof th==='object')Object.keys(th).forEach(k=>{
+    if(spySessNorm(k)===a)n+=Array.isArray(th[k])?th[k].length:1;
+    else if(Array.isArray(th[k]))th[k].forEach(r=>{ if(hit(r))n++; });
+  });
+  return n;
+}
+function spyFillsClear(acct){
+  const n=spyFillsRows(acct);
+  if(!n){ alert('No old fill rows found for '+acct+'.'); return; }
+  if(!confirm('Remove '+n+' old fill row'+(n!==1?'s':'')+' for '+acct+'?\n\n'
+    +'These came from the Import CSV path and are no longer updated. Your Gains & Losses '
+    +'sessions are kept and the journal will show those instead — the same way Yaz-3036 '
+    +'already does.\n\nNo trades are deleted.'))return;
+  const th=state.transactionHistory;
+  const a=spySessNorm(acct);
+  const keep=r=>!(r&&typeof r==='object'&&r.account!=null&&spySessNorm(r.account)===a);
+  if(Array.isArray(th))state.transactionHistory=th.filter(keep);
+  else if(th&&typeof th==='object')Object.keys(th).forEach(k=>{
+    if(spySessNorm(k)===a)delete th[k];
+    else if(Array.isArray(th[k]))th[k]=th[k].filter(keep);
+  });
+  saveState();
+  try{renderAll();}catch(e){}
+  alert('Removed '+n+' old fill row'+(n!==1?'s':'')+'. The journal now reads your Gains & Losses sessions.');
+}
+function spyStaleFix(){
+  try{
+    const el=spySessEl(); if(!el)return false;
+    const acct=spySessAcct(); if(!acct)return false;
+    const sessions=spySessDays(acct).length;
+    const fills=spyFillsRows(acct);
+    let w=document.getElementById('spy-stale-warn');
+    if(!(sessions&&fills)){ if(w&&w.parentNode)w.parentNode.removeChild(w); return true; }
+    if(!w){ w=document.createElement('div'); w.id='spy-stale-warn'; el.parentNode.insertBefore(w,el.nextSibling); }
+    w.style.cssText='margin:10px 0;padding:11px 14px;border:1px solid var(--gold);border-radius:10px;background:var(--s2);font-size:11px;color:var(--gold);line-height:1.6';
+    w.innerHTML='Two records exist for <strong>'+acct+'</strong>: '+sessions+' Gains &amp; Losses session'+(sessions!==1?'s':'')
+      +' and '+fills+' old fill row'+(fills!==1?'s':'')+' from the CSV import. The journal below shows the fills, which stopped '
+      +'updating — which is why its total is short. Accounts with no fill rows, like Yaz-3036, already show the sessions.'
+      +'<div style="margin-top:8px"><button class="btn" onclick="spyFillsClear(\''+String(acct).replace(/'/g,"\\'")+'\')">Remove the old fill rows for '+acct+'</button></div>';
+    return true;
+  }catch(e){ try{console.error('[AT] spyStaleFix failed:',e);}catch(_){} return false; }
+}
+
 function spySessEl(){
   let el=document.getElementById('spy-sess-block');
   if(el)return el;
@@ -12087,6 +12147,7 @@ function apexRender(){
     _q('woRender',woRender);
     _q('bulkRender',function(){ if(!window._bulkPending)bulkRender(); });
     _q('spySessRender',spySessRender);
+    _q('spyStaleFix',spyStaleFix);
     return r;
   };
 })();
@@ -12094,8 +12155,12 @@ function apexRender(){
 // renderAll may not have run yet when the SPY screen is first shown, so kick it
 // once on load as well.
 (function(){
-  setTimeout(function(){ try{spySessRender();}catch(e){} },1200);
-  setTimeout(function(){ try{spySessRender();}catch(e){} },4000);
+  [800,2000,5000].forEach(function(ms){
+    setTimeout(function(){
+      try{spySessRender();}catch(e){ try{console.error('[AT] spySessRender:',e);}catch(_){} }
+      try{spyStaleFix();}catch(e){ try{console.error('[AT] spyStaleFix:',e);}catch(_){} }
+    },ms);
+  });
 })();
 (function(){
   const _noop=function(){
