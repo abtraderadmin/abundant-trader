@@ -10956,6 +10956,32 @@ function spyRenderFromTrades(acct){
     if(!sessions&&hasFills&&typeof orig==='function')return orig.apply(this,arguments);
     return spyRenderFromTrades(acct);
   };
+  // The ring badge is built in ringCard() from findTxnForAccount(), the same
+  // fills lookup the journal used — which is why correcting the journal left the
+  // badge frozen on its old total. Correcting the figure here fixes every
+  // consumer at once, and gives accounts that never had a fills import a badge
+  // they were missing entirely.
+  const origFind=window.findTxnForAccount;
+  if(typeof origFind==='function'){
+    window.findTxnForAccount=function(acctName){
+      let r=null;
+      try{r=origFind.apply(this,arguments);}catch(e){}
+      let sessions=[];
+      try{sessions=spyTradesForAccount(acctName);}catch(e){}
+      if(!sessions.length)return r;
+      let net=0; sessions.forEach(t=>{net+=parseFloat(t.netPL)||0;});
+      net=parseFloat(net.toFixed(2));
+      if(r&&typeof r==='object'){
+        const out=Object.assign({},r);
+        out.totalNet=net;
+        if(!out.acctName)out.acctName=acctName;
+        out.fromSessions=true;
+        return out;
+      }
+      return{acctName:acctName,totalNet:net,fromSessions:true};
+    };
+  }
+
   // The account rings read today's P/L from fills only, which is why an
   // account imported from G&L showed "No data today" despite having trades.
   const origToday=window.getTodayPnl;
