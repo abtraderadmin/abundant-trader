@@ -10637,22 +10637,12 @@ function spyFillsClear(acct){
   try{renderAll();}catch(e){}
   alert('Removed '+n+' old fill row'+(n!==1?'s':'')+'. The journal now reads your Gains & Losses sessions.');
 }
+// No longer needed: the journal now prefers sessions, so there is nothing stale
+// to warn about. spyFillsClear stays available for clearing old fill rows by hand.
 function spyStaleFix(){
-  try{
-    const el=spySessEl(); if(!el)return false;
-    const acct=spySessAcct(); if(!acct)return false;
-    const sessions=spySessDays(acct).length;
-    const fills=spyFillsRows(acct);
-    let w=document.getElementById('spy-stale-warn');
-    if(!(sessions&&fills)){ if(w&&w.parentNode)w.parentNode.removeChild(w); return true; }
-    if(!w){ w=document.createElement('div'); w.id='spy-stale-warn'; el.parentNode.insertBefore(w,el.nextSibling); }
-    w.style.cssText='margin:10px 0;padding:11px 14px;border:1px solid var(--gold);border-radius:10px;background:var(--s2);font-size:11px;color:var(--gold);line-height:1.6';
-    w.innerHTML='Two records exist for <strong>'+acct+'</strong>: '+sessions+' Gains &amp; Losses session'+(sessions!==1?'s':'')
-      +' and '+fills+' old fill row'+(fills!==1?'s':'')+' from the CSV import. The journal below shows the fills, which stopped '
-      +'updating — which is why its total is short. Accounts with no fill rows, like Yaz-3036, already show the sessions.'
-      +'<div style="margin-top:8px"><button class="btn" onclick="spyFillsClear(\''+String(acct).replace(/'/g,"\\'")+'\')">Remove the old fill rows for '+acct+'</button></div>';
-    return true;
-  }catch(e){ try{console.error('[AT] spyStaleFix failed:',e);}catch(_){} return false; }
+  const w=document.getElementById('spy-stale-warn');
+  if(w&&w.parentNode)w.parentNode.removeChild(w);
+  return true;
 }
 
 function spySessEl(){
@@ -10880,7 +10870,15 @@ function spyRenderFromTrades(acct){
     const acct=sel?sel.value:'';
     let hasFills=false;
     try{hasFills=!!(typeof findTxnForAccount==='function'&&findTxnForAccount(acct));}catch(e){}
-    if(hasFills&&typeof orig==='function')return orig.apply(this,arguments);
+    // Sessions win. This used to read "if(hasFills) use fills", which was written
+    // when an account had one source or the other. Once an account had both, the
+    // fills always won — and fills stop being updated the moment Gains & Losses
+    // becomes the import path, so the panel froze on a partial total while the
+    // correct figure sat one screen away. The broker's matched, commission-net
+    // sessions are the record; fills are only the fallback when there are none.
+    let sessions=0;
+    try{sessions=spyTradesForAccount(acct).length;}catch(e){}
+    if(!sessions&&hasFills&&typeof orig==='function')return orig.apply(this,arguments);
     return spyRenderFromTrades(acct);
   };
   // The account rings read today's P/L from fills only, which is why an
