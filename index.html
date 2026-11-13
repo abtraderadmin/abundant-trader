@@ -10639,9 +10639,32 @@ function spyFillsClear(acct){
 }
 // No longer needed: the journal now prefers sessions, so there is nothing stale
 // to warn about. spyFillsClear stays available for clearing old fill rows by hand.
+// The account cards carry a badge built from the fills store, so an account with
+// an old CSV import still shows its frozen total there even though the journal
+// now reads sessions. Clearing those rows removes it — offered where the import
+// lives, rather than left for the console.
 function spyStaleFix(){
   const w=document.getElementById('spy-stale-warn');
   if(w&&w.parentNode)w.parentNode.removeChild(w);
+  try{
+    const host=document.getElementById('cfg-gl-block');
+    if(!host)return true;
+    let bar=document.getElementById('spy-fills-bar');
+    const names=(typeof spyKnownAccounts==='function')?spyKnownAccounts():[];
+    const stale=names.filter(n=>{
+      try{ return spyFillsRows(n)>0 && spyTradesForAccount(n).length>0; }catch(e){ return false; }
+    });
+    if(!stale.length){ if(bar&&bar.parentNode)bar.parentNode.removeChild(bar); return true; }
+    if(!bar){ bar=document.createElement('div'); bar.id='spy-fills-bar'; host.appendChild(bar); }
+    bar.style.cssText='margin-top:10px;padding:9px 12px;border:1px solid var(--gold);border-radius:8px;font-size:11px;color:var(--gold);line-height:1.6';
+    bar.innerHTML='Old CSV fill rows are still stored for '
+      +stale.map(n=>'<strong>'+n+'</strong> ('+spyFillsRows(n)+')').join(', ')
+      +'. The journal ignores them now, but the account card still totals them — which is where that stale figure on the ring comes from. '
+      +'Removing them deletes no trades.'
+      +'<div style="margin-top:7px;display:flex;gap:7px;flex-wrap:wrap">'
+      +stale.map(n=>'<button class="btn" onclick="spyFillsClear(\''+String(n).replace(/'/g,"\\'")+'\')">Remove '+spyFillsRows(n)+' fill rows — '+n+'</button>').join('')
+      +'</div>';
+  }catch(e){ try{console.error('[AT] spyStaleFix:',e);}catch(_){} }
   return true;
 }
 
@@ -10788,6 +10811,38 @@ async function atAuthInit(){
 // from a Gains & Losses file had trades in the Journal but an empty panel here.
 // The Journal stays the record; this is a view of it. The original renderer is
 // wrapped rather than replaced, so the fills path is untouched.
+// Locating code by reading 12,000 lines has a poor hit rate. This asks the page
+// instead: give it a number you can see, and it reports the element holding it
+// and its ancestors with ids and classes — which names the renderer directly.
+// atFindBadge('4082')
+function atFindBadge(txt){
+  const want=String(txt==null?'':txt).replace(/[^0-9.]/g,'');
+  if(!want){console.log('Pass a number you can see, e.g. atFindBadge("4082")');return '';}
+  const hits=[];
+  const all=document.querySelectorAll('*');
+  for(let i=0;i<all.length;i++){
+    const el=all[i];
+    if(el.children.length)continue;                 // leaf nodes only
+    const digits=(el.textContent||'').replace(/[^0-9.]/g,'');
+    if(!digits||digits.indexOf(want)<0)continue;
+    const chain=[]; let p=el, hops=0;
+    while(p&&hops<7){
+      let d=(p.tagName||'').toLowerCase();
+      if(p.id)d+='#'+p.id;
+      if(p.className&&typeof p.className==='string'&&p.className.trim())d+='.'+p.className.trim().split(/\s+/).join('.');
+      chain.push(d); p=p.parentElement; hops++;
+    }
+    hits.push('"'+(el.textContent||'').trim().slice(0,44)+'"\n     '+chain.join('  <  '));
+  }
+  const s=hits.length?hits.join('\n\n'):'No element on this screen shows "'+want+'".';
+  try{console.log('%c[AT BADGE]','color:#22c55e;font-weight:700');console.log(s);}catch(e){}
+  return s;
+}
+
+function atLocalDay(){
+  const d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
 function spyAcctMatch(a,b){
   const A=String(a||'').trim(), B=String(b||'').trim();
   if(!A||!B)return false;
@@ -10888,7 +10943,10 @@ function spyRenderFromTrades(acct){
     let r=null;
     try{r=(typeof origToday==='function')?origToday.apply(this,arguments):null;}catch(e){}
     if(r)return r;
-    const today=new Date().toISOString().slice(0,10);
+    // Local date, not UTC. toISOString() rolls to tomorrow after 6pm Central, so
+    // every evening session reported "No data today" — the trades were dated the
+    // 12th while this asked for the 13th. The session itself runs in local time.
+    const today=atLocalDay();
     const rows=spyTradesForAccount(acctName).filter(t=>t.date===today);
     if(!rows.length)return null;
     let n=0; rows.forEach(t=>{n+=parseFloat(t.netPL)||0;});
