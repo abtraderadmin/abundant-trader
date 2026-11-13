@@ -10839,6 +10839,26 @@ function atFindBadge(txt){
   return s;
 }
 
+// The whole app is inline in the page, so it can search its own source. Finding
+// a renderer by reading a 12,000-line file in chunks has a poor hit rate; this
+// returns the code around every occurrence of a string.
+//   atSrc('spy-rings-container-day')
+function atSrc(needle,around){
+  const pad=parseInt(around,10)||420;
+  let src='';
+  try{ src=document.documentElement.outerHTML||''; }catch(e){ return 'could not read the page source'; }
+  const n=String(needle||'');
+  if(!n)return 'Pass something to look for, e.g. atSrc("spy-rings-container-day")';
+  const out=[]; let i=src.indexOf(n), guard=0;
+  while(i>=0&&guard<12){
+    out.push('--- hit '+(out.length+1)+' at char '+i+' ---\n'+src.slice(Math.max(0,i-pad),i+pad));
+    i=src.indexOf(n,i+n.length); guard++;
+  }
+  const s=out.length?out.join('\n\n'):'"'+n+'" not found in the page source.';
+  try{console.log('%c[AT SRC] '+out.length+' hit(s)','color:#22c55e;font-weight:700');console.log(s);}catch(e){}
+  return s;
+}
+
 function atLocalDay(){
   const d=new Date();
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
