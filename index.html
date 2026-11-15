@@ -10279,9 +10279,9 @@ function atBuildAuthUI(){
     +'<input class="fc" id="at-auth-pass" type="password" autocomplete="current-password" placeholder="At least 8 characters" style="margin-bottom:6px">'
     +'<div id="at-auth-msg" style="font-size:11px;min-height:17px;color:var(--fg3);margin-bottom:8px;line-height:1.5"></div>'
     +'<button class="btn-primary" style="width:100%;margin-bottom:8px" onclick="atSignIn()">Sign In</button>'
-    +'<div style="display:flex;gap:8px">'
-      +'<button class="btn-secondary" style="flex:1;font-size:12px" onclick="atSignUp()">Create account</button>'
-      +'<button class="btn-secondary" style="flex:1;font-size:12px" onclick="atResetPw()">Reset password</button>'
+    +'<button class="btn-secondary" style="width:100%;font-size:12px" onclick="atResetPw()">Reset password</button>'
+    +'<div style="margin-top:12px;padding:9px 11px;border:1px solid var(--border);border-radius:8px;background:var(--s2);font-size:11px;color:var(--fg2);line-height:1.55">'
+      +'Accounts are created by invitation. If you are expecting access, check your email for an invite link and set your password there.'
     +'</div>'
     +'<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:11px;text-align:center">'
       +'<a href="#" onclick="atSkipAuth();return false;" style="font-size:11px;color:var(--fg3);text-decoration:underline">Continue without signing in — this device only</a>'
@@ -10311,7 +10311,13 @@ async function atSignUp(){
   if(!em||pw.length<8){atAuthMsg('Enter an email and a password of at least 8 characters.','var(--gold)');return;}
   atAuthMsg('Creating account…');
   const{data,error}=await c.auth.signUp({email:em,password:pw,options:{emailRedirectTo:location.href}});
-  if(error){atAuthMsg(error.message,'var(--red)');return;}
+  if(error){
+    const closed=/signup|sign-up|not allowed|disabled/i.test(error.message||'')||error.status===422;
+    atAuthMsg(closed
+      ? 'This app is invitation only \u2014 new accounts cannot be created here. Check your email for an invite link, or ask the account owner to send one.'
+      : error.message,'var(--red)');
+    return;
+  }
   if(data&&data.session&&data.session.user){
     atUser=data.session.user; atAuthShow(false);
     atSyncChip('☁ syncing…','var(--gold)');
