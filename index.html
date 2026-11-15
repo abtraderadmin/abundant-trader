@@ -3863,7 +3863,9 @@ function savePAAccounts(){
   const _oldPa=(state.settings.paAccounts||[]).slice();
   state.settings.evalAccounts=ev;
   state.settings.paAccounts=pa;
-  try{atRenameSlots(_oldEv,ev);atRenameSlots(_oldPa,pa);}catch(e){}
+  // atDeriveAccounts() was missing here while the paper and cash paths both
+  // had it, so a PA or eval rename left state.accounts on the old name.
+  try{atRenameSlots(_oldEv,ev);atRenameSlots(_oldPa,pa);atDeriveAccounts();}catch(e){}
   // Capture per-account goals
   const ag=state.settings.accountGoals||{};
   ev.forEach((nm,i)=>{if(nm){const v=parseFloat(document.getElementById(`cfg-ev${i+1}-goal`)?.value);if(v>0)ag[nm]=v;}});
@@ -13010,7 +13012,12 @@ function atNameKeyedMaps(){
     ['accountBirthYear',s.accountBirthYear],['accountAnnualDist',s.accountAnnualDist],
     ['accountAnnualContrib',s.accountAnnualContrib],
     ['stockHoldings',state.stockHoldings],['portfolioOpen',state.portfolioOpen],
-    ['transactionHistory',state.transactionHistory]
+    ['transactionHistory',state.transactionHistory],
+    // Futures risk config. Left out of this list until now, so renaming an
+    // Apex account dropped its size, drawdown and contract ceiling and
+    // apexCfg() rebuilt it at defaults without saying so. Sizing against a
+    // $2,500 drawdown you do not have is exactly what this list exists to stop.
+    ['apexAccounts',s.apexAccounts]
   ];
 }
 
