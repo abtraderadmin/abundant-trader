@@ -10199,6 +10199,7 @@ async function atCloudPush(force){
   atSetCloudSeen((res.data&&res.data.updated_at)||stamp);
   atFlagConflict(false);
   try{if(typeof atPushAccounts==='function')atPushAccounts();}catch(e){}
+  try{if(typeof atPushTrades==='function')atPushTrades();}catch(e){}
   try{localStorage.setItem('at_cloud_synced_at',new Date().toISOString());}catch(e){}
   atSyncChip('☁ saved '+new Date().toLocaleTimeString(),'var(--green)');
   if(typeof atRenderCloudStatus==='function')atRenderCloudStatus();
@@ -13078,6 +13079,148 @@ async function atPushAccounts(){
       atDeriveAccounts();
       console.log('[AT] accounts derived:',(state.accounts||[]).length);
     }catch(e){console.warn('[AT] account derivation failed',e);}
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);
+  else boot();
+})();
+
+</script>
+
+<script>
+// ── TRADES: account ids + cloud mirror ───────────────────────
+// Backfills accountId onto every trade from its account name, then mirrors
+// trades to Postgres. Only rows whose content actually changed are sent, so
+// a routine save does not re-upload 189 records.
+//
+// The blob stays authoritative. Nothing reads from the table yet.
+
+function atNum(v){
+  if(v===''||v==null)return null;
+  var n=Number(v);
+  return isFinite(n)?n:null;
+}
+function atDate(v){
+  var s=String(v||'').slice(0,10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s)?s:null;
+}
+// djb2 — only needs to detect change, not resist collisions
+function atHash(s){
+  var h=5381,i=s.length;
+  while(i)h=(h*33)^s.charCodeAt(--i);
+  return (h>>>0).toString(36);
+}
+function atSigMap(){
+  try{return JSON.parse(localStorage.getItem('at_trades_sig')||'{}');}catch(e){return{};}
+}
+function atSetSigMap(m){
+  try{localStorage.setItem('at_trades_sig',JSON.stringify(m));}catch(e){}
+}
+
+// Give every trade an accountId resolved from its account name.
+// Idempotent and cheap; safe to run on every push.
+function atBackfillTradeAccountIds(){
+  if(!Array.isArray(state.trades))return 0;
+  var n=0;
+  state.trades.forEach(function(t){
+    if(!t||t.accountId)return;
+    var nm=String(t.account||'').trim();
+    if(!nm)return;
+    var id=(typeof atAccountIdByName==='function')?atAccountIdByName(nm):null;
+    if(id){t.accountId=id;n++;}
+  });
+  if(n)console.log('[AT] trade accountId backfilled on',n,'trades');
+  return n;
+}
+
+var AT_TRADE_COLS=['id','account','accountId','module','date','symbol','ticker','direction',
+  'optType','setup','regime','entry','stop','t1','target','qty','shares','contracts',
+  'exitPrice','grossPL','feesActual','netPL','rr','grade','status',
+  'emotion','thesis','lesson','rulesFollowed','mistakeCategory'];
+
+function atTradeRow(t,uid){
+  var extra={};
+  Object.keys(t||{}).forEach(function(k){
+    if(AT_TRADE_COLS.indexOf(k)===-1)extra[k]=t[k];
+  });
+  return {
+    id:String(t.id),
+    user_id:uid,
+    account_id:t.accountId||null,
+    account_name:t.account||null,
+    module:t.module||null,
+    trade_date:atDate(t.date),
+    symbol:t.symbol||t.ticker||null,
+    direction:t.direction||null,
+    opt_type:t.optType||null,
+    setup:t.setup||null,
+    regime:t.regime||null,
+    entry:atNum(t.entry),
+    stop:atNum(t.stop),
+    t1:atNum(t.t1),
+    target:atNum(t.target),
+    qty:atNum(t.qty!=null?t.qty:(t.shares!=null?t.shares:t.contracts)),
+    exit_price:atNum(t.exitPrice),
+    gross_pl:atNum(t.grossPL),
+    fees:atNum(t.feesActual),
+    net_pl:atNum(t.netPL),
+    rr:atNum(t.rr),
+    grade:t.grade||null,
+    status:t.status||null,
+    journal:{
+      emotion:t.emotion||null, thesis:t.thesis||null,
+      lesson:t.lesson||null, rulesFollowed:t.rulesFollowed||null,
+      mistakeCategory:t.mistakeCategory||null
+    },
+    data:extra,
+    deleted:false,
+    updated_at:new Date().toISOString()
+  };
+}
+
+// Mirror changed trades. Fire-and-forget after a successful blob push.
+async function atPushTrades(){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser||!Array.isArray(state.trades))return false;
+
+  atBackfillTradeAccountIds();
+
+  var sig=atSigMap(), next={}, changed=[], seen={};
+  state.trades.forEach(function(t){
+    if(!t||!t.id)return;
+    var id=String(t.id); seen[id]=1;
+    var h=atHash(JSON.stringify(t));
+    next[id]=h;
+    if(sig[id]!==h)changed.push(atTradeRow(t,atUser.id));
+  });
+
+  // Trades deleted locally become tombstones rather than vanishing,
+  // so another device cannot resurrect them.
+  var gone=Object.keys(sig).filter(function(id){return !seen[id];});
+  gone.forEach(function(id){
+    changed.push({id:id,user_id:atUser.id,deleted:true,updated_at:new Date().toISOString()});
+  });
+
+  if(!changed.length)return true;
+
+  for(var i=0;i<changed.length;i+=200){
+    var batch=changed.slice(i,i+200);
+    var res=await c.from('trades').upsert(batch,{onConflict:'id'});
+    if(res.error){console.warn('[AT] trades mirror failed',res.error);return false;}
+  }
+  atSetSigMap(next);
+  console.log('[AT] trades mirrored:',changed.length,'of',state.trades.length,
+              gone.length?('('+gone.length+' tombstoned)'):'');
+  return true;
+}
+
+(function(){
+  function boot(){
+    try{
+      if(typeof state==='undefined'||!Array.isArray(state.trades))return;
+      atBackfillTradeAccountIds();
+      var withId=state.trades.filter(function(t){return t&&t.accountId;}).length;
+      console.log('[AT] trades:',state.trades.length,'· with accountId:',withId);
+    }catch(e){console.warn('[AT] trade backfill failed',e);}
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);
   else boot();
