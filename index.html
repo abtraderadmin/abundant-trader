@@ -3818,7 +3818,7 @@ function renderCfg(){
     dgF.innerHTML=fAccts.map(function(nm,i){
       return '<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px">'
         +'<div class="cfg-lbl" style="min-width:140px;margin-bottom:0;font-size:11px;color:var(--fg)">'+nm+'</div>'
-        +'<span style="color:var(--fg3);font-size:11px;white-space:nowrap">Target '+${D}+'</span>'
+        +'<span style="color:var(--fg3);font-size:11px;white-space:nowrap">Target $</span>'
         +'<input class="fc mono" id="cfg-fday-goal-'+(i+1)+'" type="number" step="25" min="0" placeholder="e.g. 250" style="width:90px" value="'+(dg[nm]||'')+'"></div>';
     }).join('')||'<div style="font-size:11px;color:var(--fg3)">No eval or PA accounts set yet.</div>';
   }
