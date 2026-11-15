@@ -566,6 +566,7 @@ body::before{
     <button class="tab" data-screen="perf" onclick="showScreen('perf')"><span class="dot"></span>Performance</button>
     <button class="tab" data-screen="cfg" onclick="showScreen('cfg')"><span class="dot"></span>Settings</button>
     <button class="tab" data-screen="watchlist" onclick="showScreen('watchlist')"><span class="dot"></span>Watchlist</button>
+    <button class="tab" data-screen="riskplan" onclick="showScreen('riskplan')"><span class="dot"></span>Risk Plan</button>
   </nav>
   <div class="hdr-right">
     <button class="icon-btn" title="Toggle theme" onclick="toggleTheme()">
@@ -1865,6 +1866,193 @@ body::before{
 </section>
 
 <!-- ====================================================
+     RISK PLAN SCREEN
+===================================================== -->
+<section class="screen" id="screen-riskplan">
+  <style>
+    #screen-riskplan .rp-tabs{display:flex;gap:18px;border-bottom:1px solid var(--border);margin-bottom:16px}
+    #screen-riskplan .rp-tab{background:none;border:0;padding:9px 2px;font:inherit;font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--fg3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+    #screen-riskplan .rp-tab.on{color:var(--fg);border-bottom-color:var(--gold)}
+    #screen-riskplan .rp-hero{background:var(--s2);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+    #screen-riskplan .rp-hero .rp-lbl{font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--fg3);margin-bottom:6px}
+    #screen-riskplan .rp-big{font-family:var(--mono);font-size:34px;font-weight:600;line-height:1.05;font-variant-numeric:tabular-nums;color:var(--gold)}
+    #screen-riskplan .rp-sub{font-size:11px;color:var(--fg2);margin-top:6px}
+    #screen-riskplan .rp-empty{color:var(--fg3);font-size:12px;padding:22px 2px;text-align:center}
+    #screen-riskplan .rp-pres{display:flex;flex-wrap:wrap;gap:6px}
+    #screen-riskplan .rp-pres button{flex:1 1 60px;background:var(--s2);border:1px solid var(--border);color:var(--fg2);border-radius:6px;padding:9px 4px;font:inherit;font-size:12px;font-weight:600;cursor:pointer}
+    #screen-riskplan .rp-pres button.on{background:var(--gold-bg);border-color:var(--gold);color:var(--gold)}
+    #screen-riskplan .rp-go{width:100%;background:var(--gold);color:#0B1220;border:0;border-radius:7px;padding:11px;font:inherit;font-size:13px;font-weight:700;letter-spacing:.03em;cursor:pointer;margin-top:12px}
+    #screen-riskplan .rp-go:hover{opacity:.9}
+    #screen-riskplan .rp-meter{height:7px;background:var(--s3);border-radius:4px;overflow:hidden;margin:10px 0 5px}
+    #screen-riskplan .rp-fill{height:100%;background:linear-gradient(90deg,var(--green),var(--gold));width:0;transition:width .5s ease}
+    #screen-riskplan .rp-cap{display:flex;justify-content:space-between;font-size:10px;color:var(--fg3)}
+    #screen-riskplan .rp-note{font-size:11px;color:var(--fg2);line-height:1.5;margin-top:12px;padding-left:10px;border-left:2px solid var(--border2)}
+    #screen-riskplan .rp-crow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+    #screen-riskplan .rp-ck{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--fg3);min-width:92px}
+    #screen-riskplan .rp-cv{font-family:var(--mono);font-size:14px;color:var(--fg);flex:1}
+    #screen-riskplan .rp-copy{background:var(--s2);border:1px solid var(--border);color:var(--fg2);border-radius:5px;padding:4px 10px;font:inherit;font-size:10px;font-weight:600;cursor:pointer}
+    #screen-riskplan .rp-copy.done{background:var(--green-bg);border-color:var(--green);color:var(--green)}
+    #screen-riskplan .rp-warn{background:var(--red-bg);border:1px solid var(--red);color:var(--red);border-radius:7px;padding:9px 12px;font-size:11px;margin-top:10px}
+    #screen-riskplan .rp-flag{background:var(--gold-bg);border:1px solid var(--gold);color:var(--gold);border-radius:7px;padding:9px 12px;font-size:11px;margin-top:10px}
+    #screen-riskplan .rp-badge{display:inline-block;background:var(--purple-bg);color:var(--purple);border:1px solid var(--purple);border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700;letter-spacing:.05em;margin-left:6px}
+    #screen-riskplan .rp-hide{display:none!important}
+    #screen-riskplan .rp-grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @media(max-width:560px){#screen-riskplan .rp-big{font-size:28px}}
+  </style>
+
+  <div class="section-hd">
+    <div class="section-title">Risk Plan</div>
+    <span class="gov-badge">⚙ Governor Active</span>
+  </div>
+
+  <div class="rp-grid2" id="rp-wrap">
+
+    <!-- STEP 1 -->
+    <div class="trade-form" style="margin-bottom:0">
+      <div class="form-hd">
+        <span class="form-title" id="rp-formTitle">What are you about to buy?</span>
+        <span class="mod-badge">Step 1</span>
+      </div>
+      <div class="form-body" style="grid-template-columns:1fr 1fr">
+
+        <div class="fg form-full">
+          <div class="seg">
+            <button class="seg-opt al" id="rp-m-pre" onclick="rpSetMode('pre')" style="--seg-al:var(--gold)">Before I buy</button>
+            <button class="seg-opt" id="rp-m-own" onclick="rpSetMode('own')">I already own it</button>
+          </div>
+        </div>
+
+        <div class="fg form-full">
+          <label class="fl">Type<span class="req">*</span></label>
+          <div class="seg">
+            <button class="seg-opt al" id="rp-a-option" onclick="rpSetAsset('option')" style="--seg-al:var(--purple)">Option</button>
+            <button class="seg-opt" id="rp-a-stock" onclick="rpSetAsset('stock')">Stock</button>
+          </div>
+        </div>
+
+        <div class="fg">
+          <label class="fl">Ticker</label>
+          <input class="fc mono" id="rp-ticker" type="text" placeholder="SPY" oninput="this.value=this.value.toUpperCase()">
+        </div>
+        <div class="fg rp-opt">
+          <label class="fl">Call or put</label>
+          <select class="fc" id="rp-cp"><option>CALL</option><option>PUT</option></select>
+        </div>
+        <div class="fg rp-opt">
+          <label class="fl">Strike</label>
+          <input class="fc mono" id="rp-strike" type="number" step="0.01" placeholder="743">
+        </div>
+        <div class="fg rp-opt">
+          <label class="fl">Expiration <span id="rp-dte"></span></label>
+          <input class="fc" id="rp-exp" type="date" onchange="rpDTE()">
+        </div>
+
+        <div class="fg">
+          <label class="fl" id="rp-qtyLbl">Contracts<span class="req">*</span></label>
+          <input class="fc mono" id="rp-qty" type="number" step="1" placeholder="3" oninput="rpClear()">
+        </div>
+        <div class="fg">
+          <label class="fl" id="rp-entryLbl">Price you plan to pay<span class="req">*</span></label>
+          <input class="fc mono" id="rp-entry" type="number" step="0.01" placeholder="1.15" oninput="rpClear()">
+          <div style="font-size:10px;color:var(--fg3);margin-top:4px" id="rp-entryHint">Per contract — the option price, not the stock price.</div>
+        </div>
+        <div class="fg rp-ownonly rp-hide">
+          <label class="fl">Price now</label>
+          <input class="fc mono" id="rp-current" type="number" step="0.01" placeholder="1.29" oninput="rpClear()">
+        </div>
+        <div class="fg rp-ownonly rp-hide">
+          <label class="fl">Highest since you bought</label>
+          <input class="fc mono" id="rp-high" type="number" step="0.01" placeholder="1.35">
+        </div>
+
+        <div class="fg form-full rp-stockonly rp-hide">
+          <label class="fl">Set the stop by</label>
+          <div class="seg">
+            <button class="seg-opt al" id="rp-b-pct" onclick="rpSetBasis('pct')" style="--seg-al:var(--gold)">Percent</button>
+            <button class="seg-opt" id="rp-b-price" onclick="rpSetBasis('price')">Stop price</button>
+          </div>
+          <div style="font-size:10px;color:var(--fg3);margin-top:5px">A stop price under a real chart level is what the Governor wants on stock trades. Percent is the quick path.</div>
+        </div>
+
+        <div class="rp-note form-full">For buying stocks and options only. Short selling and selling options work differently and are not covered here.</div>
+      </div>
+    </div>
+
+    <!-- STEP 2 -->
+    <div class="trade-form" style="margin-bottom:0">
+      <div class="form-hd">
+        <span class="form-title">Your plan</span>
+        <span class="mod-badge">Step 2</span>
+      </div>
+      <div class="form-body" style="display:block;padding:16px 18px">
+
+        <div class="rp-tabs">
+          <button class="rp-tab on" id="rp-t-stop"  onclick="rpTab('stop')">Stop loss</button>
+          <button class="rp-tab"    id="rp-t-size"  onclick="rpTab('size')">Size my trade</button>
+          <button class="rp-tab"    id="rp-t-trail" onclick="rpTab('trail')">Trailing stop</button>
+        </div>
+
+        <!-- stop -->
+        <div id="rp-p-stop">
+          <div id="rp-pctBlock">
+            <label class="fl">How much of this trade are you OK losing?</label>
+            <div class="rp-pres" id="rp-pres">
+              <button data-p="10" onclick="rpPct(10)">10%</button>
+              <button data-p="15" onclick="rpPct(15)">15%</button>
+              <button data-p="20" class="on" onclick="rpPct(20)">20%</button>
+              <button data-p="25" onclick="rpPct(25)">25%</button>
+              <button data-p="30" onclick="rpPct(30)">30%</button>
+              <button data-p="custom" onclick="rpPct('custom')">Custom</button>
+            </div>
+            <div class="fg rp-hide" id="rp-customWrap" style="margin-top:10px">
+              <label class="fl">Custom %</label>
+              <input class="fc mono" id="rp-pct" type="number" step="0.1" placeholder="35" oninput="rpClear()">
+            </div>
+          </div>
+          <div class="fg rp-hide" id="rp-stopAtWrap">
+            <label class="fl">Your stop price<span class="req">*</span></label>
+            <input class="fc mono" id="rp-stopAt" type="number" step="0.01" placeholder="47.00" oninput="rpClear()">
+            <div style="font-size:10px;color:var(--fg3);margin-top:4px">The level that says the setup is wrong — a swing low, moving average, or channel base.</div>
+          </div>
+          <button class="rp-go" onclick="rpRunStop()">Show my risk</button>
+          <div id="rp-r-stop"><div class="rp-empty">Your stop price and the dollars on the line show up here.</div></div>
+        </div>
+
+        <!-- size -->
+        <div id="rp-p-size" class="rp-hide">
+          <label class="fl">What is the most money you are OK losing on this trade?</label>
+          <input class="fc mono" id="rp-maxRisk" type="number" step="1" placeholder="95" oninput="rpClear()">
+          <div style="font-size:10px;color:var(--fg3);margin-top:5px" id="rp-sizeHint">Uses your 20% stop from the Stop loss tab.</div>
+          <button class="rp-go" onclick="rpRunSize()">Size my trade</button>
+          <div id="rp-r-size"><div class="rp-empty">The most that fits your plan shows up here.</div></div>
+        </div>
+
+        <!-- trail -->
+        <div id="rp-p-trail" class="rp-hide">
+          <label class="fl">How far behind the price should your stop follow?</label>
+          <div class="rp-grid2" style="margin-top:8px">
+            <div class="fg">
+              <label class="fl" id="rp-trailHighLbl">Price to trail from</label>
+              <input class="fc mono" id="rp-trailHigh" type="number" step="0.01" placeholder="1.29" oninput="rpClear()">
+            </div>
+            <div class="fg">
+              <label class="fl">Trail %</label>
+              <input class="fc mono" id="rp-trailPct" type="number" step="0.1" placeholder="10" value="10" oninput="rpClear()">
+            </div>
+          </div>
+          <div style="font-size:10px;color:var(--fg3);margin-top:4px" id="rp-trailHint">Before you buy, this is usually the price you plan to pay.</div>
+          <button class="rp-go" onclick="rpRunTrail()">Show my trailing stop</button>
+          <div id="rp-r-trail"><div class="rp-empty">Your trailing stop and what it locks in show up here.</div></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="rp-note" style="margin-top:4px">Planning tool. Nothing here places an order. Stop prices and dollar figures are estimates — real fills differ with slippage, gaps, thin volume, fees and your broker's order rules. Check every detail in your broker before you send it.</div>
+</section>
+
+<!-- ====================================================
      JOURNAL / LOG SCREEN
 ===================================================== -->
 <section class="screen" id="screen-log">
@@ -2245,7 +2433,7 @@ let state = {
 function loadState(){
   try{
     const raw=localStorage.getItem('at_v2');
-    if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];}
+    if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];state.archerWatchlist=s.archerWatchlist||[];state.archerRejects=s.archerRejects||[];}
   }catch(e){}
   // Seed known tax-deferred data for Jim account if not yet set
   _seedJimTaxData();
@@ -2265,7 +2453,7 @@ function _seedJimTaxData(){
   });
 }
 function saveState(){
-  try{localStorage.setItem('at_v2',JSON.stringify({settings:state.settings,trades:state.trades,discoveries:state.discoveries,importQueue:state.importQueue,ore:state.ore,classAnalysis:state.classAnalysis,classSessions:state.classSessions,stockHoldings:state.stockHoldings,portfolioOpen:state.portfolioOpen,transactionHistory:state.transactionHistory||{},withdrawals:state.withdrawals||[]}));}catch(e){}
+  try{localStorage.setItem('at_v2',JSON.stringify({settings:state.settings,trades:state.trades,discoveries:state.discoveries,importQueue:state.importQueue,ore:state.ore,classAnalysis:state.classAnalysis,classSessions:state.classSessions,stockHoldings:state.stockHoldings,portfolioOpen:state.portfolioOpen,transactionHistory:state.transactionHistory||{},withdrawals:state.withdrawals||[],archerWatchlist:state.archerWatchlist||[],archerRejects:state.archerRejects||[]}));}catch(e){}
   // localStorage stays the source of truth for the running app; the cloud copy
   // follows a couple of seconds behind. Never block a trade on the network.
   if(typeof atCloudQueue==='function')atCloudQueue();
@@ -9947,12 +10135,29 @@ function atSyncChip(text,color){
     el.id='at-sync-chip';
     el.title='Cloud sync status — click for settings';
     el.style.cssText='position:fixed;right:12px;bottom:12px;z-index:500;font-family:var(--sans);font-size:11px;font-weight:700;letter-spacing:.03em;padding:6px 11px;border-radius:14px;border:1px solid var(--border2);background:var(--surface);color:var(--fg2);box-shadow:0 2px 10px rgba(0,0,0,.35);cursor:pointer';
-    el.onclick=function(){try{showScreen('cfg');}catch(e){}};
+    el.onclick=function(){
+      if(atCloudConflict){atCloudConflict=false;atSyncChip('☁ checking…','var(--gold)');atReconcile();return;}
+      try{showScreen('cfg');}catch(e){}
+    };
     document.body.appendChild(el);
   }
   el.textContent=text;
   el.style.color=color||'var(--fg2)';
   el.style.borderColor=color||'var(--border2)';
+}
+
+// ── Optimistic concurrency ──────────────────────────────────────
+// Remember the exact updated_at of the cloud row this device last adopted or
+// wrote. Before overwriting, confirm it has not moved. If another device wrote
+// in between, refuse to clobber it and hand the decision to the user. Local
+// data is never touched by this — localStorage stays the working copy.
+let atCloudConflict=false;
+function atCloudSeen(){try{return localStorage.getItem('at_cloud_seen')||'';}catch(e){return'';}}
+function atSetCloudSeen(ts){try{if(ts)localStorage.setItem('at_cloud_seen',String(ts));}catch(e){}}
+function atFlagConflict(on){
+  atCloudConflict=!!on;
+  if(on)atSyncChip('☁ conflict — click to resolve','var(--red)');
+  if(typeof atRenderCloudStatus==='function')atRenderCloudStatus();
 }
 
 function atLocalRaw(){try{return localStorage.getItem('at_v2')||'';}catch(e){return'';}}
@@ -9965,13 +10170,27 @@ async function atCloudPull(){
   return data||null;
 }
 
-async function atCloudPush(){
+async function atCloudPush(force){
   const c=atSbReady(); if(!c||!atUser)return false;
   const raw=atLocalRaw(); if(!raw)return false;
   let obj; try{obj=JSON.parse(raw);}catch(e){return false;}
+  const seen=atCloudSeen();
+  if(!force&&seen){
+    const chk=await c.from('app_state').select('updated_at').eq('user_id',atUser.id).maybeSingle();
+    if(!chk.error&&chk.data&&chk.data.updated_at&&String(chk.data.updated_at)!==seen){
+      console.warn('[AT] push blocked — cloud changed since last sync',{seen:seen,cloud:chk.data.updated_at});
+      atFlagConflict(true);
+      return false;
+    }
+  }
   atSyncChip('☁ saving…','var(--gold)');
-  const{error}=await c.from('app_state').upsert({user_id:atUser.id,state:obj},{onConflict:'user_id'});
-  if(error){atSyncChip('☁ save failed','var(--red)');console.warn('[AT] cloud push failed',error);return false;}
+  const stamp=new Date().toISOString();
+  let res=await c.from('app_state').upsert({user_id:atUser.id,state:obj,updated_at:stamp},{onConflict:'user_id'}).select('updated_at').maybeSingle();
+  if(res.error&&/updated_at/i.test(res.error.message||''))
+    res=await c.from('app_state').upsert({user_id:atUser.id,state:obj},{onConflict:'user_id'}).select('updated_at').maybeSingle();
+  if(res.error){atSyncChip('☁ save failed','var(--red)');console.warn('[AT] cloud push failed',res.error);return false;}
+  atSetCloudSeen((res.data&&res.data.updated_at)||stamp);
+  atFlagConflict(false);
   try{localStorage.setItem('at_cloud_synced_at',new Date().toISOString());}catch(e){}
   atSyncChip('☁ saved '+new Date().toLocaleTimeString(),'var(--green)');
   if(typeof atRenderCloudStatus==='function')atRenderCloudStatus();
@@ -9980,13 +10199,15 @@ async function atCloudPush(){
 
 function atCloudQueue(){
   if(!atUser)return;
+  if(atCloudConflict){atSyncChip('☁ conflict — click to resolve','var(--red)');return;}
   clearTimeout(_atPushTimer);
   atSyncChip('☁ pending…','var(--gold)');
   _atPushTimer=setTimeout(function(){atCloudPush();},2000);
 }
 
-function atApplyCloudState(obj){
+function atApplyCloudState(obj,updatedAt){
   try{localStorage.setItem('at_v2',JSON.stringify(obj));}catch(e){}
+  if(updatedAt){atSetCloudSeen(updatedAt);atFlagConflict(false);}
   loadState();
   try{renderAll();}catch(e){}
   try{renderLog();}catch(e){}
@@ -10002,12 +10223,12 @@ async function atReconcile(){
   const localN=atTradeCount(localObj);
   const cloudN=row?atTradeCount(row.state):0;
   if(!row){
-    if(localObj){await atCloudPush();toast('☁ Cloud was empty — pushed this device up ('+localN+' trades).','ok',9000);}
+    if(localObj){await atCloudPush(true);toast('☁ Cloud was empty — pushed this device up ('+localN+' trades).','ok',9000);}
     else atSyncChip('☁ connected','var(--green)');
     return;
   }
-  if(!localObj){atApplyCloudState(row.state);toast('☁ Loaded '+cloudN+' trades from the cloud.','ok',8000);return;}
-  if(JSON.stringify(row.state)===localRaw){atSyncChip('☁ in sync','var(--green)');return;}
+  if(!localObj){atApplyCloudState(row.state,row.updated_at);toast('☁ Loaded '+cloudN+' trades from the cloud.','ok',8000);return;}
+  if(JSON.stringify(row.state)===localRaw){atSetCloudSeen(row.updated_at);atFlagConflict(false);atSyncChip('☁ in sync','var(--green)');return;}
   // If one side has no trades at all there is nothing to weigh up — the side
   // holding data always wins. Asking here invites a click that wipes a trade log.
   if(cloudN===0&&localN>0){
@@ -10016,7 +10237,7 @@ async function atReconcile(){
     return;
   }
   if(localN===0&&cloudN>0){
-    atApplyCloudState(row.state);
+    atApplyCloudState(row.state,row.updated_at);
     toast('☁ This device had no trades — loaded '+cloudN+' from the cloud.','ok',9000);
     return;
   }
@@ -10028,8 +10249,8 @@ async function atReconcile(){
     'OK     = use the CLOUD copy (replaces this device)\n'+
     'Cancel = keep THIS DEVICE and push it up (replaces cloud)'
   );
-  if(useCloud){atApplyCloudState(row.state);toast('☁ Cloud copy loaded — '+cloudN+' trades.','ok',9000);atSyncChip('☁ in sync','var(--green)');}
-  else{await atCloudPush();toast('☁ This device pushed to the cloud — '+localN+' trades.','ok',9000);}
+  if(useCloud){atApplyCloudState(row.state,row.updated_at);toast('☁ Cloud copy loaded — '+cloudN+' trades.','ok',9000);atSyncChip('☁ in sync','var(--green)');}
+  else{await atCloudPush(true);toast('☁ This device pushed to the cloud — '+localN+' trades.','ok',9000);}
 }
 
 // ── Auth UI ───────────────────────────────────────────────────
@@ -10132,7 +10353,7 @@ async function atManualPull(){
   const cloudN=atTradeCount(row.state);
   let localN=0; try{localN=atTradeCount(JSON.parse(atLocalRaw()||'{}'));}catch(e){}
   if(!confirm('Pull the cloud copy to this device?\n\nCLOUD — '+cloudN+' trades\nTHIS DEVICE — '+localN+' trades (will be replaced)'))return;
-  atApplyCloudState(row.state);
+  atApplyCloudState(row.state,row.updated_at);
   toast('☁ Loaded '+cloudN+' trades from the cloud.','ok',9000);
 }
 
@@ -10335,7 +10556,11 @@ function spyGLPreview(){
     // The broker's own figure is the reference. Where a session already in the
     // app disagrees, say so loudly — those came from pairing raw fills, which
     // is exactly the kind of thing that can be quietly wrong.
-    const match=existing.find(t=>t.date===d.date&&(t.account||'')===acct);
+    // Account spelling must be compared the same way the Session Totals panel
+    // compares it. Exact-string matching here while spySessNorm matches there
+    // means a day can read NEW in this preview and still be stored under a
+    // different spelling of the same account — importing it then doubles the day.
+    const match=existing.find(t=>t.date===d.date&&spySessNorm(t.account)===spySessNorm(acct));
     const dup=!!match;
     const have=match?(parseFloat(match.netPL)||0):0;
     const delta=dup?parseFloat((d.netPL-have).toFixed(2)):0;
@@ -10428,8 +10653,35 @@ function spyGLConfirm(){
   });
   saveState();
   try{renderAll();}catch(e){}
-  spyGLPreview();
+  spyGLSettle(add.length+' SPY session'+(add.length!==1?'s':'')+' imported into '+acct);
   toast('✓ Imported '+add.length+' SPY session'+(add.length!==1?'s':'')+' into '+acct,'ok',9000);
+}
+
+// Empties the staging box. A finished export left sitting in the textarea is
+// how the next account gets previewed against the last account's file.
+function spyGLClear(msg){
+  const ta=document.getElementById('cfg-gl-text');
+  const f=document.getElementById('cfg-gl-file');
+  const out=document.getElementById('cfg-gl-out');
+  if(ta)ta.value='';
+  if(f){try{f.value='';}catch(e){}}
+  window._spyGLDays=null;
+  window._spyGLOthers=null;
+  if(out)out.innerHTML=msg
+    ?'<div style="font-size:11px;color:var(--green);line-height:1.6">✓ '+msg
+      +'<br><span style="color:var(--fg3)">Box cleared — pick the next account and choose its CSV.</span></div>'
+    :'';
+}
+
+// Clear only once the file has nothing left to act on. Importing new sessions
+// does not finish a file that still has days to correct or stock sales to file
+// separately, so in that case the preview is recomputed and kept on screen.
+function spyGLSettle(msg){
+  try{spyGLPreview();}catch(e){}
+  const d=window._spyGLDays||[], o=window._spyGLOthers||[];
+  if(d.some(x=>!x._dup)||d.some(x=>x._off)||o.some(x=>!x._dup))return false;
+  spyGLClear(msg);
+  return true;
 }
 
 // Correct P/L only. A session's grade, emotion, notes and lesson are the
@@ -10457,7 +10709,7 @@ function spyGLRepair(){
   });
   saveState();
   try{renderAll();}catch(e){}
-  spyGLPreview();
+  spyGLSettle(days.length+' session'+(days.length!==1?'s':'')+' corrected to the broker figures');
   toast('✓ '+days.length+' session'+(days.length!==1?'s':'')+' corrected — P/L moved '+(net>=0?'+':'')+net.toFixed(2),'ok',10000);
 }
 
@@ -10487,7 +10739,7 @@ function spyGLConfirmOthers(){
   });
   saveState();
   try{renderAll();}catch(e){}
-  spyGLPreview();
+  spyGLSettle(add.length+' non-day position'+(add.length!==1?'s':'')+' imported into '+acct);
   toast('✓ Imported '+add.length+' non-day position'+(add.length!==1?'s':'')+' into '+acct,'ok',9000);
 }
 
@@ -10782,7 +11034,12 @@ function atRenderCloudStatus(){
   if(!atSbReady()){el.innerHTML='Cloud library not loaded — running on this device only.';return;}
   if(!atUser){el.innerHTML='<span style="color:var(--gold)">Not signed in</span> — this device only.<br>Reload the app to sign in.';return;}
   el.innerHTML='Signed in as <strong style="color:var(--green)">'+(atUser.email||'—')+'</strong>'
-    +'<br>last cloud save: '+(syncedAt?new Date(syncedAt).toLocaleString():'not yet');
+    +'<br>last cloud save: '+(syncedAt?new Date(syncedAt).toLocaleString():'not yet')
+    +(atCloudConflict
+      ? '<br><span style="color:var(--red)"><strong>Another device saved since this one last synced.</strong> '
+        +'Cloud saving is paused so that copy is not overwritten. Nothing on this device has been lost — '
+        +'click the ☁ chip to compare and choose which copy wins.</span>'
+      : '');
 }
 
 async function atAuthInit(){
@@ -12331,6 +12588,325 @@ function apexRender(){
   // The SPY orders panel is static markup, so this can be built once at boot
   // whichever screen happens to be showing.
   try{spyGLPanelEl();}catch(e){}
+})();
+</script>
+
+<script>
+// ── RISK PLAN ENGINE ────────────────────────────────────
+// Stop loss · Size my trade · Trailing stop. Long stock and long options.
+var RP = (function(){
+  var MULT={option:100,stock:1};
+  function mult(a){return MULT[a]||1;}
+  function pos(n){return typeof n==='number'&&isFinite(n)&&n>0;}
+  function pctOk(p){return typeof p==='number'&&isFinite(p)&&p>0&&p<100;}
+  function err(f,m){return{ok:false,field:f,error:m};}
+  function unitWord(a,n){return a==='option'?(n===1?'contract':'contracts'):(n===1?'share':'shares');}
+
+  function stopPrice(o){
+    if(o.mode==='price'){ return pos(o.stopAt)?o.stopAt:NaN; }
+    return o.entry*(1-o.pct/100);
+  }
+
+  function stop(o){
+    if(!pos(o.entry))return err('entry','Enter the price you paid (or plan to pay).');
+    if(!(pos(o.qty)&&Number.isInteger(o.qty)))return err('qty','Enter a whole number of '+unitWord(o.asset,2)+'.');
+    if(o.mode==='price'){
+      if(!pos(o.stopAt))return err('stopAt','Enter your stop price.');
+      if(o.stopAt>=o.entry)return err('stopAt','Stop must be below your entry.');
+    } else if(!pctOk(o.pct))return err('pct','Stop % must be between 0 and 100.');
+    var m=mult(o.asset), sp=stopPrice(o);
+    var unitRisk=(o.entry-sp)*m;
+    return {ok:true,multiplier:m,stopPrice:sp,
+      pctOff:(o.entry-sp)/o.entry*100,
+      positionCost:o.entry*o.qty*m,
+      unitRisk:unitRisk,
+      totalRisk:unitRisk*o.qty};
+  }
+
+  function size(o){
+    if(!pos(o.entry))return err('entry','Enter the price you paid (or plan to pay).');
+    if(o.mode==='price'){
+      if(!pos(o.stopAt))return err('stopAt','Enter your stop price.');
+      if(o.stopAt>=o.entry)return err('stopAt','Stop must be below your entry.');
+    } else if(!pctOk(o.pct))return err('pct','Stop % must be between 0 and 100.');
+    if(!pos(o.maxRisk))return err('maxRisk','Enter the most dollars you are OK losing.');
+    var m=mult(o.asset), sp=stopPrice(o);
+    var unitRisk=(o.entry-sp)*m;
+    var maxQty=Math.floor(o.maxRisk/unitRisk+1e-9); if(maxQty<0)maxQty=0;
+    var planned=unitRisk*maxQty;
+    return {ok:true,multiplier:m,stopPrice:sp,unitRisk:unitRisk,maxQty:maxQty,
+      positionCost:o.entry*maxQty*m,
+      plannedRisk:planned,
+      unusedRisk:o.maxRisk-planned,
+      usedPct:planned/o.maxRisk*100};
+  }
+
+  // Ratchet: a trail level already set never moves down.
+  function trail(o){
+    if(!pos(o.entry))return err('entry','Enter the price you paid (or plan to pay).');
+    if(!(pos(o.qty)&&Number.isInteger(o.qty)))return err('qty','Enter a whole number of '+unitWord(o.asset,2)+'.');
+    if(!pos(o.high))return err('high','Enter the price to trail from.');
+    if(!pctOk(o.pct))return err('trailPct','Trail % must be between 0 and 100.');
+    var m=mult(o.asset);
+    var calc=o.high*(1-o.pct/100);
+    var kept=pos(o.prevTrail)&&o.prevTrail>calc;
+    var level=kept?o.prevTrail:calc;
+    return {ok:true,multiplier:m,trailStop:level,calculated:calc,keptHigher:kept,
+      distance:o.high-calc,
+      pnlAtStop:(level-o.entry)*o.qty*m,
+      returnAtStop:(level-o.entry)/o.entry*100,
+      aboveBreakeven:level>o.entry};
+  }
+
+  function openPL(o){
+    if(!pos(o.entry)||!pos(o.current)||!(pos(o.qty)&&Number.isInteger(o.qty)))return{ok:false};
+    var m=mult(o.asset);
+    return {ok:true,pl:(o.current-o.entry)*o.qty*m,
+      plPct:(o.current-o.entry)/o.entry*100,
+      value:o.current*o.qty*m};
+  }
+
+  // Suggested stop-limit price: a buffer below the stop so it still fills.
+  function limitFor(stopPx,asset,bufPct){
+    var b=(typeof bufPct==='number'&&isFinite(bufPct)&&bufPct>=0)?bufPct:(asset==='option'?3:0.5);
+    var lim=stopPx*(1-b/100);
+    var tick=0.01;
+    lim=Math.floor(lim/tick)*tick;
+    if(lim>=stopPx)lim=stopPx-tick;
+    if(lim<tick)lim=tick;
+    return {limit:Math.round(lim*100)/100,bufferPct:b};
+  }
+
+  function isZeroDTE(expISO){
+    if(!expISO)return false;
+    var t=new Date();var p=String(expISO).slice(0,10).split('-');
+    if(p.length!==3)return false;
+    return (+p[0])===t.getFullYear()&&(+p[1])===(t.getMonth()+1)&&(+p[2])===t.getDate();
+  }
+
+  return {stop:stop,size:size,trail:trail,openPL:openPL,limitFor:limitFor,
+          isZeroDTE:isZeroDTE,mult:mult,unitWord:unitWord,MULT:MULT};
+})();
+
+// ── RISK PLAN UI ───────────────────────────────────────
+var RPS={mode:'pre',asset:'option',pct:20,custom:false,tab:'stop',basis:'pct',trailSet:null,last:{}};
+function rpEl(id){return document.getElementById('rp-'+id);}
+function rpQA(s){return Array.prototype.slice.call(document.querySelectorAll(s));}
+function rpR(n,d){d=(d==null)?2:d;var f=Math.pow(10,d);return Math.round(n*f+(n>=0?1e-6:-1e-6))/f;}
+function rpMoney(n){var s=n<0?'−':'';return s+'$'+Math.abs(rpR(n)).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function rpPlain(n){return rpR(n).toFixed(2);}
+function rpP1(n){return rpR(n,1).toFixed(1);}
+function rpNum(id){var e=rpEl(id);if(!e)return NaN;var v=(e.value||'').replace(/[$,\s]/g,'');return v===''?NaN:Number(v);}
+function rpUnit(n){return RP.unitWord(RPS.asset,n);}
+function rpPctNow(){return RPS.custom?rpNum('pct'):RPS.pct;}
+function rpBasis(){return RPS.asset==='stock'?RPS.basis:'pct';}
+
+function rpSetMode(m){
+  RPS.mode=m;
+  rpEl('m-pre').classList.toggle('al',m==='pre'); rpEl('m-own').classList.toggle('al',m==='own');
+  var own=m==='own';
+  rpQA('#screen-riskplan .rp-ownonly').forEach(function(e){e.classList.toggle('rp-hide',!own);});
+  rpEl('formTitle').textContent=own?'What do you own?':'What are you about to buy?';
+  rpEl('entryLbl').innerHTML=(own?'Your average price paid':'Price you plan to pay')+'<span class="req">*</span>';
+  rpEl('trailHighLbl').textContent=own?'Highest since you bought':'Price to trail from';
+  rpEl('trailHint').textContent=own?"If you don't know the high, use the price now.":'Before you buy, this is usually the price you plan to pay.';
+  rpClear();
+}
+function rpSetAsset(a){
+  RPS.asset=a;
+  rpEl('a-option').classList.toggle('al',a==='option'); rpEl('a-stock').classList.toggle('al',a==='stock');
+  rpQA('#screen-riskplan .rp-opt').forEach(function(e){e.classList.toggle('rp-hide',a!=='option');});
+  rpQA('#screen-riskplan .rp-stockonly').forEach(function(e){e.classList.toggle('rp-hide',a!=='stock');});
+  rpEl('qtyLbl').innerHTML=(a==='option'?'Contracts':'Shares')+'<span class="req">*</span>';
+  rpEl('qty').placeholder=a==='option'?'3':'100';
+  rpEl('entryHint').textContent=a==='option'
+    ? 'Per contract — the option price, not the stock price.'
+    : (RPS.mode==='own'?'Your average fill price per share.':'The price per share you plan to pay.');
+  if(a==='option')rpSetBasis('pct');
+  rpClear();
+}
+function rpSetBasis(b){
+  RPS.basis=b;
+  var p=rpEl('b-pct'),q=rpEl('b-price');
+  if(p)p.classList.toggle('al',b==='pct'); if(q)q.classList.toggle('al',b==='price');
+  rpEl('pctBlock').classList.toggle('rp-hide',b==='price');
+  rpEl('stopAtWrap').classList.toggle('rp-hide',b!=='price');
+  rpClear();
+}
+function rpTab(t){
+  RPS.tab=t;
+  ['stop','size','trail'].forEach(function(x){
+    rpEl('t-'+x).classList.toggle('on',x===t);
+    rpEl('p-'+x).classList.toggle('rp-hide',x!==t);
+  });
+}
+function rpPct(p){
+  if(p==='custom'){RPS.custom=true;rpEl('customWrap').classList.remove('rp-hide');}
+  else{RPS.custom=false;RPS.pct=p;rpEl('customWrap').classList.add('rp-hide');}
+  rpQA('#rp-pres button').forEach(function(b){b.classList.toggle('on',b.dataset.p===String(p));});
+  rpSizeHint();rpClear();
+}
+function rpSizeHint(){
+  var h=rpEl('sizeHint'); if(!h)return;
+  if(rpBasis()==='price'){h.textContent='Uses the stop price you entered on the Stop loss tab.';return;}
+  var p=rpPctNow();
+  h.textContent='Uses your '+(isFinite(p)?p+'%':'custom')+' stop from the Stop loss tab.';
+}
+function rpDTE(){
+  var b=rpEl('dte');if(!b)return;
+  b.innerHTML=RP.isZeroDTE(rpEl('exp').value)?'<span class="rp-badge">0DTE</span>':'';
+}
+function rpClear(){
+  RPS.last={};
+  rpEl('r-stop').innerHTML='<div class="rp-empty">Your stop price and the dollars on the line show up here.</div>';
+  rpEl('r-size').innerHTML='<div class="rp-empty">The most that fits your plan shows up here.</div>';
+  rpEl('r-trail').innerHTML='<div class="rp-empty">Your trailing stop and what it locks in show up here.</div>';
+}
+function rpErr(r){
+  var map={entry:'entry',qty:'qty',pct:'pct',maxRisk:'maxRisk',high:'trailHigh',trailPct:'trailPct',stopAt:'stopAt'};
+  var e=rpEl(map[r.field]); if(e){e.focus();e.scrollIntoView({block:'center',behavior:'smooth'});}
+  if(typeof toast==='function')toast(r.error,'err'); else alert(r.error);
+}
+function rpRow(k,v,how,cls){
+  return '<div class="ci" style="padding:9px 0;border-bottom:1px solid var(--border);display:flex;align-items:baseline;gap:10px">'
+    +'<div style="flex:1"><div class="cl">'+k+'</div>'+(how?'<div style="font-size:10px;color:var(--fg3);margin-top:3px">'+how+'</div>':'')+'</div>'
+    +'<div class="cv '+(cls||'')+'">'+v+'</div></div>';
+}
+function rpCopyRow(k,v,raw){
+  return '<div class="rp-crow"><span class="rp-ck">'+k+'</span><span class="rp-cv">'+v+'</span>'
+    +(raw===null?'<span></span>':'<button class="rp-copy" data-c="'+raw+'">Copy</button>')+'</div>';
+}
+function rpBindCopy(box){
+  rpQA('#'+box.id+' .rp-copy').forEach(function(b){
+    b.onclick=function(){
+      var done=function(){b.textContent='Copied';b.classList.add('done');setTimeout(function(){b.textContent='Copy';b.classList.remove('done');},1200);};
+      try{navigator.clipboard.writeText(b.dataset.c).then(done,function(){b.textContent=b.dataset.c;});}catch(e){b.textContent=b.dataset.c;}
+    };
+  });
+}
+function rpLabel(){
+  var t=(rpEl('ticker').value||'').toUpperCase().trim(); if(!t)return'';
+  if(RPS.asset!=='option')return t;
+  var s=rpNum('strike');
+  return t+(isFinite(s)?' $'+s:'')+' '+rpEl('cp').value;
+}
+function rpOpts(){
+  return {asset:RPS.asset,entry:rpNum('entry'),qty:rpNum('qty'),pct:rpPctNow(),
+          mode:rpBasis(),stopAt:rpNum('stopAt')};
+}
+
+function rpRunStop(){
+  var o=rpOpts(), r=RP.stop(o);
+  if(!r.ok)return rpErr(r);
+  RPS.last.stop=r;
+  var e=o.entry,q=o.qty,lb=rpLabel();
+  var pl=RPS.mode==='own'?RP.openPL({asset:RPS.asset,entry:e,current:rpNum('current'),qty:q}):{ok:false};
+  var over=r.pctOff>30;
+  var h='<div class="rp-hero"><div class="rp-lbl">Your stop price'+(lb?' · '+lb:'')+'</div>'
+    +'<div class="rp-big">'+rpMoney(r.stopPrice)+'</div>'
+    +'<div class="rp-sub">'+rpP1(r.pctOff)+'% below '+(RPS.mode==='own'?'your average price':'your entry')+' of '+rpMoney(e)+'</div></div>'
+    +rpRow('Total cost',rpMoney(r.positionCost),rpMoney(e)+' × '+q+' '+rpUnit(q)+(r.multiplier>1?' × '+r.multiplier+' shares each':''))
+    +rpRow('Dollars at risk',rpMoney(r.totalRisk),"What you'd lose if it hits the stop",'red')
+    +rpRow('Risk per '+rpUnit(1),rpMoney(r.unitRisk),'('+rpMoney(e)+' − '+rpMoney(r.stopPrice)+')'+(r.multiplier>1?' × '+r.multiplier:''))
+    +(pl.ok?rpRow('Profit / loss right now',rpMoney(pl.pl),(pl.plPct>=0?'+':'')+rpP1(pl.plPct)+'% from '+rpMoney(e)+' to '+rpMoney(rpNum('current')),pl.pl>=0?'green':'red'):'')
+    +(over?'<div class="rp-warn">That is '+rpP1(r.pctOff)+'% of what you put in — past the 30% you said you do not want to cross. Tighten the stop or take fewer '+rpUnit(2)+'.</div>':'')
+    +(RPS.asset==='stock'&&rpBasis()==='pct'?'<div class="rp-flag">Percent stop on a stock. The Governor wants the stop under a real chart level — switch to Stop price when you have one.</div>':'')
+    +'<div class="rp-note">If you buy '+q+' '+rpUnit(q)+' at '+rpMoney(e)+', about '+rpMoney(r.totalRisk)+' is on the line before slippage, fees or gaps.</div>'
+    +'<div style="margin-top:16px;border-top:1px solid var(--border2);padding-top:14px">'
+    +'<div class="cl" style="margin-bottom:8px">Put it in your broker</div>'
+    +'<div class="seg" style="margin-bottom:10px"><button class="seg-opt al" id="rp-so-stop" onclick="rpOrder(\'stop\')" style="--seg-al:var(--gold)">Stop</button>'
+    +'<button class="seg-opt" id="rp-so-limit" onclick="rpOrder(\'stoplimit\')">Stop limit</button></div>'
+    +'<div id="rp-soBody"></div></div>';
+  rpEl('r-stop').innerHTML=h;
+  rpOrder(RPS.orderType||'stop');
+}
+function rpOrder(kind){
+  RPS.orderType=kind;
+  var r=RPS.last.stop; if(!r)return;
+  var q=rpNum('qty'), body=rpEl('soBody'); if(!body)return;
+  var so=rpEl('so-stop'),sl=rpEl('so-limit');
+  if(so)so.classList.toggle('al',kind==='stop'); if(sl)sl.classList.toggle('al',kind==='stoplimit');
+  if(kind==='stop'){
+    body.innerHTML=rpCopyRow('Order','STOP','STOP')
+      +rpCopyRow('Stop price',rpMoney(r.stopPrice),rpPlain(r.stopPrice))
+      +rpCopyRow('Quantity',q,q)
+      +'<div class="rp-note">When price hits your stop, the broker tries to sell at whatever is there. You get out; the fill can land a little above or below.</div>';
+  }else{
+    var buf=isFinite(RPS.limitBuf)?RPS.limitBuf:(RPS.asset==='option'?3:0.5);
+    var L=RP.limitFor(r.stopPrice,RPS.asset,buf);
+    body.innerHTML=rpCopyRow('Order','STOP LIMIT','STOP LIMIT')
+      +rpCopyRow('Stop price',rpMoney(r.stopPrice),rpPlain(r.stopPrice))
+      +rpCopyRow('Limit price',rpMoney(L.limit),rpPlain(L.limit))
+      +rpCopyRow('Quantity',q,q)
+      +'<div style="display:flex;align-items:center;gap:8px;margin-top:10px">'
+      +'<span style="font-size:10px;color:var(--fg3)">Limit sits</span>'
+      +'<input class="fc mono" style="width:70px;padding:5px 7px" type="number" step="0.1" value="'+L.bufferPct+'" oninput="RPS.limitBuf=Number(this.value);rpOrder(\'stoplimit\')">'
+      +'<span style="font-size:10px;color:var(--fg3)">% below the stop</span></div>'
+      +'<div class="rp-note">The limit is the lowest price you will accept. Wider gives a better chance of filling; tighter protects your price but can leave you holding it in a fast drop. '+L.bufferPct+'% is a starting point, not a rule — you decide.</div>';
+  }
+  rpBindCopy(body);
+}
+
+function rpRunSize(){
+  var o=rpOpts(); o.maxRisk=rpNum('maxRisk');
+  var r=RP.size(o);
+  if(!r.ok){if(r.field==='pct'||r.field==='stopAt')rpTab('stop');return rpErr(r);}
+  var mr=o.maxRisk;
+  var h='<div class="rp-hero"><div class="rp-lbl">Most '+rpUnit(2)+' that fit</div>'
+    +'<div class="rp-big">'+r.maxQty.toLocaleString()+'</div>'
+    +'<div class="rp-sub">'+(r.maxQty===0
+      ? 'Even one '+rpUnit(1)+' risks '+rpMoney(r.unitRisk)+' — more than your '+rpMoney(mr)+'. Tighten the stop or find a cheaper '+rpUnit(1)+'.'
+      : 'Rounded down so you never go over '+rpMoney(mr))+'</div></div>'
+    +'<div class="rp-meter"><div class="rp-fill" id="rp-mfill"></div></div>'
+    +'<div class="rp-cap"><span>Uses '+rpMoney(r.plannedRisk)+' of your '+rpMoney(mr)+'</span><span>'+rpMoney(r.unusedRisk)+' left over</span></div>'
+    +rpRow('Total cost',rpMoney(r.positionCost),rpMoney(o.entry)+' × '+r.maxQty+(r.multiplier>1?' × '+r.multiplier:''))
+    +rpRow("Most you'd lose",rpMoney(r.plannedRisk),r.maxQty+' × '+rpMoney(r.unitRisk)+' risk each','red')
+    +rpRow('Risk per '+rpUnit(1),rpMoney(r.unitRisk),(rpBasis()==='price'?'from your stop at '+rpMoney(r.stopPrice):rpR(rpPctNow(),1)+'% of '+rpMoney(o.entry))+(r.multiplier>1?' × '+r.multiplier:''))
+    +rpRow('Stop price',rpMoney(r.stopPrice),rpP1((o.entry-r.stopPrice)/o.entry*100)+'% below '+rpMoney(o.entry))
+    +'<div class="rp-note">Use this number instead of the one you guessed. Size comes from what you are willing to lose, not from what you want to make.</div>';
+  rpEl('r-size').innerHTML=h;
+  setTimeout(function(){var f=rpEl('mfill');if(f)f.style.width=Math.min(100,r.usedPct||0)+'%';},120);
+}
+
+function rpTrailKey(){return [rpEl('ticker').value,rpEl('strike')?rpEl('strike').value:'',RPS.asset,rpNum('entry')].join('|');}
+function rpRunTrail(){
+  var high=rpNum('trailHigh');
+  if(!isFinite(high))high=RPS.mode==='own'?(rpNum('high')||rpNum('current')):rpNum('entry');
+  var prev=(RPS.trailSet&&RPS.trailSet.key===rpTrailKey())?RPS.trailSet.level:null;
+  var r=RP.trail({asset:RPS.asset,entry:rpNum('entry'),qty:rpNum('qty'),high:high,pct:rpNum('trailPct'),prevTrail:prev});
+  if(!r.ok)return rpErr(r);
+  RPS.trailSet={key:rpTrailKey(),level:r.trailStop};
+  var e=rpNum('entry'),q=rpNum('qty');
+  var h='<div class="rp-hero"><div class="rp-lbl">Trailing stop is at</div>'
+    +'<div class="rp-big">'+rpMoney(r.trailStop)+'</div>'
+    +'<div class="rp-sub">'+rpR(rpNum('trailPct'),1)+'% behind '+rpMoney(high)+' · follows the price up, never down</div></div>'
+    +rpRow('Trail amount',rpMoney(r.distance),rpR(rpNum('trailPct'),1)+'% of '+rpMoney(high))
+    +rpRow(r.pnlAtStop>=0?'Locked in if it hits':'Loss if it hits',rpMoney(r.pnlAtStop),
+        '('+rpMoney(r.trailStop)+' − '+rpMoney(e)+') × '+q+(r.multiplier>1?' × '+r.multiplier:''),r.pnlAtStop>=0?'green':'red')
+    +rpRow('Return at the stop',(r.returnAtStop>=0?'+':'')+rpP1(r.returnAtStop)+'%','Compared to your '+rpMoney(e)+' price')
+    +(r.keptHigher?'<div class="rp-flag">Price has come down since you last checked. The trail stays at '+rpMoney(r.trailStop)+' — it never moves down.</div>':'')
+    +(r.aboveBreakeven?'<div class="rp-note" style="border-left-color:var(--green)">Your stop is above what you paid. From here the trade cannot take money off you — only give back some of what it has made.</div>'
+      :'<div class="rp-note">Your stop is still below what you paid, so this one is protecting against a bigger loss, not locking in a gain.</div>')
+    +'<div style="margin-top:16px;border-top:1px solid var(--border2);padding-top:14px">'
+    +'<div class="cl" style="margin-bottom:8px">Put it in your broker</div>'
+    +rpCopyRow('Order','TRAIL STOP','TRAIL STOP')
+    +rpCopyRow('Trail amount',rpMoney(r.distance),rpPlain(r.distance))
+    +rpCopyRow('Trail percent',rpR(rpNum('trailPct'),1)+'%',rpR(rpNum('trailPct'),1))
+    +rpCopyRow('Quantity',q,q)
+    +'<div class="rp-note">Set it once and the broker moves it for you as the price makes new highs. The level above is where it sits right now.</div></div>';
+  rpEl('r-trail').innerHTML=h;
+  rpBindCopy(rpEl('r-trail'));
+}
+
+(function(){
+  function rpBoot(){
+    try{
+      if(!document.getElementById('screen-riskplan'))return;
+      rpSetAsset('option'); rpSetMode('pre'); rpPct(20); rpDTE();
+    }catch(e){}
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',rpBoot);
+  else rpBoot();
 })();
 </script>
 
