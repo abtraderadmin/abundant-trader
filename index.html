@@ -6702,9 +6702,33 @@ function avCacheInfo(){
 // Eight of these at 1.2s each were most of the wait on a repeat analysis.
 function avPace(ms){return _avLastWasCache?Promise.resolve():delay(ms||1200);}
 
+// Ask the av-proxy edge function. The Alpha Vantage key lives there as a
+// project secret and never reaches this browser. Returns the response body as
+// text so the parsing below is unchanged, or null if the proxy is unavailable
+// (not signed in, offline, function down) so the caller can fall back.
+var _avProxyCache='';
+async function avViaProxy(avFn,qs,force){
+  try{
+    var c=(typeof atSbReady==='function')?atSbReady():null;
+    if(!c||typeof atUser==='undefined'||!atUser)return null;
+    var sess=await c.auth.getSession();
+    var tok=sess&&sess.data&&sess.data.session&&sess.data.session.access_token;
+    if(!tok)return null;
+    var p={}; qs.forEach(function(v,k){p[k]=v;});
+    var r=await fetch(AT_SB_URL+'/functions/v1/av-proxy',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok,'apikey':AT_SB_KEY},
+      body:JSON.stringify({function:avFn,params:p,fresh:!!force})
+    });
+    var j=await r.json().catch(function(){return null;});
+    if(!r.ok||!j){console.warn('[AT] av-proxy HTTP',r.status,j&&j.error);return null;}
+    if(j.error){console.warn('[AT] av-proxy:',j.error);return null;}
+    _avProxyCache=r.headers.get('X-AT-Cache')||'';
+    return (typeof j._csv==='string')?j._csv:JSON.stringify(j);
+  }catch(e){return null;}
+}
+
 async function avGetRest(avFn,params,force){
-  const key=((state.settings&&state.settings.avApiKey)||'').trim();
-  if(!key)throw new Error('NO_API_KEY');
   const qs=new URLSearchParams();
   qs.set('function',avFn);
   Object.keys(params||{}).forEach(k=>{
@@ -6724,12 +6748,22 @@ async function avGetRest(avFn,params,force){
     if(hit){_avLastWasCache=true;_avStats.hit++;return hit.data;}
   }
   _avLastWasCache=false;_avStats.miss++;
-  qs.set('apikey',key);
-  let res;
-  try{res=await fetch('https://www.alphavantage.co/query?'+qs.toString(),{cache:'no-store'});}
-  catch(e){throw new Error('NETWORK');}
-  if(!res.ok)throw new Error('HTTP_'+res.status);
-  const text=await res.text();
+
+  let text=await avViaProxy(avFn,qs,force);
+
+  if(text===null){
+    // Fallback: this device's own key, straight to Alpha Vantage. Used when
+    // signed out or if the proxy is unreachable.
+    const key=((state.settings&&state.settings.avApiKey)||'').trim();
+    if(!key)throw new Error('NO_API_KEY');
+    const q2=new URLSearchParams(qs.toString());
+    q2.set('apikey',key);
+    let res;
+    try{res=await fetch('https://www.alphavantage.co/query?'+q2.toString(),{cache:'no-store'});}
+    catch(e){throw new Error('NETWORK');}
+    if(!res.ok)throw new Error('HTTP_'+res.status);
+    text=await res.text();
+  }
   const head=text.slice(0,120).trim().toLowerCase();
   if(avFn==='EARNINGS_CALENDAR'||head.startsWith('symbol,')){
     const csv={_csv:text};
