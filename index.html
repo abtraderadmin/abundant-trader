@@ -2433,7 +2433,7 @@ let state = {
 function loadState(){
   try{
     const raw=localStorage.getItem('at_v2');
-    if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];state.archerWatchlist=s.archerWatchlist||[];state.archerRejects=s.archerRejects||[];}
+    if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];state.archerWatchlist=s.archerWatchlist||[];state.archerRejects=s.archerRejects||[];state.accounts=s.accounts||[];}
   }catch(e){}
   // Seed known tax-deferred data for Jim account if not yet set
   _seedJimTaxData();
@@ -2453,7 +2453,7 @@ function _seedJimTaxData(){
   });
 }
 function saveState(){
-  try{localStorage.setItem('at_v2',JSON.stringify({settings:state.settings,trades:state.trades,discoveries:state.discoveries,importQueue:state.importQueue,ore:state.ore,classAnalysis:state.classAnalysis,classSessions:state.classSessions,stockHoldings:state.stockHoldings,portfolioOpen:state.portfolioOpen,transactionHistory:state.transactionHistory||{},withdrawals:state.withdrawals||[],archerWatchlist:state.archerWatchlist||[],archerRejects:state.archerRejects||[]}));}catch(e){}
+  try{localStorage.setItem('at_v2',JSON.stringify({settings:state.settings,trades:state.trades,discoveries:state.discoveries,importQueue:state.importQueue,ore:state.ore,classAnalysis:state.classAnalysis,classSessions:state.classSessions,stockHoldings:state.stockHoldings,portfolioOpen:state.portfolioOpen,transactionHistory:state.transactionHistory||{},withdrawals:state.withdrawals||[],archerWatchlist:state.archerWatchlist||[],archerRejects:state.archerRejects||[],accounts:state.accounts||[]}));}catch(e){}
   // localStorage stays the source of truth for the running app; the cloud copy
   // follows a couple of seconds behind. Never block a trade on the network.
   if(typeof atCloudQueue==='function')atCloudQueue();
@@ -3859,8 +3859,11 @@ function saveModuleGoals(){
 function savePAAccounts(){
   const ev=[1,2,3,4,5,6,7,8,9,10].map(i=>(document.getElementById(`cfg-ev${i}`)?.value||'').trim());
   const pa=[1,2,3,4,5].map(i=>(document.getElementById(`cfg-pa${i}`)?.value||'').trim());
+  const _oldEv=(state.settings.evalAccounts||[]).slice();
+  const _oldPa=(state.settings.paAccounts||[]).slice();
   state.settings.evalAccounts=ev;
   state.settings.paAccounts=pa;
+  try{atRenameSlots(_oldEv,ev);atRenameSlots(_oldPa,pa);}catch(e){}
   // Capture per-account goals
   const ag=state.settings.accountGoals||{};
   ev.forEach((nm,i)=>{if(nm){const v=parseFloat(document.getElementById(`cfg-ev${i+1}-goal`)?.value);if(v>0)ag[nm]=v;}});
@@ -3870,13 +3873,16 @@ function savePAAccounts(){
   const ap=state.settings.accountPriorPL||{};
   pa.forEach((nm,i)=>{if(nm){const v=parseFloat(document.getElementById(`cfg-pa${i+1}-prior`)?.value);ap[nm]=v>0?v:0;}});
   state.settings.accountPriorPL=ap;
+  try{atDeriveAccounts();}catch(e){}
   saveState();populateFAccountSelect();
   renderGoals();renderGoals('goalsRibbon2','statsRow2');
   const el=document.getElementById('pa-saved');el.hidden=false;setTimeout(()=>el.hidden=true,2000);
 }
 function savePaperAccounts(){
   const sim=[1,2,3,4,5].map(i=>(document.getElementById(`cfg-sim${i}`)?.value||'').trim());
+  const _oldSim=(state.settings.paperAccounts||[]).slice();
   state.settings.paperAccounts=sim;
+  try{atRenameSlots(_oldSim,sim);atDeriveAccounts();}catch(e){}
   saveState();
   renderGoals();renderGoals('goalsRibbon2','statsRow2');
   const el=document.getElementById('paper-saved');el.hidden=false;setTimeout(()=>el.hidden=true,2000);
@@ -3911,6 +3917,7 @@ function saveCashAccounts(){
     }
   });
   state.settings.cashAccounts=ca;
+  try{atRenameSlots(oldNames,ca);atDeriveAccounts();}catch(e){}
   const soAcct=parseFloat(document.getElementById('cfg-so-acct-value')?.value);
   const riskPct=parseFloat(document.getElementById('cfg-trade-risk-pct')?.value);
   if(!isNaN(soAcct)&&soAcct>=0)state.settings.stockOptionsAccountValue=soAcct;
@@ -10191,6 +10198,7 @@ async function atCloudPush(force){
   if(res.error){atSyncChip('☁ save failed','var(--red)');console.warn('[AT] cloud push failed',res.error);return false;}
   atSetCloudSeen((res.data&&res.data.updated_at)||stamp);
   atFlagConflict(false);
+  try{if(typeof atPushAccounts==='function')atPushAccounts();}catch(e){}
   try{localStorage.setItem('at_cloud_synced_at',new Date().toISOString());}catch(e){}
   atSyncChip('☁ saved '+new Date().toLocaleTimeString(),'var(--green)');
   if(typeof atRenderCloudStatus==='function')atRenderCloudStatus();
@@ -12908,6 +12916,167 @@ function rpRunTrail(){
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',rpBoot);
   else rpBoot();
 })();
+</script>
+
+<script>
+// ── ACCOUNTS: stable ids + rename safety ─────────────────────
+// Accounts live in four fixed-length name arrays in settings, with nine
+// separate stores keyed on the display name. Renaming an account used to
+// orphan every one of them (only cash accounts migrated, and only five of
+// the nine). Two things here:
+//   1. atMigrateAccountName() moves EVERY name-keyed record when a name
+//      changes, so a rename stops losing data.
+//   2. state.accounts[] gives each account a stable uuid keyed to its slot,
+//      so the name becomes a label. Nothing reads from it yet — the old
+//      arrays and maps are untouched and remain authoritative.
+var AT_ACCT_KINDS=[['eval','evalAccounts'],['pa','paAccounts'],['cash','cashAccounts'],['paper','paperAccounts']];
+
+function atUuid(){
+  try{ if(crypto&&crypto.randomUUID)return crypto.randomUUID(); }catch(e){}
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){
+    var r=Math.random()*16|0, v=(c==='x')?r:((r&0x3)|0x8); return v.toString(16);
+  });
+}
+
+// Every store keyed by account name.
+function atNameKeyedMaps(){
+  var s=state.settings||{};
+  return [
+    ['accountGoals',s.accountGoals],['accountDayGoals',s.accountDayGoals],
+    ['accountPriorPL',s.accountPriorPL],['accountTaxDeferred',s.accountTaxDeferred],
+    ['accountBirthYear',s.accountBirthYear],['accountAnnualDist',s.accountAnnualDist],
+    ['accountAnnualContrib',s.accountAnnualContrib],
+    ['stockHoldings',state.stockHoldings],['portfolioOpen',state.portfolioOpen],
+    ['transactionHistory',state.transactionHistory]
+  ];
+}
+
+// Move every record from oldName to newName. Never clobbers existing data at
+// the destination — if the new name already holds something, that store is
+// left alone and reported. Safe to call twice.
+function atMigrateAccountName(oldName,newName){
+  var o=String(oldName||'').trim(), w=String(newName||'').trim();
+  if(!o||!w||o===w)return 0;
+  var moved=0, skipped=[];
+  atNameKeyedMaps().forEach(function(pair){
+    var label=pair[0], m=pair[1];
+    if(!m||typeof m!=='object')return;
+    if(m[o]===undefined)return;
+    if(m[w]!==undefined){skipped.push(label);return;}
+    m[w]=m[o]; delete m[o]; moved++;
+  });
+  // rows that carry the name
+  (state.trades||[]).forEach(function(t){ if(t&&String(t.account||'').trim()===o){t.account=w;moved++;} });
+  (state.withdrawals||[]).forEach(function(x){ if(x&&String(x.account||'').trim()===o){x.account=w;moved++;} });
+  if(moved)console.log('[AT] account renamed "'+o+'" -> "'+w+'" ('+moved+' records moved)');
+  if(skipped.length)console.warn('[AT] rename skipped (destination already had data): '+skipped.join(', '));
+  return moved;
+}
+
+// Compare two slot arrays and migrate any slot whose name changed.
+function atRenameSlots(oldArr,newArr){
+  if(!Array.isArray(oldArr)||!Array.isArray(newArr))return 0;
+  var n=0, len=Math.max(oldArr.length,newArr.length);
+  for(var i=0;i<len;i++){
+    var o=String(oldArr[i]||'').trim(), w=String(newArr[i]||'').trim();
+    if(o&&w&&o!==w)n+=atMigrateAccountName(o,w);
+  }
+  return n;
+}
+
+// Build state.accounts[] from the name arrays. Identity is (kind, slot) —
+// the position in Settings — so an id survives a rename. Slots that go blank
+// are kept and archived rather than dropped, so the id is never reused.
+function atDeriveAccounts(){
+  var prev=Array.isArray(state.accounts)?state.accounts:[];
+  var bySlot={}; prev.forEach(function(a){ if(a&&a.kind!=null)bySlot[a.kind+'#'+a.slot]=a; });
+  var s=state.settings||{}, out=[], live={};
+  var g=function(m,n){ return (m&&m[n]!==undefined)?m[n]:null; };
+  AT_ACCT_KINDS.forEach(function(k){
+    var kind=k[0], arr=s[k[1]]||[];
+    arr.forEach(function(nm,i){
+      var name=String(nm||'').trim(); if(!name)return;
+      var was=bySlot[kind+'#'+i];
+      var acct={
+        id:(was&&was.id)||atUuid(),
+        kind:kind, slot:i, name:name,
+        goalMonthly:g(s.accountGoals,name),
+        goalDaily:g(s.accountDayGoals,name),
+        priorPL:g(s.accountPriorPL,name),
+        taxDeferred:{
+          flag:g(s.accountTaxDeferred,name),
+          birthYear:g(s.accountBirthYear,name),
+          annualDist:g(s.accountAnnualDist,name),
+          annualContrib:g(s.accountAnnualContrib,name)
+        },
+        archived:false,
+        updatedAt:new Date().toISOString()
+      };
+      // only restamp updatedAt when something actually changed
+      if(was&&JSON.stringify(Object.assign({},was,{updatedAt:0}))===JSON.stringify(Object.assign({},acct,{updatedAt:0})))
+        acct.updatedAt=was.updatedAt;
+      out.push(acct); live[acct.id]=1;
+    });
+  });
+  prev.forEach(function(a){
+    if(a&&a.id&&!live[a.id]){ a.archived=true; out.push(a); }
+  });
+  state.accounts=out;
+  return out;
+}
+
+// ── read-side accessors (nothing is required to use these yet) ──
+function atAccounts(kind){
+  var all=(state.accounts||[]).filter(function(a){return !a.archived;});
+  return kind?all.filter(function(a){return a.kind===kind;}):all;
+}
+function atAccount(id){ return (state.accounts||[]).find(function(a){return a.id===id;})||null; }
+function atAccountIdByName(name){
+  var n=String(name||'').trim(); if(!n)return null;
+  var hit=(state.accounts||[]).find(function(a){return !a.archived&&a.name===n;})
+       || (state.accounts||[]).find(function(a){return a.name===n;});
+  return hit?hit.id:null;
+}
+function atAccountName(id){ var a=atAccount(id); return a?a.name:null; }
+
+// ── cloud mirror ───────────────────────────────────────────────
+// Fire-and-forget after a successful blob push. The blob stays authoritative;
+// this table is a mirror so the data exists relationally. A failure here must
+// never affect the existing sync, so every caller wraps it.
+async function atPushAccounts(){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser)return false;
+  var rows=(state.accounts||[]).map(function(a){
+    return {
+      id:a.id, user_id:atUser.id, name:a.name, kind:a.kind, slot:a.slot,
+      goal_monthly:(a.goalMonthly!=null?a.goalMonthly:null),
+      goal_daily:(a.goalDaily!=null?a.goalDaily:null),
+      prior_pl:(a.priorPL!=null?a.priorPL:null),
+      tax_deferred:a.taxDeferred||{},
+      archived:!!a.archived, deleted:false,
+      updated_at:a.updatedAt||new Date().toISOString()
+    };
+  });
+  if(!rows.length)return true;
+  var res=await c.from('accounts').upsert(rows,{onConflict:'id'});
+  if(res.error){console.warn('[AT] accounts mirror failed',res.error);return false;}
+  console.log('[AT] accounts mirrored:',rows.length);
+  return true;
+}
+
+// Derive once at boot, after loadState() has run.
+(function(){
+  function boot(){
+    try{
+      if(typeof state==='undefined'||!state.settings)return;
+      atDeriveAccounts();
+      console.log('[AT] accounts derived:',(state.accounts||[]).length);
+    }catch(e){console.warn('[AT] account derivation failed',e);}
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);
+  else boot();
+})();
+
 </script>
 
 </body></html>
