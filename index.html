@@ -11579,10 +11579,10 @@ function woReduce(rows,exps){
   return keep;
 }
 
-function woFetchChain(sym,cb){
+function woFetchChain(sym,cb,force){
   const key=String(sym||'').toUpperCase();
   const c=woCache()[key];
-  if(c&&c.at&&(Date.now()-c.at)<WO_TTL_MS&&c.rows&&c.rows.length){cb(null,c);return;}
+  if(!force&&c&&c.at&&(Date.now()-c.at)<WO_TTL_MS&&c.rows&&c.rows.length){cb(null,c);return;}
   // Chains go through av-proxy like every other call: the key stays server
   // side, and one SPY chain serves every user instead of costing each of them
   // a request. Falls back to this device's own key only if the proxy is down.
@@ -11590,7 +11590,7 @@ function woFetchChain(sym,cb){
   qs.set('function','HISTORICAL_OPTIONS');
   qs.set('symbol',key);
   (async function(){
-    let text=await avViaProxy('HISTORICAL_OPTIONS',qs,false);
+    let text=await avViaProxy('HISTORICAL_OPTIONS',qs,!!force);
     if(text===null){
       const ak=(state.settings.avApiKey||'').trim();
       if(!ak)throw new Error('NO_KEY');
@@ -11892,7 +11892,7 @@ function woOpps(){
   return out;
 }
 
-function woLoad(sym){
+function woLoad(sym,force){
   const k=String(sym||'').toUpperCase();
   window._woBusy=window._woBusy||{};
   window._woErr=window._woErr||{};
@@ -11903,7 +11903,7 @@ function woLoad(sym){
     delete window._woBusy[k];
     if(err)window._woErr[k]=err;
     woRender();
-  });
+  },force);
 }
 function woLoadTop(n){ woOpps().slice(0,n).forEach(o=>woLoad(o.d.ticker)); }
 function woToggle(i){ const el=document.getElementById('wo-d-'+i); if(el)el.hidden=!el.hidden; }
@@ -12002,7 +12002,8 @@ function woRender(){
         +' = (entry '+fmt(p.entry,2)+' + target '+fmt(p.target,2)+') / 2'
         +(rec.asOf?(' · chain as of '+rec.asOf+' close'):'')+'</div>'
         +routes.map(x=>woRouteRow(x,rec,p)).join('')
-        +'<div style="margin-top:8px"><button class="btn" onclick="woLoadFresh(\''+sym+'\')">Refresh chain</button></div>';
+        +'<div style="margin-top:8px"><button class="btn" onclick="woLoadFresh(\''+sym+'\')">Pull chain again</button>'
+        +'<span style="font-size:10px;color:var(--fg3);margin-left:8px">goes upstream, skips both caches</span></div>';
     }
     const did=String(o.d.id||'').replace(/'/g,"\\'");
     const g=woGate(p);
@@ -12057,7 +12058,10 @@ function woRender(){
       +'</div>'
     +'</div></div>';
 }
-function woLoadFresh(sym){ const k=String(sym||'').toUpperCase(); delete woCache()[k]; woLoad(k); }
+// Clears this device's copy AND tells av-proxy to skip the shared cache, so
+// this really does go upstream. Without the force flag it just re-read a cached
+// chain and the button was telling you something untrue.
+function woLoadFresh(sym){ const k=String(sym||'').toUpperCase(); delete woCache()[k]; woLoad(k,true); }
 
 // Fib levels live on the ORE's current analysis, not on the saved idea, so a
 // watchlist opportunity used to lose them the moment it was saved — which is why
