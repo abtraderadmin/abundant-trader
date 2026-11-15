@@ -12373,12 +12373,13 @@ const APEX_KNOWN={50000:{dd:2500,max:10},150000:{dd:5000,max:17}};
 function apexCfg(acct){
   if(!state.settings.apexAccounts)state.settings.apexAccounts={};
   if(!state.settings.apexAccounts[acct]){
-    state.settings.apexAccounts[acct]={size:50000,dd:2500,maxContracts:10,firm:'Apex',bracketed:true,oneDir:true};
+    state.settings.apexAccounts[acct]={size:50000,dd:2500,maxContracts:10,firm:'Apex',bracketed:true,oneDir:true,payoutMin:500};
   }
   const c=state.settings.apexAccounts[acct];
   if(c.firm==null)c.firm='Apex';
   if(c.bracketed==null)c.bracketed=true;
   if(c.oneDir==null)c.oneDir=true;
+  if(c.payoutMin==null)c.payoutMin=500;
   return c;
 }
 function apexSetCfg(acct,field,v){
@@ -12413,14 +12414,39 @@ function apexEval(acct){
   });
   const dayVals=Object.keys(days).map(k=>days[k]);
   const profit=parseFloat((rs.reduce((s,t)=>s+(parseFloat(t.netPL)||0),0)+prior).toFixed(2));
-  const balance=c.size+profit;
+  // Money paid out has left the account, so it has to leave the balance.
+  // Leaving it in overstated every number downstream: the safety net read as
+  // cleared when it was not, which DOUBLES the contract ceiling via
+  // scalingCap, and "payout eligible" showed while the net still had to be
+  // rebuilt. profit stays gross on purpose - it measures what was earned,
+  // which is what the consistency and MAE rules are about. Only balance moves.
+  const withdrawn=parseFloat(((state.withdrawals||[])
+    .filter(function(w){return String(w.account||'').trim()===String(acct).trim();})
+    .reduce(function(s,w){return s+(parseFloat(w.amount)||0);},0)).toFixed(2));
+  const balance=parseFloat((c.size+profit-withdrawn).toFixed(2));
   const safety=c.size+c.dd+100;
   const cleared=balance>=safety;
   const scalingCap=cleared?c.maxContracts:Math.floor(c.maxContracts/2);
   const best=dayVals.length?Math.max.apply(null,dayVals):0;
   const worstDay=dayVals.length?Math.min.apply(null,dayVals):0;
   const maeLimit=Math.max(profit*0.30,c.dd*0.30);
+  // How much can actually come out, derived from this account's own configured
+  // numbers - size, drawdown and payout minimum - not from an assumed rulebook.
+  // Gated on the same conditions the rule rows check, so the figure can never
+  // contradict them.
+  const nDays=dayVals.length;
+  const aboveNet=Math.max(0,parseFloat((balance-safety).toFixed(2)));
+  const daysOk=nDays>=8;
+  const consistencyOk=(profit<=0||(best/profit)<=0.30);
+  const canWithdraw=(aboveNet>=c.payoutMin&&daysOk&&consistencyOk)?aboveNet:0;
+  const blockers=[];
+  if(aboveNet<c.payoutMin)blockers.push(aboveNet<=0
+    ? ("$"+fmt(safety-balance,2)+' below the safety net')
+    : ('only '+"$"+fmt(aboveNet,2)+' above the net, minimum is '+"$"+fmt(c.payoutMin,0)));
+  if(!daysOk)blockers.push((8-nDays)+' more qualifying day'+((8-nDays)!==1?'s':''));
+  if(!consistencyOk)blockers.push('best day is over 30% of profit');
   return{acct:acct,cfg:c,trades:rs.length,profit:profit,balance:balance,safety:safety,
+    withdrawn:withdrawn,aboveNet:aboveNet,canWithdraw:canWithdraw,blockers:blockers,
     cleared:cleared,scalingCap:scalingCap,maxPos:maxPos,best:best,worstDay:worstDay,
     consistency:profit>0?(best/profit):0,minTotalForBest:best/0.30,
     worstTrade:worstTrade,maeLimit:maeLimit,days:dayVals.length,
@@ -12467,8 +12493,15 @@ function apexRuleRows(e){
         e.mixedDays.length?('long and short both traded on '+e.mixedDays.length+' day'+(e.mixedDays.length!==1?'s':'')+', one at a time'):'single direction throughout',
         false);
   }
-  add(e.toPayout<=0,'Safety net for a $500 payout',
-      e.toPayout>0?('$'+fmt(e.toPayout,2)+' more needed'):'eligible');
+  add(e.toPayout<=0,'Safety net for a '+"$"+fmt(e.cfg.payoutMin,0)+' payout',
+      e.toPayout>0?("$"+fmt(e.toPayout,2)+' more needed'):'net intact, balance is above it');
+  // The number this whole panel exists to answer.
+  add(e.canWithdraw>0,'How much you can withdraw',
+      e.canWithdraw>0
+        ? ("$"+fmt(e.canWithdraw,2)+' - everything above the '+"$"+fmt(e.safety,0)+' safety net'
+           +(e.withdrawn>0?(' · '+"$"+fmt(e.withdrawn,2)+' already taken'):''))
+        : (e.blockers.join(' · ')||'not eligible yet'),
+      e.canWithdraw<=0&&e.aboveNet>0);
   return R;
 }
 
@@ -12534,8 +12567,11 @@ function apexRender(){
         +'<span style="font-family:var(--mono);font-size:12px">$'+fmt(e.balance,2)+'</span>'
         +'<span style="font-family:var(--mono);font-size:11px;color:'+(e.profit>=0?'var(--green)':'var(--red)')+'">'+(e.profit>=0?'+':'')+fmt(e.profit,2)+'</span>'
         +'<span style="font-size:11px;color:var(--fg3)">max '+e.scalingCap+' contracts now</span>'
+        +(e.withdrawn>0?'<span style="font-size:11px;color:var(--fg3)" title="already paid out, subtracted from the balance">-'+"$"+fmt(e.withdrawn,2)+' withdrawn</span>':'')
         +(e.toPayout>0?'<span style="font-size:11px;color:var(--gold)">$'+fmt(e.toPayout,2)+' to payout</span>'
-                      :'<span style="font-size:11px;color:var(--green)">payout eligible</span>')
+                      :(e.canWithdraw>0
+                        ?'<span style="font-size:11px;color:var(--green);font-weight:700" title="above the safety net, which must stay in the account">'+"$"+fmt(e.canWithdraw,2)+' available to withdraw</span>'
+                        :'<span style="font-size:11px;color:var(--gold)">above the net, but '+(e.blockers[0]||'not yet eligible')+'</span>'))
         +'<span style="margin-left:auto;font-size:11px">'+chip+' ▾</span>'
       +'</div>'
       +'<div id="apex-d-'+i+'" hidden style="padding:9px 13px 12px">'
