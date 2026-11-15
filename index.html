@@ -10487,6 +10487,9 @@ async function atCloudPush(force){
   atFlagConflict(false);
   try{if(typeof atPushAccounts==='function')atPushAccounts();}catch(e){}
   try{if(typeof atPushTrades==='function')atPushTrades();}catch(e){}
+  try{if(typeof atPushWithdrawals==='function')atPushWithdrawals();}catch(e){}
+  try{if(typeof atPushHoldings==='function')atPushHoldings();}catch(e){}
+  try{if(typeof atPushTransactions==='function')atPushTransactions();}catch(e){}
   try{if(typeof atPushSettings==='function')atPushSettings();}catch(e){}
   try{if(typeof atPushSecrets==='function')atPushSecrets();}catch(e){}
   try{localStorage.setItem('at_cloud_synced_at',new Date().toISOString());}catch(e){}
@@ -13546,6 +13549,132 @@ function atHash(s){
 function atSigMap(){
   try{return JSON.parse(localStorage.getItem('at_trades_sig')||'{}');}catch(e){return{};}
 }
+
+// ── LEDGER MIRRORS: withdrawals · holdings · transactions ────────────────
+// Same shape as the trades mirror: hash each row, send only what changed,
+// tombstone what disappeared. The blob stays authoritative — these tables are
+// a mirror, and a failure here must never affect a save.
+//
+// All three hang off accounts via account_id, with account_name carried
+// alongside because the import paths still join on the name.
+
+function atSigGet(key){
+  try{return JSON.parse(localStorage.getItem(key)||'{}');}catch(e){return{};}
+}
+function atSigSet(key,map){
+  try{localStorage.setItem(key,JSON.stringify(map));}catch(e){}
+}
+
+// Shared engine: build rows, diff against the stored signatures, upsert the
+// difference, tombstone the rest.
+async function atPushRows(table,sigKey,rows){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser)return false;
+  var sig=atSigGet(sigKey), next={}, changed=[], seen={};
+  rows.forEach(function(r){
+    if(!r||!r.id)return;
+    var id=String(r.id); seen[id]=1;
+    // Hash the payload WITHOUT updated_at. That field is stamped fresh on
+    // every build, so including it made every row look changed and resent the
+    // whole table on every save - which for transactions meant re-sending
+    // every imported row each time.
+    var bare={}; Object.keys(r).forEach(function(k){ if(k!=='updated_at')bare[k]=r[k]; });
+    var h=atHash(JSON.stringify(bare));
+    next[id]=h;
+    if(sig[id]!==h)changed.push(r);
+  });
+  Object.keys(sig).forEach(function(id){
+    if(!seen[id])changed.push({id:id,user_id:atUser.id,deleted:true,updated_at:new Date().toISOString()});
+  });
+  if(!changed.length)return true;
+  for(var i=0;i<changed.length;i+=200){
+    var res=await c.from(table).upsert(changed.slice(i,i+200),{onConflict:'id'});
+    if(res.error){console.warn('[AT] '+table+' mirror failed',res.error);return false;}
+  }
+  atSigSet(sigKey,next);
+  console.log('[AT] '+table+' mirrored:',changed.length);
+  return true;
+}
+
+function atAcctId(name){
+  try{return (typeof atAccountIdByName==='function')?atAccountIdByName(name):null;}
+  catch(e){return null;}
+}
+function atNum(v){var n=parseFloat(v);return isFinite(n)?n:null;}
+function atDate(v){var s=String(v||'').slice(0,10);return /^\d{4}-\d{2}-\d{2}$/.test(s)?s:null;}
+
+async function atPushWithdrawals(){
+  if(!atUser||!Array.isArray(state.withdrawals))return false;
+  var rows=state.withdrawals.map(function(w){
+    var nm=String(w.account||'').trim();
+    return {
+      id:String(w.id), user_id:atUser.id,
+      account_id:atAcctId(nm), account_name:nm||null,
+      wd_date:atDate(w.date), amount:atNum(w.amount), note:w.note||null,
+      deleted:false, updated_at:new Date().toISOString()
+    };
+  });
+  return atPushRows('withdrawals','at_withdrawals_sig',rows);
+}
+
+async function atPushHoldings(){
+  if(!atUser||!state.stockHoldings)return false;
+  var rows=[], snaps=[];
+  Object.keys(state.stockHoldings).forEach(function(nm){
+    var rec=state.stockHoldings[nm]; if(!rec)return;
+    var acctId=atAcctId(nm);
+    var asOf=rec.ts?new Date(rec.ts).toISOString():null;
+    snaps.push({
+      id:'snap_'+nm, user_id:atUser.id,
+      account_id:acctId, account_name:nm,
+      cash:atNum(rec.cash), summary:rec.summary||{}, as_of:asOf,
+      deleted:false, updated_at:new Date().toISOString()
+    });
+    (rec.positions||[]).forEach(function(p){
+      var sym=String(p.symbol||p.sym||'').toUpperCase(); if(!sym)return;
+      rows.push({
+        id:nm+'|'+sym, user_id:atUser.id,
+        account_id:acctId, account_name:nm,
+        symbol:sym, qty:atNum(p.qty), price_paid:atNum(p.pricePaid),
+        last_price:atNum(p.lastPrice), market_value:atNum(p.marketValue),
+        days_gain:atNum(p.daysGain), total_gain:atNum(p.totalGain),
+        total_gain_pct:atNum(p.totalGainPct), total_cost:atNum(p.totalCost),
+        as_of:asOf, data:p, deleted:false, updated_at:new Date().toISOString()
+      });
+    });
+  });
+  var a=await atPushRows('holdings','at_holdings_sig',rows);
+  var b=await atPushRows('holding_snapshots','at_holdsnap_sig',snaps);
+  return a&&b;
+}
+
+async function atPushTransactions(){
+  if(!atUser||!state.transactionHistory)return false;
+  var rows=[];
+  Object.keys(state.transactionHistory).forEach(function(nm){
+    var rec=state.transactionHistory[nm]; if(!rec)return;
+    var acctId=atAcctId(nm);
+    (rec.days||[]).forEach(function(d){
+      (d.trades||[]).forEach(function(r,i){
+        // Raw rows carry no id, so one is derived from the fields that make
+        // the row unique. Re-importing the same export must not duplicate.
+        var id=atHash(nm+'|'+r.date+'|'+(r.desc||'')+'|'+(r.sym||'')+'|'+r.amount+'|'+i);
+        rows.push({
+          id:id, user_id:atUser.id,
+          account_id:acctId, account_name:nm,
+          txn_date:atDate(r.date), act_type:r.actType||null,
+          description:r.desc||null, symbol:r.sym||null, underlying:r.underlying||null,
+          opt_type:r.optType||null, strike:atNum(r.strike), expiry:atDate(r.expiry),
+          qty:atNum(r.qty), price:atNum(r.price), amount:atNum(r.amount),
+          commission:atNum(r.comm), data:{}, deleted:false,
+          updated_at:new Date().toISOString()
+        });
+      });
+    });
+  });
+  return atPushRows('transactions','at_transactions_sig',rows);
+}
+
 function atSetSigMap(m){
   try{localStorage.setItem('at_trades_sig',JSON.stringify(m));}catch(e){}
 }
