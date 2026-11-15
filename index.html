@@ -593,11 +593,12 @@ body::before{
   </div>
 
   <div class="trade-form">
-    <div class="form-hd">
+    <div class="form-hd" onclick="futEntryToggle()" style="cursor:pointer" title="Most futures trades arrive by CSV import, so this stays rolled up until you need it">
       <span class="form-title">Futures Trade Entry</span>
       <span class="mod-badge mod-futures">Futures</span>
+      <span id="fut-entry-chev" style="margin-left:auto;font-size:11px;color:var(--fg3);font-weight:600">Manual entry &#9656;</span>
     </div>
-    <div class="form-body">
+    <div class="form-body" id="fut-entry-body" hidden>
       <div class="fg">
         <label class="fl">Instrument<span class="req">*</span></label>
         <select class="fc" id="f-instrument" onchange="recalcF()">
@@ -2490,6 +2491,25 @@ function setSDir(d){
 }
 
 // ── FUTURES CALCULATIONS ─────────────────────────────────────
+// Futures trades arrive by CSV import most of the time, so the manual entry
+// form starts rolled up and the Import Orders CSV button is the thing in view.
+// The choice persists in settings: someone who opens it for a session of hand
+// entry should not have to reopen it on every reload.
+function futEntryApply(){
+  var body=document.getElementById('fut-entry-body');
+  var chev=document.getElementById('fut-entry-chev');
+  if(!body)return;
+  var open=!!(state&&state.settings&&state.settings.futuresEntryOpen);
+  body.hidden=!open;
+  if(chev)chev.innerHTML='Manual entry '+(open?'\u25BE':'\u25B8');
+}
+function futEntryToggle(){
+  if(!state.settings)state.settings={};
+  state.settings.futuresEntryOpen=!state.settings.futuresEntryOpen;
+  futEntryApply();
+  try{saveState();}catch(e){}
+}
+
 function recalcF(){
   const inst=INSTRUMENTS[document.getElementById('f-instrument').value]||null;
   const entry=parseFloat(document.getElementById('f-entry').value)||0;
@@ -12757,6 +12777,7 @@ function apexRender(){
   window.addEventListener('hashchange',()=>{const h=location.hash.replace('#','');if(screens.includes(h))showScreen(h);});
   // Apply academy mode on load
   if(state.settings.academyMode){document.querySelectorAll('.ore-academy-field').forEach(el=>el.hidden=false);}
+  try{futEntryApply();}catch(e){}
   setOptType('CALL');setODir('BULLISH');
   populateFAccountSelect();
   populateSAccountSelect();
