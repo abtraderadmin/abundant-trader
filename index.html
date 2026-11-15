@@ -10200,6 +10200,8 @@ async function atCloudPush(force){
   atFlagConflict(false);
   try{if(typeof atPushAccounts==='function')atPushAccounts();}catch(e){}
   try{if(typeof atPushTrades==='function')atPushTrades();}catch(e){}
+  try{if(typeof atPushSettings==='function')atPushSettings();}catch(e){}
+  try{if(typeof atPushSecrets==='function')atPushSecrets();}catch(e){}
   try{localStorage.setItem('at_cloud_synced_at',new Date().toISOString());}catch(e){}
   atSyncChip('☁ saved '+new Date().toLocaleTimeString(),'var(--green)');
   if(typeof atRenderCloudStatus==='function')atRenderCloudStatus();
@@ -13225,6 +13227,58 @@ async function atPushTrades(){
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);
   else boot();
 })();
+
+</script>
+
+<script>
+// ── SETTINGS + SECRETS MIRROR ────────────────────────────────
+// Settings go to user_settings as a jsonb blob — they are per-user config,
+// never queried across users, so normalising them would buy nothing.
+//
+// The Alpha Vantage key is split out to user_secrets so it can never travel
+// with settings. Both are RLS-scoped to the owner today; the separation is
+// what keeps the key out of any future coach, admin or support view.
+
+var AT_SECRET_KEYS=['avApiKey'];
+
+function atSettingsPublic(){
+  var src=(typeof state!=='undefined'&&state.settings)||{}, out={};
+  Object.keys(src).forEach(function(k){
+    if(AT_SECRET_KEYS.indexOf(k)===-1)out[k]=src[k];
+  });
+  return out;
+}
+
+async function atPushSettings(){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser)return false;
+  var pub=atSettingsPublic();
+  var h=atHash(JSON.stringify(pub));
+  var prev=null; try{prev=localStorage.getItem('at_settings_sig');}catch(e){}
+  if(prev===h)return true;
+  var res=await c.from('user_settings')
+    .upsert({user_id:atUser.id,data:pub,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+  if(res.error){console.warn('[AT] settings mirror failed',res.error);return false;}
+  try{localStorage.setItem('at_settings_sig',h);}catch(e){}
+  console.log('[AT] settings mirrored ('+Object.keys(pub).length+' keys)');
+  return true;
+}
+
+// Never logged, never included in the settings payload.
+async function atPushSecrets(){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser)return false;
+  var key=((state.settings&&state.settings.avApiKey)||'').trim();
+  var h=atHash(key||'(empty)');
+  var prev=null; try{prev=localStorage.getItem('at_secrets_sig');}catch(e){}
+  if(prev===h)return true;
+  var res=await c.from('user_secrets')
+    .upsert({user_id:atUser.id,av_api_key:key||null,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+  if(res.error){console.warn('[AT] secrets mirror failed',res.error);return false;}
+  try{localStorage.setItem('at_secrets_sig',h);}catch(e){}
+  console.log('[AT] secret mirrored:',key?'key set':'cleared');
+  return true;
+}
 
 </script>
 
