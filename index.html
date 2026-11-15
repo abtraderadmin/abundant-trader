@@ -9598,17 +9598,19 @@ function oreParseAcornWealth(text){
     const out=[];
     // Split into ticker blocks by finding lines that are just a ticker symbol
     // Handles: "ALLT" or "SDS - Hit Entry Criteria - October 23, 2026"
-    const tickerLineRe=/^([A-Z]{1,6})(?:\s+-\s+.+)?$/gm;
+    // The suffix matters: "NWE - Hit 1st Target Criteria - November 05, 2026"
+    // says this idea already ran, which changes what its stop figure means.
+    const tickerLineRe=/^([A-Z]{1,6})(?:\s+-\s+(.+))?$/gm;
     let match;
     const positions=[];
     while((match=tickerLineRe.exec(sectionText))!==null){
       // Validate it's truly a ticker line (not a heading like "Long Ideas")
       const candidate=match[1];
       if(['LONG','SHORT','AND','THE','FOR','HIT','NOT'].includes(candidate)) continue;
-      positions.push({ticker:candidate, pos:match.index, len:match[0].length});
+      positions.push({ticker:candidate, pos:match.index, len:match[0].length, suffix:(match[2]||'').trim()});
     }
     for(let i=0;i<positions.length;i++){
-      const {ticker,pos,len}=positions[i];
+      const {ticker,pos,len,suffix}=positions[i];
       const nextPos=i+1<positions.length ? positions[i+1].pos : sectionText.length;
       const block=sectionText.slice(pos+len, nextPos);
       const g=(re,fallback='')=>{const m=block.match(re);return m?(m[1]||'').trim():fallback;};
@@ -9627,8 +9629,45 @@ function oreParseAcornWealth(text){
       const earnings  =g(/Upcoming Earnings Date[–-]+\s*(.+)/i);
       const entryText =g(/Entry Criteria\s*[–-]+\s*(.+)/i);
       if(!ticker||!entry) continue; // skip if no usable data
+
+      // ── What state is this idea actually in? ───────────────────────────
+      // Acorn REWRITES "Stop Loss Criteria" to a raised, profit-protecting
+      // stop once an idea has triggered and run. On NWE that stop ($80.63)
+      // sits ABOVE the entry ($76.83). Taken at face value the risk is
+      // negative and every downstream number is nonsense, so the state has
+      // to be captured, not just the figures.
+      const triggered   =/Hit\s+Entry\s+Criteria/i.test(suffix||'');
+      const hitTarget   =/Hit\s+1st\s+Tra?ge?t|Hit\s+1st\s+Target/i.test(suffix||'');
+      const statusDate  =(suffix||'').match(/([A-Z][a-z]+\s+\d{1,2},\s+\d{4})\s*$/);
+      const stopUpdated =/Stop Loss Criteria[^\n]*\(\s*Updated\s+([^)]+)\)/i.exec(block);
+
+      // Removed or dropped, per the most recent update line.
+      const dropped=/Taking it off the list|Being removed|may be removed if it fails/i.test(block);
+
+      // "Break above 3.07 (aggressive), 3.33 (conservative)"
+      const aggM=/Break (?:above|below)\s*([\d.]+)\s*\(aggressive\)/i.exec(block);
+      const conM=/([\d.]+)\s*\(conservative\)/i.exec(block);
+
+      // Does the stop sit on the risk side of the entry?
+      const stopValid = (stop==null) ? null
+        : (direction==='LONG' ? stop < entry : stop > entry);
+      const risk  = (stop==null||!stopValid) ? null
+        : (direction==='LONG' ? entry-stop : stop-entry);
+      const reward= (target1==null) ? null
+        : (direction==='LONG' ? target1-entry : entry-target1);
+      const rr    = (risk!=null && risk>0 && reward!=null) ? +(reward/risk).toFixed(2) : null;
       out.push({
         ticker, direction, source:'acorn_wealth',
+        // state of the idea as the report describes it
+        headerNote: suffix||'',
+        triggered, hitTarget,
+        statusDate: statusDate?statusDate[1]:'',
+        stopUpdatedOn: stopUpdated?stopUpdated[1].trim():'',
+        dropped,
+        entryAggressive: aggM?parseFloat(aggM[1]):null,
+        entryConservative: conM?parseFloat(conM[1]):null,
+        // derived risk figures - null rather than wrong when the stop is stale
+        stopValid, risk, reward, rr,
         alertDate, pattern, entryText, entry, stop,
         target1, target2: t2Raw?target2:null,
         target2Momentum: !t2Raw||g(/Target 2[–-]+\s*(Momentum)/i,'').toLowerCase()==='momentum',
@@ -9715,52 +9754,218 @@ function oreParseAlerts(){
   statusEl.textContent=`✓ ${parsed.length} ticker${parsed.length!==1?'s':''} from ${srcLabel} (${mode}) — ${parsed.length-dupCount} new, ${dupCount} already watching.`;
 }
 
+// ── ACORN REVIEW CARDS ───────────────────────────────────────────────────
+// Every figure from the Risk/Reward workbook, computed up front. The only
+// things the user touches are Entry and # of Shares; the rest derives. The
+// decision is Buy / Watchlist / Reject and nothing else.
+//
+// Workbook column map (2026_RiskReward.xlsx):
+//   Profit Per Share    = Target - Entry
+//   Risk Per Share      = Entry - Stop
+//   Position Total      = Entry x Shares
+//   Conservative Profit = Profit Per Share x Shares
+//   Total Risk          = Risk Per Share x Shares
+//   Profit %            = Conservative Profit / Position Total
+//   Risk %              = Total Risk / Position Total
+//   Risk/Reward         = 1 : (Profit Per Share / Risk Per Share)
+
+function oreRiskBudget(){
+  var acct=parseFloat(state.settings&&state.settings.stockOptionsAccountValue)||10000;
+  var pct =parseFloat(state.settings&&state.settings.tradeRiskPct)||1;
+  return acct*pct/100;
+}
+
+function oreQueueMath(item){
+  var dir   =item.direction;
+  var entry =(item.entryOverride!=null?item.entryOverride:item.entry);
+  var stop  =item.stop, target=item.target1;
+  var pps=(entry!=null&&target!=null)?(dir==='LONG'?target-entry:entry-target):null;
+  var rps=(entry!=null&&stop!=null)  ?(dir==='LONG'?entry-stop  :stop-entry  ):null;
+  // A stop on the wrong side of entry is not a small error. Acorn rewrites the
+  // stop once an idea has run, so the figure can sit past the entry. Deriving
+  // position size from a negative risk would hand back a confident wrong
+  // number, so everything downstream stays null instead.
+  var valid=(rps!=null&&rps>0);
+  var budget=oreRiskBudget();
+  var shares=(item.sharesOverride!=null)?item.sharesOverride
+            :(valid?Math.max(1,Math.floor(budget/rps)):null);
+  var posTotal=(entry!=null&&shares)?entry*shares:null;
+  var consProfit=(pps!=null&&shares)?pps*shares:null;
+  var totalRisk =(valid&&shares)?rps*shares:null;
+  return {
+    dir:dir, entry:entry, stop:stop, target:target, shares:shares,
+    pps:pps, rps:rps, valid:valid, budget:budget,
+    posTotal:posTotal, consProfit:consProfit,
+    halfOut:(consProfit!=null?consProfit/2:null),
+    totalRisk:totalRisk,
+    profitPct:(consProfit!=null&&posTotal)?consProfit/posTotal:null,
+    riskPct:(totalRisk!=null&&posTotal)?totalRisk/posTotal:null,
+    rr:(valid&&pps!=null&&pps>0)?pps/rps:null
+  };
+}
+
+// R:R bands from 14_Stock_Entry_Setup_and_RR_Gate_Spec: 1.5 floor, 2.0 preferred.
+function oreRRVerdict(rr){
+  if(rr==null)   return {cls:'var(--red)',  txt:'no usable R:R'};
+  if(rr>=2)      return {cls:'var(--green)',txt:'at or above your 2.0 preferred'};
+  if(rr>=1.5)    return {cls:'var(--gold)', txt:'between your 1.5 floor and 2.0'};
+  return {cls:'var(--red)', txt:'below your 1.5 floor'};
+}
+
+function oreQueueEdit(i,field,el){
+  var item=(state.importQueue||[])[i]; if(!item)return;
+  var v=parseFloat(el.value);
+  if(field==='entry')  item.entryOverride =(isFinite(v)&&v>0)?v:null;
+  if(field==='shares') item.sharesOverride=(isFinite(v)&&v>0)?Math.floor(v):null;
+  saveState();
+  oreRenderQueue();
+}
+function oreQueueResetSize(i){
+  var item=(state.importQueue||[])[i]; if(!item)return;
+  item.entryOverride=null; item.sharesOverride=null;
+  saveState(); oreRenderQueue();
+}
+
+function oreQueueDecision(i,status){
+  var item=(state.importQueue||[])[i]; if(!item)return;
+  var m=oreQueueMath(item);
+  if(!Array.isArray(state.discoveries))state.discoveries=[];
+  state.discoveries.unshift({
+    id:Date.now(),
+    ticker:item.ticker,
+    price:m.entry,
+    analysisDate:new Date().toISOString().slice(0,10),
+    condition:'', setup:item.pattern||'',
+    support:m.stop, resistance:m.target,
+    routeDecision:status, status:status,
+    source:'acorn_wealth', direction:item.direction,
+    entry:m.entry, stop:m.stop, target:m.target,
+    shares:m.shares, rr:(m.rr!=null?+m.rr.toFixed(2):null),
+    totalRisk:(m.totalRisk!=null?+m.totalRisk.toFixed(2):null),
+    note:(item.headerNote||'')+(item.dropped?' · dropped by Acorn':'')
+  });
+  state.importQueue.splice(i,1);
+  saveState();
+  if(typeof renderDiscoveries==='function'){try{renderDiscoveries();}catch(e){}}
+  oreRenderQueue();
+  toast(item.ticker+' → '+(status==='watch'?'Watchlist':'Rejected'),status==='watch'?'ok':'warn');
+}
+
+function oreQueueBuy(i){
+  var item=(state.importQueue||[])[i]; if(!item)return;
+  var m=oreQueueMath(item);
+  if(!m.valid){toast('Cannot size '+item.ticker+' — the stop is not on the risk side of the entry.','warn',7000);return;}
+  var set=function(id,v){var el=document.getElementById(id);if(el&&v!=null)el.value=v;};
+  set('s-ticker',item.ticker);
+  set('s-entry',m.entry); set('s-stop',m.stop); set('s-target',m.target);
+  set('s-shares',m.shares); set('s-setup',item.pattern||'');
+  var dl=document.getElementById(item.direction==='LONG'?'s-dir-long':'s-dir-short');
+  if(dl&&typeof dl.click==='function')dl.click();
+  state.importQueue.splice(i,1); saveState(); oreRenderQueue();
+  if(typeof showScreen==='function')showScreen('stock');
+  toast(item.ticker+' loaded into the stock form — review the regime and setup before saving.','ok',7000);
+}
+
 function oreRenderQueue(){
-  const wrap=document.getElementById('imp-queue-wrap');
-  const table=document.getElementById('imp-queue-table');
-  const q=state.importQueue;
+  var wrap=document.getElementById('imp-queue-wrap');
+  var table=document.getElementById('imp-queue-table');
+  var q=state.importQueue||[];
+  if(!wrap||!table)return;
   if(!q.length){wrap.hidden=true;return;}
   wrap.hidden=false;
 
-  // Header
-  let html=`<div class="imp-queue-hd">
-    <span title="Select">✓</span>
-    <span>Ticker</span>
-    <span>Dir</span>
-    <span>Pattern</span>
-    <span>Entry</span>
-    <span>Stop</span>
-    <span>Target 1</span>
-    <span>Earnings</span>
-    <span>Status</span>
-  </div>`;
+  var money=function(v,d){return v==null?'—':'$'+fmt(v,(d==null?2:d));};
+  var pct=function(v){return v==null?'—':(v*100).toFixed(2)+'%';};
+  var cell=function(label,val,colour,title){
+    return '<div'+(title?' title="'+String(title).replace(/"/g,'&quot;')+'"':'')+'>'
+      +'<div style="font-size:9px;color:var(--fg3);text-transform:uppercase;letter-spacing:.04em">'+label+'</div>'
+      +'<div style="font-family:var(--mono);font-size:12px;'+(colour?'color:'+colour:'')+'">'+val+'</div></div>';
+  };
 
-  q.forEach((item,i)=>{
-    const checked=item.isDuplicate ? (item.addAnyway?'checked':'') : 'checked';
-    const dirCls=item.direction==='LONG'?'iq-long':'iq-short';
-    const dirEmoji=item.direction==='LONG'?'↑':'↓';
-    const badge=item.isDuplicate
-      ?`<span class="iq-badge iq-dup">WATCHING</span>`
-      :`<span class="iq-badge iq-new">NEW</span>`;
-    const addAny=item.isDuplicate
-      ?`<span class="iq-addany" onclick="oreQueueToggleAddAny(${i})" title="Add as a separate new setup">${item.addAnyway?'✓ Adding':'+ Add Anyway'}</span>`
-      :'';
-    const earn=item.earnings&&item.earnings!=='N/A'?item.earnings.replace('(Estimated)','est.').replace(/\((.+?)\)/,'($1)').trim().slice(0,14):'—';
-    html+=`<div class="imp-queue-row${item.isDuplicate?' dup-row':''}">
-      <div class="iqc"><input type="checkbox" class="iq-chk" ${checked} data-qi="${i}" onchange="oreQueueCheck(${i},this.checked)"></div>
-      <div class="iqc iq-ticker">${item.ticker}</div>
-      <div class="iqc"><span class="iq-dir ${dirCls}">${dirEmoji} ${item.direction}</span></div>
-      <div class="iqc iq-pattern" title="${item.pattern||''}">${item.pattern||'—'}</div>
-      <div class="iqc iq-price" style="color:var(--green)">$${item.entry??'—'}</div>
-      <div class="iqc iq-price" style="color:var(--red)">${item.stop?'$'+item.stop:'—'}</div>
-      <div class="iqc iq-price" style="color:var(--blue)">${item.target1?'$'+item.target1:'—'}</div>
-      <div class="iqc" style="font-size:11px;color:var(--fg2)">${earn}</div>
-      <div class="iqc" style="display:flex;flex-direction:column;gap:3px;align-items:flex-start">${badge}${addAny}</div>
-    </div>`;
+  var html='<div style="font-size:11px;color:var(--fg3);margin-bottom:10px">'
+    +'Sized to '+money(oreRiskBudget(),0)+' of risk per trade '
+    +'(account '+money(parseFloat(state.settings&&state.settings.stockOptionsAccountValue)||10000,0)
+    +' × '+((parseFloat(state.settings&&state.settings.tradeRiskPct)||1))+'%). '
+    +'Entry and share count are editable; everything else recomputes.</div>';
+
+  q.forEach(function(item,i){
+    var m=oreQueueMath(item);
+    var v=oreRRVerdict(m.rr);
+    var isLong=item.direction==='LONG';
+
+    var flags='';
+    var tag=function(t,c,bg,title){
+      return '<span title="'+(title||'').replace(/"/g,'&quot;')+'" style="font-size:9px;font-weight:800;padding:2px 7px;border-radius:9px;background:'+bg+';color:'+c+'">'+t+'</span>';
+    };
+    if(item.dropped) flags+=tag('DROPPED BY ACORN','var(--red)','var(--red-bg)','The report says this idea is being removed from the list');
+    if(item.hitTarget) flags+=tag('ALREADY HIT T1','var(--gold)','var(--gold-bg)','This idea already reached its first target, so the stated entry is historical');
+    else if(item.triggered) flags+=tag('ALREADY TRIGGERED','var(--gold)','var(--gold-bg)','Entry was hit on '+(item.statusDate||'an earlier date')+', so the stated entry is historical');
+    else flags+=tag('NOT TRIGGERED','var(--green)','var(--green-bg)','Still waiting on its entry — the levels are live');
+    if(!m.valid) flags+=tag('STOP PAST ENTRY','var(--red)','var(--red-bg)','Acorn raised this stop after the idea ran. It is not an entry stop, so nothing can be sized from it.');
+    if(item.stopUpdatedOn) flags+=tag('STOP UPDATED '+item.stopUpdatedOn.toUpperCase(),'var(--fg3)','var(--s2)','Acorn changed the stop on this date');
+    if(item.isDuplicate) flags+=tag('ALREADY WATCHING','var(--blue)','var(--s2)','This ticker is already in your discoveries');
+
+    html+='<div style="border:1px solid '+(m.valid?'var(--border)':'var(--red)')+';border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--bg2)">'
+      +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
+        +'<span style="font-weight:800;font-size:15px;color:var(--blue)">'+item.ticker+'</span>'
+        +'<span style="font-size:11px;font-weight:700;color:'+(isLong?'var(--green)':'var(--red)')+'">'+(isLong?'↑ LONG':'↓ SHORT')+'</span>'
+        +'<span style="font-size:11px;color:var(--fg2)">'+(item.pattern||'—')+'</span>'
+        +'<span style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap">'+flags+'</span>'
+      +'</div>'
+
+      // editable inputs
+      +'<div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)">'
+        +'<div><div style="font-size:9px;color:var(--fg3);text-transform:uppercase">Entry</div>'
+          +'<input type="number" step="0.01" value="'+(m.entry!=null?m.entry:'')+'" onchange="oreQueueEdit('+i+',\'entry\',this)" '
+          +'style="width:92px;font-family:var(--mono);font-size:13px;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--green)"></div>'
+        +cell('Target',money(m.target),'var(--blue)','From Acorn — not editable here')
+        +cell('Stop',money(m.stop),'var(--red)','From Acorn — not editable here')
+        +'<div><div style="font-size:9px;color:var(--fg3);text-transform:uppercase"># of Shares</div>'
+          +'<input type="number" step="1" min="1" value="'+(m.shares!=null?m.shares:'')+'" onchange="oreQueueEdit('+i+',\'shares\',this)" '
+          +'style="width:92px;font-family:var(--mono);font-size:13px;padding:4px 7px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--fg)"></div>'
+        +((item.entryOverride!=null||item.sharesOverride!=null)
+          ?'<button onclick="oreQueueResetSize('+i+')" style="font-size:10px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--fg3);cursor:pointer">reset</button>'
+          :'')
+        +(item.entryConservative?'<div style="font-size:10px;color:var(--fg3)">conservative entry '+money(item.entryConservative)+'</div>':'')
+      +'</div>'
+
+      // the workbook figures
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:9px 14px;margin-bottom:10px">'
+        +cell('Profit / Share',money(m.pps),'var(--green)','Target − Entry')
+        +cell('Risk / Share',  m.valid?money(m.rps):'—','var(--red)','Entry − Stop')
+        +cell('Position Total',money(m.posTotal),null,'Entry × Shares')
+        +cell('Total Risk',    money(m.totalRisk),'var(--red)','Risk per share × Shares')
+        +cell('Conservative Profit',money(m.consProfit),'var(--green)','Profit per share × Shares')
+        +cell('Half Out',      money(m.halfOut),'var(--fg2)','Half the conservative profit')
+        +cell('Profit %',      pct(m.profitPct),'var(--green)','Conservative profit ÷ position total')
+        +cell('Risk %',        pct(m.riskPct),'var(--red)','Total risk ÷ position total')
+      +'</div>'
+
+      +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:7px 10px;border-radius:7px;background:var(--s2);margin-bottom:10px">'
+        +'<span style="font-size:10px;color:var(--fg3);text-transform:uppercase">Risk / Reward</span>'
+        +'<span style="font-family:var(--mono);font-size:15px;font-weight:800;color:'+v.cls+'">'+(m.rr!=null?('1 : '+m.rr.toFixed(2)):'—')+'</span>'
+        +'<span style="font-size:11px;color:'+v.cls+'">'+v.txt+'</span>'
+      +'</div>'
+
+      +((item.indicators||item.special||item.earnings)
+        ?'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:10px">'
+          +(item.earnings&&item.earnings!=='N/A'?'<div><strong style="color:var(--fg2)">Earnings:</strong> '+item.earnings+'</div>':'')
+          +(item.indicators?'<div><strong style="color:var(--fg2)">Indicators:</strong> '+item.indicators+'</div>':'')
+          +(item.special&&item.special!=='N/A'?'<div><strong style="color:var(--gold)">Note:</strong> '+item.special+'</div>':'')
+          +(item.alertDate?'<div><strong style="color:var(--fg2)">Alerted:</strong> '+item.alertDate+'</div>':'')
+        +'</div>':'')
+
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+        +'<button onclick="oreQueueDecision('+i+',\'rejected\')" style="flex:1;min-width:92px;padding:7px 12px;border-radius:7px;border:1px solid var(--red);background:transparent;color:var(--red);font-size:12px;font-weight:700;cursor:pointer">Reject</button>'
+        +'<button onclick="oreQueueDecision('+i+',\'watch\')" style="flex:1;min-width:92px;padding:7px 12px;border-radius:7px;border:1px solid var(--blue);background:transparent;color:var(--blue);font-size:12px;font-weight:700;cursor:pointer">Watchlist</button>'
+        +'<button onclick="oreQueueBuy('+i+')"'+(m.valid?'':' disabled title="No usable stop, so this cannot be sized"')
+          +' style="flex:1;min-width:92px;padding:7px 12px;border-radius:7px;border:none;background:'+(m.valid?'var(--green)':'var(--s2)')+';color:'+(m.valid?'#08140C':'var(--fg3)')+';font-size:12px;font-weight:800;cursor:'+(m.valid?'pointer':'not-allowed')+'">Buy</button>'
+      +'</div>'
+    +'</div>';
   });
 
   table.innerHTML=html;
-  oreUpdateSelInfo();
+  if(typeof oreUpdateSelInfo==='function'){try{oreUpdateSelInfo();}catch(e){}}
 }
 
 function oreQueueCheck(i, checked){
