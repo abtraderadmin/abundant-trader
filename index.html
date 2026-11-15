@@ -11581,11 +11581,25 @@ function woFetchChain(sym,cb){
   const key=String(sym||'').toUpperCase();
   const c=woCache()[key];
   if(c&&c.at&&(Date.now()-c.at)<WO_TTL_MS&&c.rows&&c.rows.length){cb(null,c);return;}
-  const ak=(state.settings.avApiKey||'').trim();
-  if(!ak){cb('No Alpha Vantage API key is saved in Settings.');return;}
-  const url='https://www.alphavantage.co/query?function=HISTORICAL_OPTIONS&symbol='
-    +encodeURIComponent(key)+'&apikey='+encodeURIComponent(ak);
-  fetch(url).then(r=>r.json()).then(j=>{
+  // Chains go through av-proxy like every other call: the key stays server
+  // side, and one SPY chain serves every user instead of costing each of them
+  // a request. Falls back to this device's own key only if the proxy is down.
+  const qs=new URLSearchParams();
+  qs.set('function','HISTORICAL_OPTIONS');
+  qs.set('symbol',key);
+  (async function(){
+    let text=await avViaProxy('HISTORICAL_OPTIONS',qs,false);
+    if(text===null){
+      const ak=(state.settings.avApiKey||'').trim();
+      if(!ak)throw new Error('NO_KEY');
+      const q2=new URLSearchParams(qs.toString());
+      q2.set('apikey',ak);
+      const r=await fetch('https://www.alphavantage.co/query?'+q2.toString(),{cache:'no-store'});
+      if(!r.ok)throw new Error('HTTP_'+r.status);
+      text=await r.text();
+    }
+    return JSON.parse(text);
+  })().then(j=>{
     const rows=(j&&j.data)||[];
     const msg=(j&&(j.message||j.Information||j.Note||j['Error Message']))||'';
     if(!rows.length){
@@ -11606,7 +11620,9 @@ function woFetchChain(sym,cb){
     woCache()[key]=rec;
     try{saveState();}catch(e){}
     cb(null,rec);
-  }).catch(e=>cb('Could not reach Alpha Vantage: '+e.message));
+  }).catch(e=>cb((e&&e.message)==='NO_KEY'
+    ? 'Sign in to use the shared Alpha Vantage key, or save your own in Settings.'
+    : ('Could not reach Alpha Vantage: '+((e&&e.message)||e))));
 }
 
 // ══ OPTION ROUTES — PLAN + MATHS ═════════════════════════════════
