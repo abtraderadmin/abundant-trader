@@ -18,7 +18,11 @@ const pass = m => console.log('  ok   ' + m);
 
 const grab = n => (html.match(new RegExp('function ' + n + '\\([\\s\\S]*?\\n\\}')) || [])[0];
 const src = ['apexCfg', 'apexEval'].map(grab);
-if (src.some(x => !x)) { console.error('could not extract apexCfg / apexEval'); process.exit(1); }
+const consts = ['APEX_PAYOUT_CAPS', 'APEX_MAX_PAYOUTS']
+  .map(n => (html.match(new RegExp('const ' + n + '\\s*=[\\s\\S]*?;')) || [])[0]);
+if (src.some(x => !x) || consts.some(x => !x)) {
+  console.error('could not extract apexCfg / apexEval / cap table'); process.exit(1);
+}
 
 // $150k tier: size 150000, drawdown 5000 -> safety net 155100.
 function evalWith({ profit, withdrawals = [], days = 10, size = 150000, dd = 5000 }) {
@@ -37,7 +41,7 @@ function evalWith({ profit, withdrawals = [], days = 10, size = 150000, dd = 500
     },
   };
   const run = new Function('state', 'fmt',
-    src.join('\n') + '\nreturn apexEval("PA-12");');
+    consts.join('\n') + '\n' + src.join('\n') + '\nreturn apexEval("PA-12");');
   return run(state, (v, d) => Number(v).toFixed(d));
 }
 
@@ -75,8 +79,11 @@ else fail('expected toPayout 1100, got ' + e.toPayout);
 console.log('\nhow much can be withdrawn');
 
 e = evalWith({ profit: 10000 });
-if (e.canWithdraw === 4900) pass('4,900 available (160,000 - 155,100 net)');
-else fail('expected canWithdraw 4900, got ' + e.canWithdraw);
+if (e.aboveNet === 4900) pass('4,900 sits above the net (160,000 - 155,100)');
+else fail('expected aboveNet 4900, got ' + e.aboveNet);
+// Apex caps payout #1 on a 150k account at 2,500 regardless of profit.
+if (e.canWithdraw === 2500) pass('capped to 2,500 by the payout schedule');
+else fail('expected canWithdraw 2500, got ' + e.canWithdraw);
 
 // Above the net but under the 500 minimum.
 e = evalWith({ profit: 5300 });

@@ -12370,6 +12370,21 @@ function paOrdRender(){
 // here would produce a confidently wrong safety net.
 const APEX_KNOWN={50000:{dd:2500,max:10},150000:{dd:5000,max:17}};
 
+// Apex EOD Performance Account max payouts, from Apex's published table.
+// Each payout number is a sequential approved payout on that account, and the
+// cap applies regardless of how much profit the account has made. After the
+// sixth the PA is closed and a new evaluation is needed.
+//
+// Sizes not listed here have no published figures loaded, and the panel says
+// so rather than inferring a cap from a neighbouring tier.
+const APEX_PAYOUT_CAPS={
+  25000 :[1000,1000,1000,1000,1000,1000],
+  50000 :[1500,1500,2000,2500,2500,3000],
+  100000:[2000,2500,2500,3000,4000,4000],
+  150000:[2500,3000,3000,3000,4000,5000]
+};
+const APEX_MAX_PAYOUTS=6;
+
 function apexCfg(acct){
   if(!state.settings.apexAccounts)state.settings.apexAccounts={};
   if(!state.settings.apexAccounts[acct]){
@@ -12438,15 +12453,37 @@ function apexEval(acct){
   const aboveNet=Math.max(0,parseFloat((balance-safety).toFixed(2)));
   const daysOk=nDays>=8;
   const consistencyOk=(profit<=0||(best/profit)<=0.30);
-  const canWithdraw=(aboveNet>=c.payoutMin&&daysOk&&consistencyOk)?aboveNet:0;
+
+  // Each logged withdrawal on this account is taken as one approved payout.
+  // If a row is ever logged that was not a payout, this count is wrong, so the
+  // panel shows the number it is using rather than hiding the assumption.
+  const payoutsTaken=(state.withdrawals||[])
+    .filter(function(w){return String(w.account||'').trim()===String(acct).trim();}).length;
+  const payoutNo=payoutsTaken+1;
+  const capRow=APEX_PAYOUT_CAPS[c.size]||null;
+  const accountClosed=payoutsTaken>=APEX_MAX_PAYOUTS;
+  // No published figures for this size: cap unknown, never guessed.
+  const payoutCap=(capRow&&!accountClosed)?capRow[payoutNo-1]:null;
+
   const blockers=[];
+  if(accountClosed)blockers.push(APEX_MAX_PAYOUTS+' of '+APEX_MAX_PAYOUTS
+    +' payouts taken, the PA is closed and needs a new evaluation');
   if(aboveNet<c.payoutMin)blockers.push(aboveNet<=0
     ? ("$"+fmt(safety-balance,2)+' below the safety net')
     : ('only '+"$"+fmt(aboveNet,2)+' above the net, minimum is '+"$"+fmt(c.payoutMin,0)));
   if(!daysOk)blockers.push((8-nDays)+' more qualifying day'+((8-nDays)!==1?'s':''));
   if(!consistencyOk)blockers.push('best day is over 30% of profit');
+  if(!capRow)blockers.push('no published payout caps loaded for a '+"$"+fmt(c.size,0)+' account');
+
+  // The cap binds regardless of profit, so it is a floor on the answer, not a
+  // warning beside it.
+  const eligible=(!accountClosed&&aboveNet>=c.payoutMin&&daysOk&&consistencyOk&&capRow);
+  const canWithdraw=eligible?Math.min(aboveNet,payoutCap):0;
+  const cappedByApex=eligible&&payoutCap<aboveNet;
   return{acct:acct,cfg:c,trades:rs.length,profit:profit,balance:balance,safety:safety,
     withdrawn:withdrawn,aboveNet:aboveNet,canWithdraw:canWithdraw,blockers:blockers,
+    payoutsTaken:payoutsTaken,payoutNo:payoutNo,payoutCap:payoutCap,
+    maxPayouts:APEX_MAX_PAYOUTS,accountClosed:accountClosed,cappedByApex:cappedByApex,
     cleared:cleared,scalingCap:scalingCap,maxPos:maxPos,best:best,worstDay:worstDay,
     consistency:profit>0?(best/profit):0,minTotalForBest:best/0.30,
     worstTrade:worstTrade,maeLimit:maeLimit,days:dayVals.length,
@@ -12498,10 +12535,28 @@ function apexRuleRows(e){
   // The number this whole panel exists to answer.
   add(e.canWithdraw>0,'How much you can withdraw',
       e.canWithdraw>0
-        ? ("$"+fmt(e.canWithdraw,2)+' - everything above the '+"$"+fmt(e.safety,0)+' safety net'
-           +(e.withdrawn>0?(' · '+"$"+fmt(e.withdrawn,2)+' already taken'):''))
+        ? ("$"+fmt(e.canWithdraw,2)
+           +(e.cappedByApex
+             ? (' - payout #'+e.payoutNo+' is capped at '+"$"+fmt(e.payoutCap,0)
+                +', though '+"$"+fmt(e.aboveNet,2)+' sits above the net')
+             : (' - everything above the '+"$"+fmt(e.safety,0)+' safety net'
+                +(e.payoutCap!=null?(', under the '+"$"+fmt(e.payoutCap,0)+' cap for payout #'+e.payoutNo):'')))
+          )
         : (e.blockers.join(' · ')||'not eligible yet'),
       e.canWithdraw<=0&&e.aboveNet>0);
+  // The cap schedule is per payout number and the account closes after the
+  // last one, so where you are in the sequence decides the ceiling.
+  add(!e.accountClosed,'Payouts used',
+      e.payoutsTaken+' of '+e.maxPayouts
+      +(e.accountClosed
+        ? ' - the PA is closed, a new evaluation is needed'
+        : (' · next is #'+e.payoutNo
+           +(e.payoutCap!=null?(', capped at '+"$"+fmt(e.payoutCap,0)):', cap unknown for this size')
+           +(e.cfg.size&&APEX_PAYOUT_CAPS[e.cfg.size]
+             ? (' · remaining schedule '+APEX_PAYOUT_CAPS[e.cfg.size].slice(e.payoutNo-1)
+                 .map(function(v){return "$"+fmt(v,0);}).join(', '))
+             : ''))),
+      !e.accountClosed&&e.payoutsTaken>=e.maxPayouts-1);
   return R;
 }
 
@@ -12570,7 +12625,7 @@ function apexRender(){
         +(e.withdrawn>0?'<span style="font-size:11px;color:var(--fg3)" title="already paid out, subtracted from the balance">-'+"$"+fmt(e.withdrawn,2)+' withdrawn</span>':'')
         +(e.toPayout>0?'<span style="font-size:11px;color:var(--gold)">$'+fmt(e.toPayout,2)+' to payout</span>'
                       :(e.canWithdraw>0
-                        ?'<span style="font-size:11px;color:var(--green);font-weight:700" title="above the safety net, which must stay in the account">'+"$"+fmt(e.canWithdraw,2)+' available to withdraw</span>'
+                        ?'<span style="font-size:11px;color:var(--green);font-weight:700" title="above the safety net, capped by the Apex payout schedule">'+"$"+fmt(e.canWithdraw,2)+' available to withdraw'+(e.cappedByApex?' (cap)':'')+'</span>'
                         :'<span style="font-size:11px;color:var(--gold)">above the net, but '+(e.blockers[0]||'not yet eligible')+'</span>'))
         +'<span style="margin-left:auto;font-size:11px">'+chip+' ▾</span>'
       +'</div>'
