@@ -2282,6 +2282,8 @@ body::before{
       <div class="cfg-body">
         <div class="cfg-sub" style="margin-bottom:10px">Set a daily options P&amp;L goal for each brokerage account. The portfolio ring cards show today's progress toward that goal. Account names are set above in Stock &amp; Options Accounts — save those first if they're not showing.</div>
         <div id="cfg-day-goals-rows"><div style="font-size:11px;color:var(--fg3)">Name your accounts in Stock &amp; Options Accounts above, then save those first.</div></div>
+        <div class="cfg-sub" style="margin:14px 0 8px;padding-top:12px;border-top:1px solid var(--border)">Futures accounts &mdash; daily P&amp;L target per funded account. Shown as progress on the Futures panel; a day under the target is still a green day, not a miss.</div>
+        <div id="cfg-day-goals-futures-rows"><div style="font-size:11px;color:var(--fg3)">Name your eval or PA accounts in Futures Accounts above, then save those first.</div></div>
         <button class="cfg-btn" onclick="saveDayGoals()">Save Day Goals</button>
         <div class="cfg-saved" id="day-goals-saved" hidden>✓ Saved</div>
       </div>
@@ -3808,6 +3810,18 @@ function renderCfg(){
   // Day trade goals — populate dynamic rows per named cash account
   const dg=s.accountDayGoals||{};
   const ca3=s.cashAccounts||['','',''];
+  // Futures accounts had no way to hold a daily goal at all - every path
+  // filtered cashAccounts - so a funded account could not show one.
+  const fAccts=[].concat(s.evalAccounts||[],s.paAccounts||[]).filter(function(n){return n&&n.trim();});
+  const dgF=g('cfg-day-goals-futures-rows');
+  if(dgF){
+    dgF.innerHTML=fAccts.map(function(nm,i){
+      return '<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px">'
+        +'<div class="cfg-lbl" style="min-width:140px;margin-bottom:0;font-size:11px;color:var(--fg)">'+nm+'</div>'
+        +'<span style="color:var(--fg3);font-size:11px;white-space:nowrap">Target '+${D}+'</span>'
+        +'<input class="fc mono" id="cfg-fday-goal-'+(i+1)+'" type="number" step="25" min="0" placeholder="e.g. 250" style="width:90px" value="'+(dg[nm]||'')+'"></div>';
+    }).join('')||'<div style="font-size:11px;color:var(--fg3)">No eval or PA accounts set yet.</div>';
+  }
   const dgEl=g('cfg-day-goals-rows');
   if(dgEl){
     dgEl.innerHTML=ca3.map((nm,i)=>nm?`<div style="display:flex;gap:5px;align-items:center;margin-bottom:6px"><div class="cfg-lbl" style="min-width:140px;margin-bottom:0;font-size:11px;color:var(--fg)">${nm}</div><span style="color:var(--fg3);font-size:11px;white-space:nowrap">Goal $</span><input class="fc mono" id="cfg-day-goal-${i+1}" type="number" step="50" min="0" placeholder="e.g. 500" style="width:90px" value="${dg[nm]||''}"></div>`:''
@@ -3949,7 +3963,19 @@ function saveDayGoals(){
     if(!isNaN(v)&&v>0)dg[nm]=v;
     else if(!isNaN(v)&&v===0)delete dg[nm];
   });
+  // Futures targets share accountDayGoals, keyed by the same account name, so
+  // the rename registry already carries them.
+  const fa=[].concat(state.settings.evalAccounts||[],state.settings.paAccounts||[])
+             .filter(function(n){return n&&n.trim();});
+  fa.forEach(function(nm,i){
+    const el=document.getElementById('cfg-fday-goal-'+(i+1));
+    if(!el)return;
+    const v=parseFloat(el.value);
+    if(!isNaN(v)&&v>0)dg[nm]=v;
+    else if(!isNaN(v)&&v===0)delete dg[nm];
+  });
   saveState();
+  try{if(typeof apexRender==='function')apexRender();}catch(e){}
   renderPortfolioHoldings();
   const el=document.getElementById('day-goals-saved');el.hidden=false;setTimeout(()=>el.hidden=true,2000);
 }
@@ -12450,9 +12476,21 @@ function apexEval(acct){
   // Gated on the same conditions the rule rows check, so the figure can never
   // contradict them.
   const nDays=dayVals.length;
+  const nDaysSoFar=nDays;
   const aboveNet=Math.max(0,parseFloat((balance-safety).toFixed(2)));
   const daysOk=nDays>=8;
   const consistencyOk=(profit<=0||(best/profit)<=0.30);
+
+  // Daily target. Shown as progress only: a day under the target is still a
+  // green day. Framing it as a floor is what turns "I'm done at $210" into
+  // another trade, which is the behaviour this panel exists to discourage.
+  const dayGoal=parseFloat((state.settings.accountDayGoals||{})[acct])||0;
+  const todayKey=new Date().toISOString().slice(0,10);
+  const todayPL=parseFloat((days[todayKey]||0).toFixed(2));
+  const tradedToday=Object.prototype.hasOwnProperty.call(days,todayKey);
+  const goalPct=dayGoal>0?Math.max(0,Math.min(1,todayPL/dayGoal)):0;
+  // What the target implies against what this account has actually done.
+  const avgDay=nDaysSoFar>0?parseFloat((profit/nDaysSoFar).toFixed(2)):0;
 
   // Each logged withdrawal on this account is taken as one approved payout.
   // If a row is ever logged that was not a payout, this count is wrong, so the
@@ -12482,6 +12520,7 @@ function apexEval(acct){
   const cappedByApex=eligible&&payoutCap<aboveNet;
   return{acct:acct,cfg:c,trades:rs.length,profit:profit,balance:balance,safety:safety,
     withdrawn:withdrawn,aboveNet:aboveNet,canWithdraw:canWithdraw,blockers:blockers,
+    dayGoal:dayGoal,todayPL:todayPL,tradedToday:tradedToday,goalPct:goalPct,avgDay:avgDay,
     payoutsTaken:payoutsTaken,payoutNo:payoutNo,payoutCap:payoutCap,
     maxPayouts:APEX_MAX_PAYOUTS,accountClosed:accountClosed,cappedByApex:cappedByApex,
     cleared:cleared,scalingCap:scalingCap,maxPos:maxPos,best:best,worstDay:worstDay,
@@ -12544,6 +12583,17 @@ function apexRuleRows(e){
           )
         : (e.blockers.join(' · ')||'not eligible yet'),
       e.canWithdraw<=0&&e.aboveNet>0);
+  if(e.dayGoal>0){
+    // Deliberately always ok:true. This reports, it does not judge - a day
+    // under the target is not a rule breach and must never render as one.
+    add(true,'Daily target',
+        (e.tradedToday
+          ? ("$"+fmt(e.todayPL,2)+' today of '+"$"+fmt(e.dayGoal,0)
+             +(e.todayPL>=e.dayGoal?' - target met':''))
+          : ('no trades logged today · target '+"$"+fmt(e.dayGoal,0)))
+        +(e.avgDay>0?(' · averaging '+"$"+fmt(e.avgDay,2)+' over '+e.days+' day'+(e.days!==1?'s':'')):''),
+        false);
+  }
   // The cap schedule is per payout number and the account closes after the
   // last one, so where you are in the sequence decides the ceiling.
   add(!e.accountClosed,'Payouts used',
@@ -12622,6 +12672,10 @@ function apexRender(){
         +'<span style="font-family:var(--mono);font-size:12px">$'+fmt(e.balance,2)+'</span>'
         +'<span style="font-family:var(--mono);font-size:11px;color:'+(e.profit>=0?'var(--green)':'var(--red)')+'">'+(e.profit>=0?'+':'')+fmt(e.profit,2)+'</span>'
         +'<span style="font-size:11px;color:var(--fg3)">max '+e.scalingCap+' contracts now</span>'
+        +(e.dayGoal>0
+            ?'<span style="font-size:11px;color:'+(e.todayPL>=e.dayGoal?'var(--green)':'var(--fg3)')+'" title="progress toward today\'s target - a short day is still a green day">'
+              +(e.tradedToday?("$"+fmt(e.todayPL,2)):'no trades yet')+' of '+"$"+fmt(e.dayGoal,0)+' today</span>'
+            :'')
         +(e.withdrawn>0?'<span style="font-size:11px;color:var(--fg3)" title="already paid out, subtracted from the balance">-'+"$"+fmt(e.withdrawn,2)+' withdrawn</span>':'')
         +(e.toPayout>0?'<span style="font-size:11px;color:var(--gold)">$'+fmt(e.toPayout,2)+' to payout</span>'
                       :(e.canWithdraw>0
