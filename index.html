@@ -4728,6 +4728,9 @@ function importTransactionHistory(){
       const result=parseEtradeTransactions(e.target.result);
       if(!result){alert('Could not parse this CSV.\nMake sure it is an E-Trade "Download Transaction History" export.');return;}
       if(!state.transactionHistory)state.transactionHistory={};
+      // Broker files spell the account their own way ("Jim -2310"); resolve
+      // to the canonical name so the import lands on the existing account.
+      result.acctName=atResolveImportedAccount(result.acctName,'transactions');
       state.transactionHistory[result.acctName]=result;
       saveState();
       populateTxnAccountSelect();
@@ -6188,6 +6191,7 @@ function importPortfolioCSV(){
       const result=parseEtradePortfolio(ev.target.result);
       if(!result.acctName){alert('Could not parse this CSV.\nMake sure it is an E-Trade portfolio export (Account Summary + View Summary format).');return;}
       if(!state.stockHoldings)state.stockHoldings={};
+      result.acctName=atResolveImportedAccount(result.acctName,'holdings');
       const _existType=(state.stockHoldings[result.acctName]||{}).accountType||'cash';
       state.stockHoldings[result.acctName]={...result,accountType:_existType};
       if(!state.portfolioOpen)state.portfolioOpen={};
@@ -10956,7 +10960,7 @@ function spyGLConfirm(){
   add.forEach((d,i)=>{
     state.trades.unshift({
       id:(now+i).toString(36),module:'spy_day',
-      date:d.date,account:acct,
+      date:d.date,account:atAcctNameTarget(acct),
       symbol:d.symbol,ticker:d.symbol,direction:'MIXED',
       qty:d.qty,
       grossPL:d.netPL,netPL:d.netPL,feesActual:0,
@@ -11041,7 +11045,7 @@ function spyGLConfirmOthers(){
   add.forEach((o,i)=>{
     state.trades.unshift({
       id:(now+i).toString(36)+'g',module:o.module,
-      date:o.date,account:acct,
+      date:o.date,account:atAcctNameTarget(acct),
       symbol:o.symbol,ticker:o.symbol,
       direction:'LONG',optType:o.optType||'',
       entry:o.entry,exitPrice:o.exitPrice,exit:o.exitPrice,
@@ -12520,7 +12524,7 @@ function paOrdConfirm(fileAcct,target,mode){
     state.trades.push({
       id:(Date.now().toString(36)+Math.random().toString(36).slice(2,6)),
       module:'futures',date:t.date,entryTime:t.entryTime,exitTime:t.exitTime,exitDate:t.exitDate,
-      account:target,instrument:t.symbol,symbol:t.symbol,ticker:t.symbol,
+      account:atAcctNameTarget(target),instrument:t.symbol,symbol:t.symbol,ticker:t.symbol,
       direction:t.direction,entry:t.entry,stop:null,t1:null,target:null,qty:t.qty,
       feesPlanned:0,feesActual:t.feesActual,exit:t.exitPrice,exitPrice:t.exitPrice,
       grossPL:t.grossPL,netPL:t.netPL,rr:0,regime:'',setup:'',
@@ -13427,6 +13431,30 @@ function atCanonAcctName(n){
 //     $11,054). Confirmed as one account. Jim-2310 wins because the account
 //     number matches the convention used by Yaz-3036 and Joint JTWROS-7264.
 var AT_ACCT_ALIASES={'ET-Jim':'Jim-2310'};
+
+// Every account name the app already knows about, canonicalised.
+function atKnownAccountNames(){
+  var s=(state&&state.settings)||{}, out={};
+  ['cashAccounts','evalAccounts','paAccounts','paperAccounts'].forEach(function(k){
+    (s[k]||[]).forEach(function(n){ if(n)out[atAcctNameTarget(n)]=1; });
+  });
+  (state&&state.trades||[]).forEach(function(x){ if(x&&x.account)out[atAcctNameTarget(x.account)]=1; });
+  return out;
+}
+
+// Resolve a name arriving from a broker file, and say so when it is one the
+// app has never seen. "Jim -2310" came in from an E-Trade export and sat
+// beside "ET-Jim" for weeks as a separate account; a notice at import time
+// is how that gets caught on day one instead.
+function atResolveImportedAccount(raw,whatFor){
+  var name=atAcctNameTarget(raw);
+  if(!name)return name;
+  if(!atKnownAccountNames()[name]&&typeof toast==='function'){
+    toast('"'+name+'" is a new account name'+(whatFor?(' for '+whatFor):'')
+      +'. If it is one of your existing accounts under another name, rename it in Settings so the history joins up.','warn',9000);
+  }
+  return name;
+}
 
 // The name an account should end up under: an explicit alias if one applies,
 // otherwise the canonical spacing.
