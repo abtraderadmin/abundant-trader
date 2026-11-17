@@ -13702,7 +13702,12 @@ function atSigSet(key,map){
 
 // Shared engine: build rows, diff against the stored signatures, upsert the
 // difference, tombstone the rest.
-async function atPushRows(table,sigKey,rows){
+// tombstoneExtra: columns a tombstone row must still carry. PostgREST unions
+// the keys across a batch and sends NULL for any a row omits, so a tombstone
+// that leaves out a NOT NULL column fails the whole batch with 23502. The
+// holdings id is account|symbol, so renaming an account tombstones every old
+// row at once - which is exactly when this bit.
+async function atPushRows(table,sigKey,rows,tombstoneExtra){
   var c=(typeof atSbReady==='function')?atSbReady():null;
   if(!c||!atUser)return false;
   var sig=atSigGet(sigKey), next={}, changed=[], seen={};
@@ -13719,7 +13724,10 @@ async function atPushRows(table,sigKey,rows){
     if(sig[id]!==h)changed.push(r);
   });
   Object.keys(sig).forEach(function(id){
-    if(!seen[id])changed.push({id:id,user_id:atUser.id,deleted:true,updated_at:new Date().toISOString()});
+    if(seen[id])return;
+    changed.push(Object.assign(
+      {id:id,user_id:atUser.id,deleted:true,updated_at:new Date().toISOString()},
+      tombstoneExtra||{}));
   });
   if(!changed.length)return true;
   for(var i=0;i<changed.length;i+=200){
@@ -13808,8 +13816,8 @@ async function atPushHoldings(){
       });
     });
   });
-  var a=await atPushRows('holdings','at_holdings_sig',rows);
-  var b=await atPushRows('holding_snapshots','at_holdsnap_sig',snaps);
+  var a=await atPushRows('holdings','at_holdings_sig',rows,{data:{}});
+  var b=await atPushRows('holding_snapshots','at_holdsnap_sig',snaps,{summary:{}});
   return a&&b;
 }
 
@@ -13837,7 +13845,7 @@ async function atPushTransactions(){
       });
     });
   });
-  return atPushRows('transactions','at_transactions_sig',rows);
+  return atPushRows('transactions','at_transactions_sig',rows,{data:{}});
 }
 
 function atSetSigMap(m){

@@ -86,6 +86,37 @@ await vm.runInContext('atPushWithdrawals()', s);
 if ((s.sent.withdrawals || []).length === 1) pass('an edited row is resent');
 else fail('edit not detected');
 
+console.log('\ntombstones carry NOT NULL columns');
+// PostgREST unions the column set across a batch and sends NULL for any key a
+// row omits. A tombstone that leaves out a NOT NULL jsonb column fails the
+// whole batch with 23502 — which is what happened the moment an account
+// rename changed every holdings id at once.
+{
+  const hStore = {};
+  let h = harness({
+    stockHoldings: { 'Yaz -3036': { ts: 'Nov 6 2026 06:58 PM ET', cash: 1, summary: { a: 1 },
+                                    positions: [{ symbol: 'SHOP', qty: 1, value: 2 }] } },
+  }, hStore);
+  await vm.runInContext('atPushHoldings()', h);
+  // rename: same data, new account key -> old ids must tombstone
+  h = harness({
+    stockHoldings: { 'Yaz-3036': { ts: 'Nov 6 2026 06:58 PM ET', cash: 1, summary: { a: 1 },
+                                   positions: [{ symbol: 'SHOP', qty: 1, value: 2 }] } },
+  }, hStore);
+  await vm.runInContext('atPushHoldings()', h);
+  const tomb = (h.sent.holdings || []).filter(r => r.deleted === true);
+  if (tomb.length === 1 && tomb[0].id === 'Yaz -3036|SHOP')
+    pass('the renamed-away holding is tombstoned');
+  else fail('expected one tombstone for the old id, got ' + JSON.stringify(tomb.map(r => r.id)));
+  if (tomb[0] && tomb[0].data !== undefined && tomb[0].data !== null)
+    pass('tombstone carries data:{} so the NOT NULL column is not sent as null');
+  else fail('tombstone omits data — the batch would fail with 23502');
+  const snapTomb = (h.sent.holding_snapshots || []).filter(r => r.deleted === true);
+  if (snapTomb[0] && snapTomb[0].summary !== undefined && snapTomb[0].summary !== null)
+    pass('snapshot tombstone carries summary:{}');
+  else fail('snapshot tombstone omits summary');
+}
+
 console.log('\ntombstones');
 s = harness({ withdrawals: [] }, store);
 await vm.runInContext('atPushWithdrawals()', s);
