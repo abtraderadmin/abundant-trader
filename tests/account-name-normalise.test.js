@@ -22,9 +22,13 @@ const fail = m => { failures++; console.error('  FAIL ' + m); };
 const pass = m => console.log('  ok   ' + m);
 
 const grab = n => (html.match(new RegExp('function ' + n + '\\([\\s\\S]*?\\n\\}')) || [])[0];
-const names = ['atCanonAcctName','atNormalizeAccountNames','atNormalizeAccountNamesOnce',
-               'atMigrateAccountName','atNameKeyedMaps'];
+const names = ['atCanonAcctName','atAcctNameTarget','atNormalizeAccountNames',
+               'atNormalizeAccountNamesOnce','atMigrateAccountName','atNameKeyedMaps'];
 const src = names.map(grab);
+// the alias table lives outside a function
+const aliasDecl = (html.match(/var AT_ACCT_ALIASES=\{[^}]*\};/) || [])[0];
+if (!aliasDecl) { console.error('AT_ACCT_ALIASES not found'); process.exit(1); }
+src.unshift(aliasDecl);
 const missing = names.filter((n,i) => !src[i]);
 if (missing.length) { console.error('could not extract: ' + missing.join(', ')); process.exit(1); }
 
@@ -100,15 +104,16 @@ console.log('\ndry run');
 let { out: plan } = run(liveState(), { dryRun: true });
 const pairs = plan.map(p => p.from + ' → ' + p.to).sort();
 const expected = [
+  'ET-Jim → Jim-2310',
   'Jim -2310 → Jim-2310',
   'Joint JTWROS -7264 → Joint JTWROS-7264',
   'PA -APEX-4687-12 → PA-APEX-4687-12',
   'PA -APEX-4687-13 → PA-APEX-4687-13',
   'Yaz -3036 → Yaz-3036',
 ].sort();
-if (JSON.stringify(pairs) === JSON.stringify(expected)) pass('plan is exactly the 5 spaced names');
+if (JSON.stringify(pairs) === JSON.stringify(expected)) pass('plan is the 5 spaced names plus the ET-Jim merge');
 else fail('plan wrong:\n    got      ' + pairs.join('\n             ') + '\n    expected ' + expected.join('\n             '));
-if (!plan.some(p => ['ET-Jim','Apex-4687-102','TOS-PT','ET-PT','Yaz-3036'].includes(p.from)))
+if (!plan.some(p => ['Apex-4687-102','TOS-PT','ET-PT','Yaz-3036'].includes(p.from)))
   pass('names already canonical are left alone');
 else fail('a clean name was scheduled for rename');
 
@@ -123,9 +128,26 @@ else fail('PA trades: ' + acctCount('PA-APEX-4687-12') + '/' + acctCount('PA-APE
 if (st.trades.filter(t => /\s-/.test(t.account)).length === 0)
   pass('no trade is left with a spaced name');
 else fail(st.trades.filter(t => /\s-/.test(t.account)).length + ' trades still spaced');
-if (acctCount('Yaz-3036') === 9 && acctCount('ET-Jim') === 8 && acctCount('Joint JTWROS-7264') === 16)
+if (acctCount('Yaz-3036') === 9 && acctCount('Joint JTWROS-7264') === 16)
   pass('untouched accounts keep their exact trade counts');
 else fail('an untouched account changed count');
+
+console.log('\nET-Jim merges into Jim-2310');
+if (acctCount('Jim-2310') === 8) pass("Jim's 8 SPY trades moved to Jim-2310");
+else fail('expected 8 trades on Jim-2310, got ' + acctCount('Jim-2310'));
+if (acctCount('ET-Jim') === 0) pass('no trade is left on ET-Jim');
+else fail(acctCount('ET-Jim') + ' trades still on ET-Jim');
+if (st.stockHoldings['Jim-2310'] && st.stockHoldings['Jim-2310'].positions[0].symbol === 'AAPL')
+  pass('the holdings land on the same account as the trades');
+else fail('holdings did not join Jim-2310');
+if (st.settings.cashAccounts.includes('Jim-2310') && !st.settings.cashAccounts.includes('ET-Jim'))
+  pass('cashAccounts renamed');
+else fail('cashAccounts: ' + JSON.stringify(st.settings.cashAccounts));
+if (st.settings.cashAccounts.length === 3) pass('no duplicate left in cashAccounts');
+else fail('cashAccounts length ' + st.settings.cashAccounts.length);
+if (st.settings.accountDayGoals['Jim-2310'] === 250 && !('ET-Jim' in st.settings.accountDayGoals))
+  pass("Jim's day goal followed the merge");
+else fail('day goal: ' + JSON.stringify(st.settings.accountDayGoals));
 if (st.trades.length === 273) pass('273 trades in, 273 out — nothing lost or duplicated');
 else fail('trade count changed to ' + st.trades.length);
 
@@ -155,11 +177,11 @@ else fail('prior P/L lost');
 if (st.settings.accountDayGoals['PA-APEX-4687-12'] === 250 &&
     st.settings.accountDayGoals['Yaz-3036'] === 250 &&
     Object.keys(st.settings.accountDayGoals).length === 6)
-  pass('day goals followed with no key lost or merged away');
+  pass('day goals followed, still six accounts');
 else fail('day goals: ' + JSON.stringify(st.settings.accountDayGoals));
-if (JSON.stringify(st.settings.cashAccounts) === JSON.stringify(['Yaz-3036','ET-Jim','Joint JTWROS-7264']))
-  pass('cashAccounts untouched');
-else fail('cashAccounts changed: ' + JSON.stringify(st.settings.cashAccounts));
+if (JSON.stringify(st.settings.cashAccounts) === JSON.stringify(['Yaz-3036','Jim-2310','Joint JTWROS-7264']))
+  pass('cashAccounts holds the merged name in place');
+else fail('cashAccounts: ' + JSON.stringify(st.settings.cashAccounts));
 
 // ── idempotence and the once-guard ─────────────────────────────────────────
 console.log('\nsafe to run again');
@@ -173,7 +195,7 @@ vm.createContext(sb); vm.runInContext(src.join('\n'), sb);
 vm.runInContext('atNormalizeAccountNamesOnce()', sb);
 const after1 = s3.trades.filter(t => t.account === 'PA-APEX-4687-12').length;
 vm.runInContext('atNormalizeAccountNamesOnce()', sb);
-if (s3.settings._acctNamesNormalized === true && after1 === 152)
+if (s3.settings._acctNamesNormalizedV === 2 && after1 === 152)
   pass('the once-guard is set, so 273 records are not rewritten on every load');
 else fail('once-guard not working');
 

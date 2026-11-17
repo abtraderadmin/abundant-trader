@@ -13417,6 +13417,26 @@ function atCanonAcctName(n){
   return String(n==null?'':n).replace(/\s*-\s*/g,'-').trim();
 }
 
+// Deliberate merges, where two names turned out to be one account. Spacing
+// alone cannot resolve these, so they are listed explicitly rather than
+// guessed at from a fuzzy match.
+//
+//   ET-Jim  ->  Jim-2310
+//     The E-Trade account for Jim. Trades were logged under "ET-Jim" (8 SPY
+//     day trades) while the broker export named it "Jim -2310" (8 positions,
+//     $11,054). Confirmed as one account. Jim-2310 wins because the account
+//     number matches the convention used by Yaz-3036 and Joint JTWROS-7264.
+var AT_ACCT_ALIASES={'ET-Jim':'Jim-2310'};
+
+// The name an account should end up under: an explicit alias if one applies,
+// otherwise the canonical spacing.
+function atAcctNameTarget(n){
+  var o=String(n==null?'':n).trim();
+  if(!o)return o;
+  var c=atCanonAcctName(o);
+  return AT_ACCT_ALIASES[o]||AT_ACCT_ALIASES[c]||c;
+}
+
 // Collects every account name in use, works out which need canonicalising, and
 // routes each through atMigrateAccountName so the name-keyed stores, trades and
 // withdrawals all move together. Pass {dryRun:true} to see the plan first.
@@ -13430,7 +13450,7 @@ function atNormalizeAccountNames(opts){
   var map={};
   var add=function(n){
     var o=String(n==null?'':n).trim(); if(!o)return;
-    var w=atCanonAcctName(o);
+    var w=atAcctNameTarget(o);
     if(w&&w!==o)map[o]=w;
   };
   ARRAYS.forEach(function(k){ (s[k]||[]).forEach(add); });
@@ -13444,8 +13464,17 @@ function atNormalizeAccountNames(opts){
 
   var moved=0;
   plan.forEach(function(p){ moved+=atMigrateAccountName(p.from,p.to); });
+  // Dedupe as well as rewrite: a merge can leave the same name twice in a list.
   ARRAYS.forEach(function(k){
-    if(Array.isArray(s[k]))s[k]=s[k].map(function(n){return n?atCanonAcctName(n):n;});
+    if(!Array.isArray(s[k]))return;
+    var out=[], seen={};
+    s[k].forEach(function(n){
+      if(!n){out.push(n);return;}
+      var w=atAcctNameTarget(n);
+      if(seen[w])return;
+      seen[w]=1; out.push(w);
+    });
+    s[k]=out;
   });
   try{if(typeof atDeriveAccounts==='function')atDeriveAccounts();}catch(e){}
   console.log('[AT] account names normalised:',plan.map(function(p){return p.from+' -> '+p.to;}).join(', '));
@@ -13456,9 +13485,11 @@ function atNormalizeAccountNames(opts){
 // not repeat on every load.
 function atNormalizeAccountNamesOnce(){
   if(!state||!state.settings)return;
-  if(state.settings._acctNamesNormalized)return;
+  // Versioned: bumping this re-runs the pass when a new alias is added.
+  if(state.settings._acctNamesNormalizedV>=2)return;
   var r=atNormalizeAccountNames();
-  state.settings._acctNamesNormalized=true;
+  state.settings._acctNamesNormalizedV=2;
+  delete state.settings._acctNamesNormalized;
   if(r&&r.plan&&r.plan.length){
     try{saveState();}catch(e){}
     if(typeof toast==='function')
