@@ -10485,13 +10485,22 @@ async function atCloudPush(force){
   if(res.error){atSyncChip('☁ save failed','var(--red)');console.warn('[AT] cloud push failed',res.error);return false;}
   atSetCloudSeen((res.data&&res.data.updated_at)||stamp);
   atFlagConflict(false);
-  try{if(typeof atPushAccounts==='function')atPushAccounts();}catch(e){}
-  try{if(typeof atPushTrades==='function')atPushTrades();}catch(e){}
-  try{if(typeof atPushWithdrawals==='function')atPushWithdrawals();}catch(e){}
-  try{if(typeof atPushHoldings==='function')atPushHoldings();}catch(e){}
-  try{if(typeof atPushTransactions==='function')atPushTransactions();}catch(e){}
-  try{if(typeof atPushSettings==='function')atPushSettings();}catch(e){}
-  try{if(typeof atPushSecrets==='function')atPushSecrets();}catch(e){}
+  // A mirror must never break a save, but it must never fail invisibly
+  // either. An empty catch hid a RangeError here for two days while every
+  // holdings row quietly failed to sync. Both sync and async throws are
+  // reported now.
+  [['accounts',atPushAccounts],['trades',atPushTrades],
+   ['withdrawals',atPushWithdrawals],['holdings',atPushHoldings],
+   ['transactions',atPushTransactions],['settings',atPushSettings],
+   ['secrets',atPushSecrets]
+  ].forEach(function(pair){
+    if(typeof pair[1]!=='function')return;
+    try{
+      var r=pair[1]();
+      if(r&&typeof r.catch==='function')
+        r.catch(function(e){console.warn('[AT] '+pair[0]+' mirror threw',e);});
+    }catch(e){console.warn('[AT] '+pair[0]+' mirror threw',e);}
+  });
   try{localStorage.setItem('at_cloud_synced_at',new Date().toISOString());}catch(e){}
   atSyncChip('☁ saved '+new Date().toLocaleTimeString(),'var(--green)');
   if(typeof atRenderCloudStatus==='function')atRenderCloudStatus();
@@ -13601,6 +13610,28 @@ function atAcctId(name){
   catch(e){return null;}
 }
 function atNum(v){var n=parseFloat(v);return isFinite(n)?n:null;}
+// Broker exports carry a display string, not a timestamp: stockHoldings[x].ts
+// is "Nov 6 2026 06:58 PM ET". new Date() on that is Invalid Date and
+// .toISOString() throws RangeError, which escaped atPushHoldings and was
+// swallowed by the catch in the push path - so every position silently failed
+// to mirror with nothing logged. Never let a date parse throw.
+function atTs(v){
+  if(v==null||v==='')return null;
+  try{
+    var d=new Date(typeof v==='number'?v:String(v));
+    if(isNaN(d.getTime())){
+      // Retry without a trailing timezone abbreviation ("... PM ET").
+      // NOTE: dropping the abbreviation means the time is read in the
+      // viewer's local zone, so as_of can be hours off the broker's clock.
+      // It is good enough for ordering and recency; summary.as_of_text keeps
+      // the broker's exact wording as the authoritative record.
+      var m=String(v).replace(/\s+[A-Z]{2,4}$/,'');
+      d=new Date(m);
+      if(isNaN(d.getTime()))return null;
+    }
+    return d.toISOString();
+  }catch(e){return null;}
+}
 function atDate(v){var s=String(v||'').slice(0,10);return /^\d{4}-\d{2}-\d{2}$/.test(s)?s:null;}
 
 async function atPushWithdrawals(){
@@ -13623,11 +13654,15 @@ async function atPushHoldings(){
   Object.keys(state.stockHoldings).forEach(function(nm){
     var rec=state.stockHoldings[nm]; if(!rec)return;
     var acctId=atAcctId(nm);
-    var asOf=rec.ts?new Date(rec.ts).toISOString():null;
+    var asOf=atTs(rec.ts);
     snaps.push({
       id:'snap_'+nm, user_id:atUser.id,
       account_id:acctId, account_name:nm,
-      cash:atNum(rec.cash), summary:rec.summary||{}, as_of:asOf,
+      cash:atNum(rec.cash),
+      // as_of can be null when the broker's string will not parse, so the
+      // original is kept verbatim rather than lost.
+      summary:Object.assign({},rec.summary||{},{as_of_text:rec.ts||null}),
+      as_of:asOf,
       deleted:false, updated_at:new Date().toISOString()
     });
     (rec.positions||[]).forEach(function(p){
@@ -13635,8 +13670,12 @@ async function atPushHoldings(){
       rows.push({
         id:nm+'|'+sym, user_id:atUser.id,
         account_id:acctId, account_name:nm,
-        symbol:sym, qty:atNum(p.qty), price_paid:atNum(p.pricePaid),
-        last_price:atNum(p.lastPrice), market_value:atNum(p.marketValue),
+        symbol:sym, qty:atNum(p.qty),
+        price_paid:atNum(p.pricePaid!=null?p.pricePaid:p.costPerShare),
+        last_price:atNum(p.lastPrice),
+        // The export calls this `value`; `marketValue` does not exist on these
+        // rows and was reading null.
+        market_value:atNum(p.value!=null?p.value:p.marketValue),
         days_gain:atNum(p.daysGain), total_gain:atNum(p.totalGain),
         total_gain_pct:atNum(p.totalGainPct), total_cost:atNum(p.totalCost),
         as_of:asOf, data:p, deleted:false, updated_at:new Date().toISOString()
