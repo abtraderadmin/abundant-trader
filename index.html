@@ -12994,6 +12994,7 @@ function apexRender(){
   window.addEventListener('hashchange',()=>{const h=location.hash.replace('#','');if(screens.includes(h))showScreen(h);});
   // Apply academy mode on load
   if(state.settings.academyMode){document.querySelectorAll('.ore-academy-field').forEach(el=>el.hidden=false);}
+  try{atNormalizeAccountNamesOnce();}catch(e){console.warn('[AT] name normalise failed',e);}
   try{futEntryApply();}catch(e){}
   setOptType('CALL');setODir('BULLISH');
   populateFAccountSelect();
@@ -13407,6 +13408,66 @@ function atNameKeyedMaps(){
 // Move every record from oldName to newName. Never clobbers existing data at
 // the destination — if the new name already holds something, that store is
 // left alone and reported. Safe to call twice.
+// ── ACCOUNT NAME NORMALISATION ──────────────────────────────────────────
+// Broker exports and hand-typed settings disagreed about spacing around the
+// hyphen: holdings arrived as "Yaz -3036" while trades carried "Yaz-3036",
+// so the same account existed twice and never joined. Canonical form has no
+// whitespace touching a hyphen.
+function atCanonAcctName(n){
+  return String(n==null?'':n).replace(/\s*-\s*/g,'-').trim();
+}
+
+// Collects every account name in use, works out which need canonicalising, and
+// routes each through atMigrateAccountName so the name-keyed stores, trades and
+// withdrawals all move together. Pass {dryRun:true} to see the plan first.
+//
+// The settings arrays are handled separately because atMigrateAccountName does
+// not touch them.
+function atNormalizeAccountNames(opts){
+  var dry=!!(opts&&opts.dryRun);
+  var s=state.settings||{};
+  var ARRAYS=['cashAccounts','evalAccounts','paAccounts','paperAccounts'];
+  var map={};
+  var add=function(n){
+    var o=String(n==null?'':n).trim(); if(!o)return;
+    var w=atCanonAcctName(o);
+    if(w&&w!==o)map[o]=w;
+  };
+  ARRAYS.forEach(function(k){ (s[k]||[]).forEach(add); });
+  try{ atNameKeyedMaps().forEach(function(p){ Object.keys(p[1]||{}).forEach(add); }); }catch(e){}
+  (state.trades||[]).forEach(function(t){ if(t)add(t.account); });
+  (state.withdrawals||[]).forEach(function(x){ if(x)add(x.account); });
+
+  var plan=Object.keys(map).map(function(o){return {from:o,to:map[o]};});
+  if(dry)return plan;
+  if(!plan.length)return {plan:[],moved:0};
+
+  var moved=0;
+  plan.forEach(function(p){ moved+=atMigrateAccountName(p.from,p.to); });
+  ARRAYS.forEach(function(k){
+    if(Array.isArray(s[k]))s[k]=s[k].map(function(n){return n?atCanonAcctName(n):n;});
+  });
+  try{if(typeof atDeriveAccounts==='function')atDeriveAccounts();}catch(e){}
+  console.log('[AT] account names normalised:',plan.map(function(p){return p.from+' -> '+p.to;}).join(', '));
+  return {plan:plan,moved:moved};
+}
+
+// Runs once. Renaming rewrites every trade that carries the name, so it should
+// not repeat on every load.
+function atNormalizeAccountNamesOnce(){
+  if(!state||!state.settings)return;
+  if(state.settings._acctNamesNormalized)return;
+  var r=atNormalizeAccountNames();
+  state.settings._acctNamesNormalized=true;
+  if(r&&r.plan&&r.plan.length){
+    try{saveState();}catch(e){}
+    if(typeof toast==='function')
+      toast('Account names tidied: '+r.plan.map(function(p){return p.to;}).join(', '),'ok',7000);
+  }else{
+    try{saveState();}catch(e){}
+  }
+}
+
 function atMigrateAccountName(oldName,newName){
   var o=String(oldName||'').trim(), w=String(newName||'').trim();
   if(!o||!w||o===w)return 0;
