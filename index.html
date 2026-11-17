@@ -12998,7 +12998,6 @@ function apexRender(){
   window.addEventListener('hashchange',()=>{const h=location.hash.replace('#','');if(screens.includes(h))showScreen(h);});
   // Apply academy mode on load
   if(state.settings.academyMode){document.querySelectorAll('.ore-academy-field').forEach(el=>el.hidden=false);}
-  try{atNormalizeAccountNamesOnce();}catch(e){console.warn('[AT] name normalise failed',e);}
   try{futEntryApply();}catch(e){}
   setOptType('CALL');setODir('BULLISH');
   populateFAccountSelect();
@@ -13642,6 +13641,13 @@ async function atPushAccounts(){
   function boot(){
     try{
       if(typeof state==='undefined'||!state.settings)return;
+      // Names first, so accounts derive from the canonical spelling. This has
+      // to live here rather than in the boot sequence further up the file:
+      // that code is in an earlier <script> block, and a function declaration
+      // only hoists within its own block, so calling it there threw a
+      // ReferenceError that the surrounding catch turned into a console
+      // warning and nothing ran.
+      atNormalizeAccountNamesOnce();
       atDeriveAccounts();
       console.log('[AT] accounts derived:',(state.accounts||[]).length);
     }catch(e){console.warn('[AT] account derivation failed',e);}
