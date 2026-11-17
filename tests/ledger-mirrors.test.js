@@ -17,7 +17,7 @@ const fail = m => { failures++; console.error('  FAIL ' + m); };
 const pass = m => console.log('  ok   ' + m);
 
 const grab = n => (html.match(new RegExp('(?:async )?function ' + n + '\\([\\s\\S]*?\\n\\}')) || [])[0];
-const names = ['atHash','atSigGet','atSigSet','atPushRows','atAcctId','atNum','atDate',
+const names = ['atHash','atSigGet','atSigSet','atPushRows','atAcctId','atNum','atDate','atTs',
                'atPushWithdrawals','atPushHoldings','atPushTransactions'];
 const src = names.map(grab);
 const missing = names.filter((n,i) => !src[i]);
@@ -94,32 +94,70 @@ if (gone && gone.id === 'w1' && gone.deleted === true)
   pass('a deleted withdrawal becomes a tombstone, not a disappearance');
 else fail('no tombstone: ' + JSON.stringify(gone));
 
-console.log('\nholdings');
+console.log('\nholdings (real E-Trade export shape)');
+// Taken verbatim from the live blob. ts is a DISPLAY STRING, not a timestamp,
+// and the value column is `value` not `marketValue`. Both of these broke the
+// first version of this mirror: new Date(ts).toISOString() threw RangeError,
+// the push path's empty catch swallowed it, and all 39 positions across 3
+// accounts silently failed to sync for two days.
 s = harness({
   stockHoldings: {
     'Yaz-3036': {
-      ts: 1763000000000, cash: 1200.5,
+      acctName: 'Yaz-3036',
+      ts: 'Nov 6 2026 06:58 PM ET',
+      cash: 1200.5,
       summary: { netValue: 50000 },
       positions: [
-        { symbol: 'AAPL', qty: 10, pricePaid: 180, lastPrice: 200, marketValue: 2000, totalCost: 1800 },
-        { symbol: 'MSFT', qty: 5,  pricePaid: 400, lastPrice: 420, marketValue: 2100, totalCost: 2000 },
+        { symbol:'SHOP', qty:30, value:4467.3, change:5.16, ytdGain:-361.8, daysGain:154.8,
+          changePct:3.59, lastPrice:148.91, pricePaid:98.1307, totalCost:2943.92,
+          totalGain:1523.38, ytdGainPct:-7.49, costPerShare:98.1307, totalGainPct:51.7467 },
+        { symbol:'MSFT', qty:5, value:2100, lastPrice:420, pricePaid:400, totalCost:2000 },
       ],
     },
   },
 });
-await vm.runInContext('atPushHoldings()', s);
+// A throw inside the mirror must be reported as a failure, not crash the
+// suite and skip everything after it.
+try { await vm.runInContext('atPushHoldings()', s); }
+catch (e) { fail('atPushHoldings threw on the real export shape: ' + e.message); }
 if ((s.sent.holdings || []).length === 2) pass('one row per position');
 else fail('expected 2 positions, got ' + (s.sent.holdings || []).length);
-const aapl = (s.sent.holdings || []).find(r => r.symbol === 'AAPL');
-if (aapl && aapl.id === 'Yaz-3036|AAPL' && aapl.account_id === 'acct-1')
+const shop = (s.sent.holdings || []).find(r => r.symbol === 'SHOP');
+if (shop && shop.id === 'Yaz-3036|SHOP' && shop.account_id === 'acct-1')
   pass('holding id is account|symbol, so a re-import overwrites in place');
-else fail('holding id wrong: ' + JSON.stringify(aapl && aapl.id));
-if (aapl && aapl.qty === 10 && aapl.market_value === 2000) pass('position figures carried');
-else fail('position fields wrong');
+else fail('holding id wrong: ' + JSON.stringify(shop && shop.id));
+if (shop && shop.qty === 30 && shop.market_value === 4467.3)
+  pass('market_value reads the export\'s `value` field');
+else fail('market_value wrong (expected 4467.3): ' + JSON.stringify(shop && shop.market_value));
+if (shop && shop.price_paid === 98.1307 && shop.total_gain === 1523.38 && shop.total_cost === 2943.92)
+  pass('cost basis and gains carried');
+else fail('position fields wrong: ' + JSON.stringify(shop));
+// The timezone word is dropped, so this is read in the local zone and is
+// approximate. It is used for ordering; summary.as_of_text below is the record.
+if (shop && /^2026-11-06T/.test(shop.as_of))
+  pass('broker display string parses to a usable date (' + shop.as_of + ')');
+else fail('as_of should parse to Nov 6 2026, got ' + (shop && shop.as_of));
 const snap = (s.sent.holding_snapshots || [])[0];
 if (snap && snap.cash === 1200.5 && snap.summary.netValue === 50000)
   pass('account cash and summary go to holding_snapshots');
 else fail('snapshot wrong: ' + JSON.stringify(snap));
+if (snap && snap.summary.as_of_text === 'Nov 6 2026 06:58 PM ET')
+  pass('the broker\'s own wording is kept rather than discarded');
+else fail('as_of_text missing: ' + JSON.stringify(snap && snap.summary));
+
+console.log('\ntimestamps never throw');
+const tsCases = [
+  ['Nov 6 2026 06:58 PM ET', 'display string with a timezone word'],
+  ['', 'empty string'], [null, 'null'], [undefined, 'undefined'],
+  ['not a date at all', 'nonsense'], [NaN, 'NaN'], [0, 'zero'],
+  [1763000000000, 'epoch millis'], ['2026-11-06T18:58:00Z', 'ISO'],
+];
+for (const [val, label] of tsCases) {
+  try {
+    const out = vm.runInContext('atTs(' + JSON.stringify(val === undefined ? null : val) + ')', s);
+    pass(label + ' → ' + (out === null ? 'null' : out));
+  } catch (e) { fail(label + ' threw: ' + e.message); }
+}
 
 console.log('\ntransactions');
 const txnState = () => ({
@@ -166,9 +204,28 @@ try { await vm.runInContext('atPushWithdrawals()', bare); await vm.runInContext(
 catch (e) { threw = true; fail('threw on empty state: ' + e.message); }
 if (!threw) pass('empty state does not throw');
 
-if (/try\{if\(typeof atPushWithdrawals==='function'\)atPushWithdrawals\(\);\}catch\(e\)\{\}/.test(html))
-  pass('wired into the push path inside try/catch — a mirror failure cannot break a save');
-else fail('not wired, or not guarded');
+// The mirrors must be driven from the push path, must not be able to break a
+// save, and must not fail silently — an empty catch hid a RangeError here for
+// two days while every holdings row failed to sync.
+// Fixed window from the anchor: a non-greedy terminator stops at the inner
+// r.catch(...) and misses the outer sync catch entirely.
+const wAt = html.indexOf("[['accounts',atPushAccounts");
+const wiring = wAt === -1 ? null : html.slice(wAt, wAt + 1200);
+if (!wiring) fail('mirrors are not wired into the push path');
+else {
+  for (const n of ['atPushWithdrawals','atPushHoldings','atPushTransactions'])
+    if (wiring.includes(n)) pass(n + ' is driven from the push path');
+    else fail(n + ' is not in the push path');
+  if (/catch\s*\(e\)\s*\{\s*console\.warn/.test(wiring))
+    pass('a sync throw is logged, not swallowed');
+  else fail('sync throws are still swallowed silently');
+  if (/r\.catch\(function\(e\)\{console\.warn/.test(wiring))
+    pass('a rejected promise is logged too — these are async');
+  else fail('async rejections are not reported');
+  if (/catch/.test(wiring))
+    pass('still guarded, so a mirror failure cannot break a save');
+  else fail('unguarded — a mirror failure could break a save');
+}
 
 console.log(failures ? '\n' + failures + ' failure(s)\n' : '\nall checks passed\n');
 process.exit(failures ? 1 : 0);
