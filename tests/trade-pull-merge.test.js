@@ -208,10 +208,16 @@ console.log('\nwiring');
   if (!wrap) fail('atReconcile wrapper not found');
   else {
     const iBlob = wrap.indexOf('atReconcileBlob()');
-    const iPull = wrap.indexOf('atPullTrades()');
+    const iPull = wrap.indexOf('atPullTrades');
     if (iBlob > -1 && iPull > -1 && iBlob < iPull)
-      pass('blob reconcile runs before the per-row pull');
+      pass('blob reconcile runs before the per-row pulls');
     else fail('ordering wrong: blob at ' + iBlob + ', pull at ' + iPull);
+    // Every entity pull must run, and one failing must not stop the rest.
+    for (const fn of ['atPullTrades','atPullWithdrawals','atPullOpportunities',
+                      'atPullArcherSignals','atPullClassSessions','atPullClassAnalysis']) {
+      if (wrap.includes(fn)) pass(fn + ' runs on reconcile');
+      else fail(fn + ' is never called');
+    }
     if (/catch\s*\(e\)\s*\{\s*console\.warn/.test(wrap))
       pass('a pull failure is logged and does not break sign-in');
     else fail('pull failure is unguarded or silent');

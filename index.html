@@ -10600,9 +10600,14 @@ async function atReconcileBlob(){
 // picking the wrong button.
 async function atReconcile(){
   await atReconcileBlob();
-  try{
-    if(typeof atPullTrades==='function')await atPullTrades();
-  }catch(e){console.warn('[AT] trades pull threw',e);}
+  // Each pull is independent: one failing must not stop the others.
+  var pulls=[['trades',atPullTrades],['withdrawals',atPullWithdrawals],
+             ['opportunities',atPullOpportunities],['archer',atPullArcherSignals],
+             ['class sessions',atPullClassSessions],['class analysis',atPullClassAnalysis]];
+  for(var i=0;i<pulls.length;i++){
+    try{ if(typeof pulls[i][1]==='function')await pulls[i][1](); }
+    catch(e){console.warn('[AT] '+pulls[i][0]+' pull threw',e);}
+  }
 }
 
 // ── Auth UI ───────────────────────────────────────────────────
@@ -13889,6 +13894,191 @@ function atRest(o,cols){
   var extra={};
   Object.keys(o||{}).forEach(function(k){ if(cols.indexOf(k)===-1)extra[k]=o[k]; });
   return extra;
+}
+
+
+// ── GENERIC PER-ROW PULL ────────────────────────────────────────────────
+// Same merge rule as trades: a local row that hashes differently from what
+// was last pushed has unsent changes and wins; otherwise the remote row wins;
+// a tombstone removes it. After adopting a row its signature is set to the
+// rebuilt object's hash, or the next push would send it straight back.
+//
+// cfg: { table, sigKey, read() -> array, write(array), fromRow(row) -> obj,
+//        idOf(obj) -> string, rowFilter(row) -> bool }
+async function atPullArray(cfg){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser)return false;
+  var since=atPullAt(cfg.pullKey||cfg.table);
+  var q=c.from(cfg.table).select('*').eq('user_id',atUser.id)
+         .order('updated_at',{ascending:true}).limit(5000);
+  if(since)q=q.gt('updated_at',since);
+  var res=await q;
+  if(res.error){console.warn('[AT] '+cfg.table+' pull failed',res.error);return false;}
+  var rows=(res.data||[]).filter(cfg.rowFilter||function(){return true;});
+
+  // The high-water mark must advance over EVERY row the query returned, not
+  // just the ones this caller keeps. archer_signals is read twice, once per
+  // kind, and marking only the filtered subset would re-fetch forever.
+  var maxAt=since||'';
+  (res.data||[]).forEach(function(r){
+    if(r.updated_at&&String(r.updated_at)>maxAt)maxAt=String(r.updated_at);
+  });
+  if(!rows.length){atSetPullAt(cfg.pullKey||cfg.table,maxAt);return true;}
+
+  var sig=atSigGet(cfg.sigKey);
+  var arr=cfg.read()||[];
+  var byId={};
+  arr.forEach(function(o){ if(o)byId[cfg.idOf(o)]=o; });
+
+  var added=0,updated=0,removed=0,kept=0,drop={};
+  rows.forEach(function(r){
+    var id=String(r.id);
+    var local=byId[id];
+    if(local&&sig[id]!==undefined&&atHash(JSON.stringify(local))!==sig[id]){kept++;return;}
+    if(r.deleted){
+      if(local){drop[id]=1; delete byId[id]; delete sig[id]; removed++;}
+      return;
+    }
+    var o=cfg.fromRow(r);
+    if(local){
+      Object.keys(local).forEach(function(k){delete local[k];});
+      Object.assign(local,o);
+      updated++;
+    }else{
+      arr.push(o); byId[id]=o; added++;
+    }
+    sig[id]=atHash(JSON.stringify(byId[id]));
+  });
+
+  if(removed)arr=arr.filter(function(o){return !(o&&drop[cfg.idOf(o)]);});
+  if(added||updated||removed){
+    cfg.write(arr);
+    try{localStorage.setItem(cfg.sigKey,JSON.stringify(sig));}catch(e){}
+    saveState();
+    try{renderAll();}catch(e){}
+  }
+  atSetPullAt(cfg.pullKey||cfg.table,maxAt);
+  if(added||updated||removed||kept)
+    console.log('[AT] '+(cfg.label||cfg.table)+' pulled: +'+added+' ~'+updated+' -'+removed
+      +(kept?(' ('+kept+' local kept)'):''));
+  return true;
+}
+
+function atOppFromRow(r){
+  var o=Object.assign({},r.data||{});
+  o.id=/^\d+$/.test(String(r.id))?Number(r.id):String(r.id);
+  o.ticker=r.ticker||''; o.status=r.status||'';
+  if(r.route_decision)o.routeDecision=r.route_decision;
+  if(r.source)o.source=r.source;
+  if(r.direction)o.direction=r.direction;
+  if(r.analysis_date)o.analysisDate=r.analysis_date;
+  ['price','entry','stop','target','support','resistance','rr','shares'].forEach(function(k){
+    if(r[k]!=null)o[k]=Number(r[k]);
+  });
+  if(r.total_risk!=null)o.totalRisk=Number(r.total_risk);
+  if(r.setup)o.setup=r.setup;
+  if(r.condition)o.condition=r.condition;
+  if(r.note!=null)o.note=r.note;
+  return o;
+}
+function atArcherFromRow(r){
+  var a=Object.assign({},r.data||{});
+  a.id=String(r.id).replace(/^(watch|reject):/,'');
+  if(/^\d+$/.test(a.id))a.id=Number(a.id);
+  a.ticker=r.ticker||'';
+  if(r.direction)a.direction=r.direction;
+  if(r.session_date)a.sessionDate=r.session_date;
+  if(r.signal_date)a.date=r.signal_date;
+  if(r.signal_time)a.time=r.signal_time;
+  ['entry','stop','target','score'].forEach(function(k){ if(r[k]!=null)a[k]=Number(r[k]); });
+  if(r.verdict)a.verdict=r.verdict;
+  if(r.added_at)a.addedAt=r.added_at;
+  return a;
+}
+function atClassSessionFromRow(r){
+  var s=Object.assign({},r.data||{});
+  s.id=String(r.id);
+  if(r.label)s.label=r.label;
+  if(r.session_date)s.date=r.session_date;
+  if(r.source)s.source=r.source;
+  if(r.class_wins!=null)s.classWins=Number(r.class_wins);
+  if(r.session_notes!=null)s.sessionNotes=r.session_notes;
+  s.tickers=Array.isArray(r.tickers)?r.tickers:[];
+  return s;
+}
+function atWithdrawalFromRow(r){
+  // Resolve on the way in too: a row written before normalisation would
+  // otherwise reintroduce an old name through the pull.
+  return {id:String(r.id), date:r.wd_date||'', account:atAcctNameTarget(r.account_name||''),
+          amount:r.amount!=null?Number(r.amount):null, note:r.note||''};
+}
+
+async function atPullOpportunities(){
+  return atPullArray({
+    table:'opportunities', sigKey:'at_opportunities_sig', label:'opportunities',
+    read:function(){return Array.isArray(state.discoveries)?state.discoveries:(state.discoveries=[]);},
+    write:function(a){state.discoveries=a;},
+    fromRow:atOppFromRow, idOf:function(o){return String(o.id);}
+  });
+}
+async function atPullArcherSignals(){
+  // One table, two local arrays. Each pass filters by kind; both advance the
+  // same high-water mark, which is why the mark is taken before filtering.
+  var a=await atPullArray({
+    table:'archer_signals', sigKey:'at_archer_sig', pullKey:'archer_signals', label:'archer watchlist',
+    rowFilter:function(r){return r.kind==='watch';},
+    read:function(){return Array.isArray(state.archerWatchlist)?state.archerWatchlist:(state.archerWatchlist=[]);},
+    write:function(x){state.archerWatchlist=x;},
+    fromRow:atArcherFromRow, idOf:function(o){return 'watch:'+o.id;}
+  });
+  var b=await atPullArray({
+    table:'archer_signals', sigKey:'at_archer_sig', pullKey:'archer_signals_reject', label:'archer rejects',
+    rowFilter:function(r){return r.kind==='reject';},
+    read:function(){return Array.isArray(state.archerRejects)?state.archerRejects:(state.archerRejects=[]);},
+    write:function(x){state.archerRejects=x;},
+    fromRow:atArcherFromRow, idOf:function(o){return 'reject:'+o.id;}
+  });
+  return a&&b;
+}
+async function atPullClassSessions(){
+  return atPullArray({
+    table:'class_sessions', sigKey:'at_class_sessions_sig', label:'class sessions',
+    read:function(){return Array.isArray(state.classSessions)?state.classSessions:(state.classSessions=[]);},
+    write:function(a){state.classSessions=a;},
+    fromRow:atClassSessionFromRow, idOf:function(o){return String(o.id);}
+  });
+}
+async function atPullWithdrawals(){
+  return atPullArray({
+    table:'withdrawals', sigKey:'at_withdrawals_sig', label:'withdrawals',
+    read:function(){return Array.isArray(state.withdrawals)?state.withdrawals:(state.withdrawals=[]);},
+    write:function(a){state.withdrawals=a;},
+    fromRow:atWithdrawalFromRow, idOf:function(o){return String(o.id);}
+  });
+}
+
+// classAnalysis is an object keyed by ticker, not an array, so it is pulled
+// through the array engine with a thin adapter.
+async function atPullClassAnalysis(){
+  if(!state.classAnalysis||typeof state.classAnalysis!=='object')state.classAnalysis={};
+  var tmp=Object.keys(state.classAnalysis).map(function(tk){
+    var v=state.classAnalysis[tk];
+    return {__k:tk, __v:v};
+  });
+  var ok=await atPullArray({
+    table:'class_analysis', sigKey:'at_class_analysis_sig', label:'class analysis',
+    read:function(){return tmp;},
+    write:function(a){tmp=a;},
+    fromRow:function(r){
+      var d=r.data||{};
+      return {__k:String(r.id), __v:(d&&d.value!==undefined&&Object.keys(d).length===1)?d.value:d};
+    },
+    idOf:function(o){return String(o.__k);}
+  });
+  var next={};
+  tmp.forEach(function(e){ if(e&&e.__k)next[e.__k]=e.__v; });
+  state.classAnalysis=next;
+  return ok;
 }
 
 async function atPushOpportunities(){
