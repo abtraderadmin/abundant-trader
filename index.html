@@ -14200,8 +14200,17 @@ function atBackfillTradeAccountIds(){
   return n;
 }
 
+// Fields that get a dedicated column. Anything NOT listed here rides in
+// data{} verbatim and comes back untouched.
+//
+// shares and contracts are deliberately absent. The qty column collapses
+// qty/shares/contracts into one number so the table is queryable, but the
+// originals have to survive the round trip: a stock trade carries `shares`
+// and a futures trade carries `contracts`, and listing them here meant they
+// were stripped from data{} and never rebuilt, so pulling a trade silently
+// dropped them.
 var AT_TRADE_COLS=['id','account','accountId','module','date','symbol','ticker','direction',
-  'optType','setup','regime','entry','stop','t1','target','qty','shares','contracts',
+  'optType','setup','regime','entry','stop','t1','target','qty',
   'exitPrice','grossPL','feesActual','netPL','rr','grade','status',
   'emotion','thesis','lesson','rulesFollowed','mistakeCategory'];
 

@@ -76,7 +76,13 @@ const trade = (o) => Object.assign({
 console.log('\nround trip through the row format');
 {
   const s = harness({});
-  const orig = trade({ srcKey:'abc123', holdSec:412, importedFromCSV:true, scaleT1:null });
+  // A realistic trade: stock trades carry `shares`, futures carry
+  // `contracts`, and the qty column collapses all three. Both originals must
+  // come back — listing them as columns stripped them from data{} and they
+  // were silently lost on every pull.
+  const orig = trade({ srcKey:'abc123', holdSec:412, importedFromCSV:true, scaleT1:null,
+                       shares:9, contracts:2, exit:603, feesPlanned:0,
+                       scaleT2:null, scaleRun:null, entryTime:'09:47', instrument:'SPY' });
   const r = vm.runInContext('atTradeRow(' + JSON.stringify(orig) + ',"u1")', s);
   const back = vm.runInContext('atTradeFromRow(' + JSON.stringify(r) + ')', s);
   const lost = Object.keys(orig).filter(k => orig[k] !== null && JSON.stringify(back[k]) !== JSON.stringify(orig[k]));
@@ -85,6 +91,14 @@ console.log('\nround trip through the row format');
   if (back.srcKey === 'abc123' && back.holdSec === 412)
     pass('non-column fields survive via data{}');
   else fail('data{} fields lost');
+  if (back.shares === 9 && back.contracts === 2)
+    pass('shares and contracts survive alongside the collapsed qty column');
+  else fail('shares/contracts lost on the round trip: shares=' + back.shares + ' contracts=' + back.contracts);
+  if (back.entryTime === '09:47' && back.instrument === 'SPY')
+    pass('entryTime and instrument survive (import dedup depends on them)');
+  else fail('entryTime/instrument lost — import dedup would start duplicating');
+  if (r.qty === 1) pass('qty column still holds the collapsed number for querying');
+  else fail('qty column wrong: ' + r.qty);
 }
 
 console.log('\nnew remote trades arrive');
