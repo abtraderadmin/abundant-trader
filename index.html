@@ -10523,6 +10523,26 @@ function atApplyCloudState(obj,updatedAt){
   try{localStorage.setItem('at_v2',JSON.stringify(obj));}catch(e){}
   if(updatedAt){atSetCloudSeen(updatedAt);atFlagConflict(false);}
   loadState();
+  // Normalise whatever copy just became authoritative.
+  //
+  // The boot pass alone was not enough: it runs at DOMContentLoaded while the
+  // cloud reconcile runs async after sign-in, so the two raced and whichever
+  // landed last won. Adopting a cloud copy wholesale replaces state AND
+  // localStorage, which silently reinstated spaced account names that had
+  // already been fixed on this device.
+  //
+  // Running it here means any copy taken from the cloud is canonicalised
+  // before anything reads it, whatever order the two finish in. It is cheap
+  // when there is nothing to do: the pass returns an empty plan and writes
+  // nothing.
+  try{
+    var r=(typeof atNormalizeAccountNames==='function')?atNormalizeAccountNames():null;
+    if(r&&r.plan&&r.plan.length){
+      if(state&&state.settings)state.settings._acctNamesNormalizedV=2;
+      saveState();
+      console.log('[AT] adopted cloud copy needed '+r.plan.length+' name fix(es)');
+    }
+  }catch(e){console.warn('[AT] normalise after adopt failed',e);}
   try{renderAll();}catch(e){}
   try{renderLog();}catch(e){}
   try{renderCfg();}catch(e){}
