@@ -990,7 +990,7 @@ body::before{
       <div class="fg"><label class="fl">Underlying Price Now<span class="req">*</span></label><input class="fc mono" id="o-price-now" type="number" step="0.01" placeholder="185.00" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Invalidation Level (underlying)</label><input class="fc mono" id="o-invalidation" type="number" step="0.01" placeholder="181.00" title="Underlying price where thesis is wrong — size from this, not from option premium alone" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Price Target (Where Going)<span class="req">*</span></label><input class="fc mono" id="o-price-target" type="number" step="0.01" placeholder="195.00" oninput="recalcO()"></div>
-      <div class="fg"><label class="fl">Avg Moving Day (EMA ref)</label><input class="fc mono" id="o-avg-day" type="number" step="1" placeholder="9" title="Which EMA period guides strike selection"></div>
+      <div class="fg"><label class="fl">Avg Moving Day (days)</label><input class="fc mono" id="o-avg-day" type="number" step="0.1" placeholder="auto" title="Days for the underlying to cover Points at its average daily range (Points / ATR-14). Auto-filled when ATR is on file; type over it to override." oninput="this.dataset.atTouched=this.value===''?'0':'1';recalcO()"></div>
       <div class="fg"><label class="fl">Total Avg Move (pts)</label><input class="fc mono" id="o-avg-move" type="number" step="0.01" placeholder="8.50" oninput="recalcO()"></div>
 
       <!-- Strike + Expiry -->
@@ -1065,7 +1065,9 @@ body::before{
 
     <!-- Live Calcs -->
     <div class="calc-grid">
-      <div class="ci"><div class="cl">Expected Move</div><div class="cv gold" id="oc-pts">—</div></div>
+      <div class="ci" title="Points = half the distance from the underlying now to the target (Calculation Registry 4.1)."><div class="cl">Points (half move)</div><div class="cv gold" id="oc-pts">—</div></div>
+      <div class="ci" title="Planning strike = underlying now + Points for a call, − Points for a put. The halfway strike (Calculation Registry 4.2)."><div class="cl">Planning Strike</div><div class="cv gold" id="oc-strike-calc">—</div></div>
+      <div class="ci" title="Total Avg Move = Avg Moving Day / 2 + 5, then Contract in Weeks = that / 5 (Calculation Registry 4.3-4.4)."><div class="cl">Total Avg Move · weeks</div><div class="cv blue" id="oc-tam">—</div></div>
       <div class="ci"><div class="cl">Gross Cost</div><div class="cv" id="oc-gross-cost">—</div></div>
       <div class="ci"><div class="cl">Net Total Cost</div><div class="cv red" id="oc-net-cost">—</div></div>
       <div class="ci"><div class="cl">Risk : Reward</div><div class="cv" id="oc-rr">—</div></div>
@@ -2806,9 +2808,38 @@ function recalcO(){
   const oi         = gv('o-oi');
   const spread     = gv('o-spread');
 
-  // Expected move / Points
-  const pts = priceNow && priceTgt ? Math.abs(priceTgt - priceNow) : (avgMove || 0);
-  document.getElementById('oc-pts').textContent = pts ? '$'+pts.toFixed(2) : '—';
+  // Points / planning strike — Calculation Registry 4.1-4.2.
+  // Points is HALF the distance to the target, so the planning strike lands
+  // midway between the underlying now and the target: the halfway strike the
+  // AT class method uses. Direction-aware, and a negative value means the
+  // target contradicts the option type, which is flagged rather than hidden.
+  const isPut = state.oOptType === 'PUT';
+  const signedPts = priceNow && priceTgt
+    ? (isPut ? (priceNow - priceTgt) : (priceTgt - priceNow)) / 2
+    : 0;
+  const pts = signedPts > 0 ? signedPts : 0;
+  const ptsEl = document.getElementById('oc-pts');
+  if(!priceNow || !priceTgt){ ptsEl.textContent='—'; ptsEl.title=''; ptsEl.style.color=''; }
+  else if(signedPts <= 0){
+    ptsEl.textContent='check direction';
+    ptsEl.style.color='var(--red)';
+    ptsEl.title='Target $'+fmt(priceTgt,2)+' is on the wrong side of $'+fmt(priceNow,2)
+      +' for a '+(isPut?'PUT':'CALL')+'. Points would be '+fmt(signedPts,2)+'.';
+  } else {
+    ptsEl.textContent='$'+pts.toFixed(2);
+    ptsEl.style.color='';
+    ptsEl.title='Half of the $'+fmt(Math.abs(priceTgt-priceNow),2)+' move to target.';
+  }
+
+  // Planning strike = now ± Points. Shown only; never overwrites what was typed.
+  const strikeCalc = pts ? parseFloat((isPut ? priceNow - pts : priceNow + pts).toFixed(2)) : 0;
+  const scEl = document.getElementById('oc-strike-calc');
+  if(scEl){
+    scEl.textContent = strikeCalc ? '$'+strikeCalc.toFixed(2) : '—';
+    scEl.title = strikeCalc
+      ? 'Halfway between $'+fmt(priceNow,2)+' and $'+fmt(priceTgt,2)+'. Planning level — the strike actually bought is its own field.'
+      : '';
+  }
 
   // Gross cost = cost × 100 × contracts
   const gross = cost * 100 * contracts;
@@ -2822,6 +2853,7 @@ function recalcO(){
   // ATR for the ticker being planned. state.ore holds one ticker at a time,
   // so this reads the per-ticker levels cache and works even when the last
   // analysis was something else. Reference only -- it changes no input.
+  let atrVal=null;
   try{
     const atrEl=document.getElementById('oc-atr');
     if(atrEl){
@@ -2829,6 +2861,7 @@ function recalcO(){
       const a=(typeof atAtrFor==='function')?atAtrFor(tk):null;
       if(!a){atrEl.textContent='—'; atrEl.title='No analysis on file for this ticker yet.';}
       else{
+        atrVal=a.atr;
         const ex=document.getElementById('o-expiry');
         const days=ex&&ex.value
           ? Math.max(1,Math.round((new Date(ex.value+' 00:00:00')-new Date())/86400000))
@@ -2843,6 +2876,38 @@ function recalcO(){
       }
     }
   }catch(e){}
+
+  // Avg Moving Day / Total Avg Move / Contract in Weeks — Calculation Registry 4.3-4.4.
+  //
+  // AvgMovingDay is a DAY COUNT: how long the underlying needs to cover Points
+  // at its average daily range. ContractInWeeks = TotalAvgMove / 5 only divides
+  // out to weeks if TotalAvgMove is in trading days, which fixes the unit.
+  // Points / ATR(14) is the only derivation that yields days, and it is why the
+  // Access database needed ATR. Auto-filled, and editable — typing over it wins.
+  //
+  // TotalAvgMove uses AvgMovingDay / 2 + 5, which reproduces 7 of the 8 worked
+  // examples in the registry. The written "+ 4.5" reproduces 1 of 8.
+  const avgDayEl = document.getElementById('o-avg-day');
+  if(avgDayEl){
+    const derived = (pts && atrVal) ? parseFloat((pts/atrVal).toFixed(1)) : null;
+    const touched = avgDayEl.dataset.atTouched === '1';
+    if(derived && !touched){
+      avgDayEl.value = derived;
+      avgDayEl.dataset.atDerived = String(derived);
+    }
+  }
+  const avgDay = gv('o-avg-day');
+  const tam    = avgDay ? parseFloat((avgDay/2 + 5).toFixed(2)) : 0;
+  const ciw    = tam ? parseFloat((tam/5).toFixed(2)) : 0;
+  const tamEl  = document.getElementById('oc-tam');
+  if(tamEl){
+    tamEl.textContent = tam ? (fmt(tam,1)+' · '+fmt(ciw,1)+'w') : '—';
+    tamEl.title = tam
+      ? ('Avg Moving Day '+fmt(avgDay,1)+' day'+(avgDay===1?'':'s')
+         +(atrVal?(' (Points $'+fmt(pts,2)+' / ATR $'+fmt(atrVal,2)+')'):' (entered)')
+         +' → Total Avg Move '+fmt(tam,1)+' → '+fmt(ciw,1)+' weeks to expiry.')
+      : 'Needs Avg Moving Day, or an analysis on file for this ticker to derive it from ATR.';
+  }
 
   // Weeks to expiry
   let weeks = 0;
@@ -2995,6 +3060,13 @@ function saveOTrade(){
     strikePricePlanned:gv('o-strike-plan'),
     avgMovingDay:gv('o-avg-day'),
     totalAvgMove:gv('o-avg-move'),
+    // Registry 4.2-4.4 values, kept beside the entered ones so a plan can be
+    // checked against the method after the fact. The fields above stay as the
+    // trader typed them.
+    strikePriceCalc:strikeCalc||null,
+    totalAvgMoveDays:tam||null,
+    contractInWeeksCalc:ciw||null,
+    atrAtPlan:atrVal||null,
     expiryDate:expiry,
     contractInWeeks:parseFloat(weeks),
     contractsBought:contracts,
@@ -3040,7 +3112,7 @@ function saveOTrade(){
 
 function clearOForm(){
   ['o-ticker','o-account','o-regime','o-setup','o-style','o-catalyst','o-emotion','o-grade','o-rules'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
-  ['o-price-now','o-price-target','o-avg-move','o-avg-day','o-strike','o-strike-plan','o-cost','o-commission','o-iv','o-delta','o-spread','o-volume','o-oi','o-stop','o-t1','o-exit','o-commission-actual'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  ['o-price-now','o-price-target','o-avg-move','o-avg-day','o-strike','o-strike-plan','o-cost','o-commission','o-iv','o-delta','o-spread','o-volume','o-oi','o-stop','o-t1','o-exit','o-commission-actual'].forEach(id=>{const el=document.getElementById(id);if(el){el.value='';if(el.dataset)delete el.dataset.atTouched;}});
   document.getElementById('o-contracts').value='1';
   document.getElementById('o-commission').value='0';
   document.getElementById('o-expiry').value='';
@@ -8069,7 +8141,10 @@ function orePromoteToOptions(){
     set('o-price-now',entry);
     set('o-invalidation',invalid);
     set('o-price-target',target||'');
-    set('o-avg-day',emaRef);
+    // Avg Moving Day is a day count (Points / ATR), not an EMA period.
+    // The EMA reference still appears in the thesis text below.
+    const oPts=(entry&&target)?Math.abs(target-entry)/2:null;
+    set('o-avg-day',(oPts&&atr)?parseFloat((oPts/atr).toFixed(1)):'');
     set('o-avg-move',swing);
     set('o-strike-plan',strike);
     set('o-strike',strike);
