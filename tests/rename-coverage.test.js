@@ -49,6 +49,8 @@ if (!regBody) {
     'discoveries',      // index
     'settings',         // settings[key]
     'woChains',         // ticker
+    'levels',           // ticker — the per-ticker ATR/fib/pivot cache. Flagged
+                        // only because the prune comparator uses (a,b).
   ]);
 
   for (const [store, key] of found) {
