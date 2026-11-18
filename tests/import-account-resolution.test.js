@@ -111,5 +111,49 @@ const i2 = html.indexOf('const _existType=(state.stockHoldings[result.acctName]|
 if (i1 > -1 && i2 > i1) pass('resolved before the existing record is read');
 else fail('accountType is read off the unresolved key');
 
+console.log('\nno path writes an unresolved account name');
+// Every account name that reaches state.trades or a name-keyed store must go
+// through atAcctNameTarget(). Checked structurally so a new importer added
+// later cannot quietly skip it.
+{
+  const writes = [...html.matchAll(/\baccount:\s*([^,\n]+)/g)]
+    .map(m => ({ expr: m[1].trim(), line: html.slice(0, m.index).split('\n').length }))
+    .filter(w =>
+      // reads and comparisons, not writes into stored records
+      !/^t\.account\b/.test(w.expr) &&
+      !/^b\.account\b/.test(w.expr) &&
+      !/^add\[0\]\.account\b/.test(w.expr) &&
+      // the PA orders file's own label: intentionally raw, the user maps it to
+      // a target account in the confirm step
+      !/^\(o\[cName\]/.test(w.expr) &&
+      !/^null$/.test(w.expr));
+  const bad = writes.filter(w => !/atAcctNameTarget\(|atResolveImportedAccount\(/.test(w.expr));
+  if (!bad.length) pass(writes.length + ' account writes, all resolved');
+  else bad.forEach(w => fail('index.html line ' + w.line + ' writes an unresolved account: ' + w.expr.slice(0, 70)));
+}
+
+console.log('\nname-keyed stores are keyed by a resolved name');
+for (const [re, label] of [
+  [/state\.transactionHistory\[result\.acctName\]/, 'transactionHistory'],
+  [/state\.stockHoldings\[result\.acctName\]/,      'stockHoldings'],
+  [/state\.portfolioOpen\[result\.acctName\]/,      'portfolioOpen'],
+]) {
+  if (re.test(html)) pass(label + ' keyed by the resolved result.acctName');
+  else fail(label + ' key changed shape — re-check it resolves');
+}
+
+console.log('\nrestore cannot reintroduce old names');
+// A backup taken mid-migration carries the version flag set while the names
+// inside it are still spaced. Gating on the flag alone would skip it forever.
+const once = (html.match(/function atNormalizeAccountNamesOnce\([\s\S]*?\n\}/) || [])[0];
+if (!once) fail('atNormalizeAccountNamesOnce not found');
+else {
+  if (/dryRun:\s*true/.test(once)) pass('checks for actual work rather than trusting the flag');
+  else fail('still gates on the flag alone — a restored half-migrated backup would never be fixed');
+  const iGate = once.indexOf('_acctNamesNormalizedV>=2');
+  if (iGate === -1) pass('the flag is no longer an early-return gate');
+  else fail('the flag still short-circuits before the work check');
+}
+
 console.log(failures ? '\n' + failures + ' failure(s)\n' : '\nall checks passed\n');
 process.exit(failures ? 1 : 0);
