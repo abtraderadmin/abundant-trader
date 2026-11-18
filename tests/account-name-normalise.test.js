@@ -212,5 +212,36 @@ if (cs.trades.filter(t => t.account === 'PA-APEX-4687-12').length === 152)
   pass('trades still migrate even when one map skips');
 else fail('trades did not migrate alongside a skipped map');
 
+console.log('\nadopting a cloud copy canonicalises it');
+// The boot pass races the async cloud reconcile. Adopting a cloud copy
+// replaces state AND localStorage wholesale, which reinstated spaced names
+// that had already been fixed on this device. The adopt path must normalise
+// whatever it just took.
+const adopt = (html.match(/function atApplyCloudState\([\s\S]*?\n\}/) || [])[0];
+if (!adopt) fail('atApplyCloudState not found');
+else {
+  const iLoad = adopt.indexOf('loadState()');
+  const iNorm = adopt.indexOf('atNormalizeAccountNames(');
+  const iRender = adopt.indexOf('renderAll()');
+  if (iNorm === -1) fail('the adopt path does not normalise — a cloud copy can reintroduce spaced names');
+  else {
+    pass('adopt path normalises what it took');
+    if (iLoad > -1 && iNorm > iLoad) pass('runs after loadState, so it acts on the adopted copy');
+    else fail('normalises before loadState — it would act on the old state');
+    if (iRender > -1 && iNorm < iRender) pass('runs before render, so nothing displays the old names');
+    else fail('renders before normalising');
+  }
+  if (/_acctNamesNormalizedV\s*=\s*2/.test(adopt)) pass('sets the version flag on the adopted copy');
+  else fail('flag not set after adopting');
+  if (/saveState\(\)/.test(adopt)) pass('persists the fix so it is not lost on the next load');
+  else fail('does not save after normalising');
+  if (/if\s*\(\s*r\s*&&\s*r\.plan\s*&&\s*r\.plan\.length\s*\)/.test(adopt))
+    pass('only writes when there was something to fix');
+  else fail('writes unconditionally — every adopt would churn a save');
+  if (/catch\s*\(e\)\s*\{\s*console\.warn/.test(adopt))
+    pass('a failure here is logged, not swallowed');
+  else fail('failures are silent');
+}
+
 console.log(failures ? '\n' + failures + ' failure(s)\n' : '\nall checks passed\n');
 process.exit(failures ? 1 : 0);
