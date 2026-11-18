@@ -32,6 +32,10 @@ const NO_TABLE = {
   ore:           'scratchpad of fetched bars/EMAs/pivots for the ticker on screen; re-derivable, replaced each analysis',
   importQueue:   'transient staging between parsing a report and deciding on it',
   portfolioOpen: 'UI state — which panel is expanded',
+  levels:        'per-ticker cache of the CURRENT ATR, fibs and pivots. Re-derivable ' +
+                 'from Alpha Vantage by re-running the analysis. The part that is NOT ' +
+                 're-derivable — the levels as they stood when a trade was planned — is ' +
+                 'snapshotted onto the trade itself and rides in its data{}',
   accounts:      'derived locally from the settings arrays; the accounts table is written from it',
   settings:      'mirrored to user_settings / user_secrets, not a row table',
 };

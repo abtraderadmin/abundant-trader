@@ -1072,6 +1072,7 @@ body::before{
       <div class="ci"><div class="cl">Max Profit $</div><div class="cv green" id="oc-max-profit">—</div></div>
       <div class="ci"><div class="cl">T1 Profit $</div><div class="cv green" id="oc-t1-profit">—</div></div>
       <div class="ci"><div class="cl">Weeks to Expiry</div><div class="cv blue" id="oc-weeks">—</div></div>
+      <div class="ci" title="ATR(14) for this ticker and the move it implies over the days to expiry. Pulled from the last analysis of this ticker, so it is available without re-running one."><div class="cl">ATR(14) · exp. move</div><div class="cv" id="oc-atr">—</div></div>
       <div class="ci"><div class="cl">Net P/L</div><div class="cv" id="oc-net-pl">—</div></div>
       <div class="ci"><div class="cl">% Return</div><div class="cv" id="oc-pct-return">—</div></div>
       <div class="ci"><div class="cl">% of Capital</div><div class="cv" id="oc-pct-capital">—</div></div>
@@ -2436,7 +2437,7 @@ let state = {
 function loadState(){
   try{
     const raw=localStorage.getItem('at_v2');
-    if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];state.archerWatchlist=s.archerWatchlist||[];state.archerRejects=s.archerRejects||[];state.accounts=s.accounts||[];}
+    if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];state.archerWatchlist=s.archerWatchlist||[];state.archerRejects=s.archerRejects||[];state.accounts=s.accounts||[];state.levels=s.levels||{};}
   }catch(e){}
   // Seed known tax-deferred data for Jim account if not yet set
   _seedJimTaxData();
@@ -2456,7 +2457,7 @@ function _seedJimTaxData(){
   });
 }
 function saveState(){
-  try{localStorage.setItem('at_v2',JSON.stringify({settings:state.settings,trades:state.trades,discoveries:state.discoveries,importQueue:state.importQueue,ore:state.ore,classAnalysis:state.classAnalysis,classSessions:state.classSessions,stockHoldings:state.stockHoldings,portfolioOpen:state.portfolioOpen,transactionHistory:state.transactionHistory||{},withdrawals:state.withdrawals||[],archerWatchlist:state.archerWatchlist||[],archerRejects:state.archerRejects||[],accounts:state.accounts||[]}));}catch(e){}
+  try{localStorage.setItem('at_v2',JSON.stringify({settings:state.settings,trades:state.trades,discoveries:state.discoveries,importQueue:state.importQueue,ore:state.ore,classAnalysis:state.classAnalysis,classSessions:state.classSessions,stockHoldings:state.stockHoldings,portfolioOpen:state.portfolioOpen,transactionHistory:state.transactionHistory||{},withdrawals:state.withdrawals||[],archerWatchlist:state.archerWatchlist||[],archerRejects:state.archerRejects||[],accounts:state.accounts||[],levels:state.levels||{}}));}catch(e){}
   // localStorage stays the source of truth for the running app; the cloud copy
   // follows a couple of seconds behind. Never block a trade on the network.
   if(typeof atCloudQueue==='function')atCloudQueue();
@@ -2692,7 +2693,7 @@ function saveFTrade(){
   const rr=riskDiff>0?+(rewardDiff/riskDiff).toFixed(2):0;
   const grade=document.getElementById('f-grade').value;
   const sc=scaleThirds(ctrs);
-  state.trades.unshift({
+  state.trades.unshift(atAttachLevels({
     id:Date.now().toString(36),module:'futures',
     date:document.getElementById('f-date').value||new Date().toISOString().slice(0,10),
     account:atAcctNameTarget(document.getElementById('f-account').value||''),
@@ -2704,7 +2705,7 @@ function saveFTrade(){
     grade:grade||'',
     rulesFollowed:document.getElementById('f-rules').value,
     thesis:document.getElementById('f-thesis').value,lesson:document.getElementById('f-lesson').value,
-  });
+  }));
   saveState();renderAll();clearFForm();
   toast('Futures trade logged.'+(netPL!==null?' Net: '+$(netPL):''));
 }
@@ -2732,7 +2733,7 @@ function saveSTrade(){
   const rr=riskDiff>0?+(rewardDiff/riskDiff).toFixed(2):0;
   const grade=document.getElementById('s-grade').value;
   const sc=scaleThirds(shares);
-  state.trades.unshift({
+  state.trades.unshift(atAttachLevels({
     id:Date.now().toString(36),module:'stock',
     date:document.getElementById('s-date').value||new Date().toISOString().slice(0,10),
     instrument:ticker,symbol:ticker,direction:state.sDir,
@@ -2748,7 +2749,7 @@ function saveSTrade(){
     grade:grade||'',
     rulesFollowed:document.getElementById('s-rules').value,
     thesis:document.getElementById('s-thesis').value,lesson:document.getElementById('s-lesson').value,
-  });
+  }));
   saveState();renderAll();clearSForm();
   toast('Stock trade logged.'+(netPL!==null?' Net: '+$(netPL):''));
 }
@@ -2817,6 +2818,31 @@ function recalcO(){
   const net = gross + commission;
   document.getElementById('oc-net-cost').textContent = net ? '$'+net.toFixed(2) : '—';
   document.getElementById('oc-net-cost').style.color = net ? 'var(--red)' : '';
+
+  // ATR for the ticker being planned. state.ore holds one ticker at a time,
+  // so this reads the per-ticker levels cache and works even when the last
+  // analysis was something else. Reference only -- it changes no input.
+  try{
+    const atrEl=document.getElementById('oc-atr');
+    if(atrEl){
+      const tk=(document.getElementById('o-ticker')||{}).value||'';
+      const a=(typeof atAtrFor==='function')?atAtrFor(tk):null;
+      if(!a){atrEl.textContent='—'; atrEl.title='No analysis on file for this ticker yet.';}
+      else{
+        const ex=document.getElementById('o-expiry');
+        const days=ex&&ex.value
+          ? Math.max(1,Math.round((new Date(ex.value+' 00:00:00')-new Date())/86400000))
+          : null;
+        // Expected move scales with the square root of time, the same way
+        // the ORE panel reports it.
+        const em=days?a.atr*Math.sqrt(days):null;
+        atrEl.textContent='$'+fmt(a.atr,2)+(em?(' · ±$'+fmt(em,2)):'');
+        atrEl.title='ATR(14) $'+fmt(a.atr,2)
+          +(days?(' · ±$'+fmt(em,2)+' expected over '+days+' day'+(days!==1?'s':'')):'')
+          +' · '+(a.live?'from the analysis on screen':('from the analysis of '+a.asOf));
+      }
+    }
+  }catch(e){}
 
   // Weeks to expiry
   let weeks = 0;
@@ -3007,7 +3033,7 @@ function saveOTrade(){
     feesActual:exitComm||0,
     rr:net&&maxProfitEst?(maxProfitEst/net):0,
   };
-  state.trades.push(trade);
+  state.trades.push(atAttachLevels(trade));
   saveState();renderAll();clearOForm();
   showScreen('log');
 }
@@ -5071,7 +5097,7 @@ function spyConfirmBridge(){
     status:(b.mode==='day'||b.balanced)?'CLOSED':'OPEN',
     importedFromTxn:true,
   }));
-  state.trades.unshift(...recs);
+  state.trades.unshift(...recs.map(atAttachLevels));
   saveState();renderAll();renderLog();
   const prev=document.getElementById('txn-bridge-preview');if(prev)prev.hidden=true;
   _spyBridge=[];
@@ -5421,7 +5447,7 @@ function archerEnterTrade(){
     loggedAt:new Date().toISOString(),
   };
   if(!state.trades)state.trades=[];
-  state.trades.unshift(trade);
+  state.trades.unshift(atAttachLevels(trade));
   saveState();renderAll();
   toast(`✅ SPY ${dir} logged — entry ${entry.toFixed(2)}${stop?' · stop '+stop.toFixed(2):''}${target?' · target '+target.toFixed(2):''}`,'ok');
 }
@@ -5953,7 +5979,7 @@ function saveSPYDayTrade(){
     accountType:gs('spyd-account')==='__paper__'?'paper':'cash',
   };
   if(!state.trades)state.trades=[];
-  state.trades.push(trade);
+  state.trades.push(atAttachLevels(trade));
   saveState();renderAll();clearSPYDayForm();
   toast('SPY Day trade logged ✓','success');
   showScreen('log');
@@ -6026,7 +6052,7 @@ function saveSwingTrade(){
     accountType:gs('sw-account')==='__paper__'?'paper':'cash',
   };
   if(!state.trades)state.trades=[];
-  state.trades.push(trade);
+  state.trades.push(atAttachLevels(trade));
   saveState();renderAll();clearSwingForm();
   toast('Swing trade logged ✓','success');
   showScreen('log');
@@ -6862,6 +6888,95 @@ function parseEarningsCSV(csv,ticker){
 }
 
 // ─ EMA alignment assessment
+
+// ── PER-TICKER LEVELS ───────────────────────────────────────────────────
+// state.ore holds one ticker at a time, so ATR, fibs and pivots vanished the
+// moment the next ticker was analysed. ATR is the average daily range, which
+// is what options planning needs for expected move and stop placement, and
+// the fib and pivot levels are usually the reason a target was chosen.
+//
+// Two separate things, and they need different treatment:
+//
+//   state.levels[ticker]   a cache of the CURRENT levels. Re-derivable from
+//                          Alpha Vantage, so it stays local and gets no table.
+//   trade.levels           a SNAPSHOT taken when the trade was created. Not
+//                          re-derivable — the levels that were on screen when
+//                          the trade was planned are gone once price moves.
+//                          Rides in data{} with the rest of the trade.
+
+function atLevelsFor(tk){
+  var k=String(tk||'').toUpperCase().trim();
+  if(!k||!state.levels)return null;
+  return state.levels[k]||null;
+}
+
+// Called whenever ORE finishes an analysis.
+function atCaptureLevels(o){
+  if(!o||!o.ticker)return;
+  if(!state.levels||typeof state.levels!=='object')state.levels={};
+  var k=String(o.ticker).toUpperCase().trim();
+  state.levels[k]={
+    ticker:k,
+    asOf:o.analysisDate||new Date().toISOString().slice(0,10),
+    price:o.price!=null?o.price:null,
+    atr14:o.atr14!=null?o.atr14:null,
+    e9:o.e9, e20:o.e20, e50:o.e50, e200:o.e200,
+    emaAlignment:o.emaAlignment||null,
+    pdH:o.pdH, pdL:o.pdL, pdC:o.pdC,
+    swingH:o.swingH, swingL:o.swingL,
+    fibs:o.fibs||null,
+    pivots:o.pivots||null,
+    bb:o.bb||null
+  };
+  // Keep the cache from growing without bound: 200 tickers is far more than
+  // anyone reviews, and the oldest entries are the least useful.
+  var keys=Object.keys(state.levels);
+  if(keys.length>200){
+    keys.sort(function(a,b){
+      return String((state.levels[a]||{}).asOf||'').localeCompare(String((state.levels[b]||{}).asOf||''));
+    });
+    keys.slice(0,keys.length-200).forEach(function(x){delete state.levels[x];});
+  }
+}
+
+// The snapshot a trade carries. Deliberately excludes bars and EMA series:
+// those are large and re-derivable; these are the handful of numbers that
+// explain why the entry, stop and target were where they were.
+function atLevelsSnapshot(tk){
+  var L=atLevelsFor(tk);
+  if(!L)return null;
+  return {
+    asOf:L.asOf, price:L.price, atr14:L.atr14,
+    e9:L.e9, e20:L.e20, e50:L.e50, e200:L.e200, emaAlignment:L.emaAlignment,
+    pdH:L.pdH, pdL:L.pdL, pdC:L.pdC, swingH:L.swingH, swingL:L.swingL,
+    fibs:L.fibs, pivots:L.pivots
+  };
+}
+
+// Attach the snapshot to a trade object in place, if one is not already set.
+// Called from every trade-creation path.
+function atAttachLevels(t){
+  try{
+    if(!t||t.levels)return t;
+    var snap=atLevelsSnapshot(t.ticker||t.symbol);
+    if(snap)t.levels=snap;
+  }catch(e){}
+  return t;
+}
+
+// ATR for a ticker, from the live analysis if it is the one on screen,
+// otherwise from the cache. This is what makes ATR reachable on the options
+// form without re-running an analysis.
+function atAtrFor(tk){
+  var k=String(tk||'').toUpperCase().trim();
+  if(!k)return null;
+  if(state.ore&&String(state.ore.ticker||'').toUpperCase()===k&&state.ore.atr14!=null)
+    return {atr:state.ore.atr14, asOf:state.ore.analysisDate||'now', live:true};
+  var L=atLevelsFor(k);
+  if(L&&L.atr14!=null)return {atr:L.atr14, asOf:L.asOf, live:false};
+  return null;
+}
+
 function assessEmaAlignment(vals){
   const {e9,e20,e50,e200}=vals;
   if(!e9||!e20||!e50||!e200)return'mixed';
@@ -7121,6 +7236,10 @@ async function oreAnalyze(){
       latestDay,
       analysisDate:new Date().toISOString(),
     };
+
+    // Keep ATR, fibs and pivots for this ticker. state.ore holds one ticker,
+    // so without this they are gone the moment the next analysis runs.
+    try{atCaptureLevels(state.ore);saveState();}catch(e){console.warn('[AT] level capture failed',e);}
 
     oreProgress('Analysis complete. Review data below.');
     oreBuildResults();
@@ -7678,7 +7797,7 @@ function oreSwingToTrade(idx){
     status:'OPEN',loggedAt:new Date().toISOString(),
   };
   if(!state.trades)state.trades=[];
-  state.trades.unshift(trade);saveState();renderAll();
+  state.trades.unshift(atAttachLevels(trade));saveState();renderAll();
   toast(`✅ ${id.dir} ${o.ticker} swing logged — entry $${fmt(id.entry,2)} · stop $${fmt(id.stop,2)} · target $${fmt(id.target,2)}`,'ok');
 }
 
@@ -10397,7 +10516,7 @@ function confirmImport(){
     toast(`⚠ All ${imported.length} trade${imported.length!==1?'s':''} already exist — nothing imported.`,'warn');
     return;
   }
-  state.trades.unshift(...toAdd);
+  state.trades.unshift(...toAdd.map(atAttachLevels));
   saveState();renderAll();
   closeImportModal();
   let msg=`✓ Imported ${toAdd.length} trade${toAdd.length!==1?'s':''} — add grades &amp; notes in the Journal.`;
@@ -11001,7 +11120,7 @@ function spyGLConfirm(){
   if(!state.trades)state.trades=[];
   const now=Date.now();
   add.forEach((d,i)=>{
-    state.trades.unshift({
+    state.trades.unshift(atAttachLevels({
       id:(now+i).toString(36),module:'spy_day',
       date:d.date,account:atAcctNameTarget(acct),
       symbol:d.symbol,ticker:d.symbol,direction:'MIXED',
@@ -11012,7 +11131,7 @@ function spyGLConfirm(){
       legs:d.legs,
       thesis:'[E-Trade Gains & Losses import — '+d.legs.length+' position'+(d.legs.length!==1?'s':'')+', '+d.qty+' contracts. Figures are net of commissions.]',
       lesson:'',importedFromGL:true,
-    });
+    }));
   });
   saveState();
   try{renderAll();}catch(e){}
@@ -11086,7 +11205,7 @@ function spyGLConfirmOthers(){
   if(!state.trades)state.trades=[];
   const now=Date.now();
   add.forEach((o,i)=>{
-    state.trades.unshift({
+    state.trades.unshift(atAttachLevels({
       id:(now+i).toString(36)+'g',module:o.module,
       date:o.date,account:atAcctNameTarget(acct),
       symbol:o.symbol,ticker:o.symbol,
@@ -11098,7 +11217,7 @@ function spyGLConfirmOthers(){
       emotion:'',grade:'',rulesFollowed:'',
       thesis:'[E-Trade Gains & Losses — '+o.raw+'. Net of commissions.]',
       lesson:'',importedFromGL:true,
-    });
+    }));
   });
   saveState();
   try{renderAll();}catch(e){}
@@ -12564,7 +12683,7 @@ function paOrdConfirm(fileAcct,target,mode){
   rows.forEach(t=>{
     const dupe=(state.trades||[]).some(e=>e.module==='futures'&&e.srcKey===t.srcKey);
     if(dupe){skipped++;return;}
-    state.trades.push({
+    state.trades.push(atAttachLevels({
       id:(Date.now().toString(36)+Math.random().toString(36).slice(2,6)),
       module:'futures',date:t.date,entryTime:t.entryTime,exitTime:t.exitTime,exitDate:t.exitDate,
       account:atAcctNameTarget(target),instrument:t.symbol,symbol:t.symbol,ticker:t.symbol,
@@ -12574,7 +12693,7 @@ function paOrdConfirm(fileAcct,target,mode){
       scaleT1:null,scaleT2:null,scaleRun:null,emotion:'',grade:'',rulesFollowed:'',
       thesis:'[Imported from PA orders export]',lesson:'',
       importedFromCSV:true,srcKey:t.srcKey,holdSec:t.holdSec
-    });
+    }));
     added++;
   });
   saveState();
@@ -14349,6 +14468,9 @@ async function atPullTrades(){
       Object.assign(local,t);
       updated++;
     }else{
+      // Deliberately NOT atAttachLevels(): this row came from the cloud and
+      // already carries whatever snapshot it was created with. Attaching here
+      // would stamp a trade from weeks ago with today's ATR and fib levels.
       state.trades.push(t); byId[id]=t; added++;
     }
     // Mark clean so the next push does not send it straight back.
