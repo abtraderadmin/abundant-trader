@@ -2695,7 +2695,7 @@ function saveFTrade(){
   state.trades.unshift({
     id:Date.now().toString(36),module:'futures',
     date:document.getElementById('f-date').value||new Date().toISOString().slice(0,10),
-    account:document.getElementById('f-account').value||'',
+    account:atAcctNameTarget(document.getElementById('f-account').value||''),
     instrument:instKey,symbol:instKey,direction:state.fDir,
     regime:document.getElementById('f-regime').value,setup:document.getElementById('f-setup').value,
     entry,stop,t1,target,qty:ctrs,feesPlanned:feesP,feesActual:feesA,exit,grossPL,netPL,rr,
@@ -2742,7 +2742,7 @@ function saveSTrade(){
     tradeType:document.getElementById('s-tradetype').value,
     entry,stop,t1,t2,target,qty:shares,feesPlanned:feesP,feesActual:feesA,exit,grossPL,netPL,rr,
     scaleT1:sc.t1,scaleT2:sc.t2,scaleRun:sc.run,
-    account:acctName,accountType:acctType,
+    account:atAcctNameTarget(acctName),accountType:acctType,
     catalyst:document.getElementById('s-catalyst').value,
     emotion:document.getElementById('s-emotion').value,
     grade:grade||'',
@@ -2997,7 +2997,7 @@ function saveOTrade(){
     pctReturn:pct!==null?pct:null,
     status:exitPrice?'CLOSED':'OPEN',
     reflectionOnTrade:gs('o-lesson'),
-    account:acctNameO,accountType:acctTypeO,
+    account:atAcctNameTarget(acctNameO),accountType:acctTypeO,
     // normalized log fields
     symbol:ticker,
     entry:cost,            // option premium = entry cost
@@ -4887,7 +4887,7 @@ function spyBuildByDay(acctName){
     return{
       mode:'day',
       date:spyNormDate(day.date),
-      account:acctName,
+      account:atAcctNameTarget(acctName),
       symbol:Object.keys(syms).sort().join('/')||'SPY',
       optType:'',side:'',strike:null,expiry:'',
       qty:Math.max(bQty,sQty),buyQty:bQty,sellQty:sQty,
@@ -4932,7 +4932,7 @@ function spyBuildTradesFromTxn(acctName,mode){
       out.push({
         mode:'contract',
         date:spyNormDate(day.date),
-        account:acctName,
+        account:atAcctNameTarget(acctName),
         symbol:parts[0]||'SPY',
         optType:(parts[1]||'').toUpperCase(),
         strike:parts[2]?parseFloat(parts[2]):null,
@@ -5949,7 +5949,7 @@ function saveSPYDayTrade(){
     repeatNext:gs('spyd-repeat'),
     stopNext:gs('spyd-stop-next'),
     status:exitP?'CLOSED':'OPEN',
-    account:gs('spyd-account')==='__paper__'?'Paper Trade':(gs('spyd-account')||'Cash'),
+    account:atAcctNameTarget(gs('spyd-account')==='__paper__'?'Paper Trade':(gs('spyd-account')||'Cash')),
     accountType:gs('spyd-account')==='__paper__'?'paper':'cash',
   };
   if(!state.trades)state.trades=[];
@@ -6022,7 +6022,7 @@ function saveSwingTrade(){
     lesson:gs('sw-lesson'),
     wouldRepeat:gs('sw-repeat'),
     status:exitP?'CLOSED':'OPEN',
-    account:gs('sw-account')==='__paper__'?'Paper Trade':(gs('sw-account')||'Cash'),
+    account:atAcctNameTarget(gs('sw-account')==='__paper__'?'Paper Trade':(gs('sw-account')||'Cash')),
     accountType:gs('sw-account')==='__paper__'?'paper':'cash',
   };
   if(!state.trades)state.trades=[];
@@ -10353,7 +10353,7 @@ function renderImportPreview(trades){
 
 function confirmImport(){
   if(!_importedTrades.length)return;
-  const account=document.getElementById('import-account').value||'';
+  const account=atAcctNameTarget(document.getElementById('import-account').value||'');
   const now=Date.now();
   // Sort newest first for unshift
   const sorted=[..._importedTrades].sort((a,b)=>b.date.localeCompare(a.date));
@@ -13532,8 +13532,17 @@ function atNormalizeAccountNames(opts){
 // not repeat on every load.
 function atNormalizeAccountNamesOnce(){
   if(!state||!state.settings)return;
-  // Versioned: bumping this re-runs the pass when a new alias is added.
-  if(state.settings._acctNamesNormalizedV>=2)return;
+  // Gate on whether there is actually work to do, not on the flag. A backup
+  // restored from a half-migrated state can carry the flag already set while
+  // the names inside it are still spaced, and a flag-only check would skip it
+  // forever. The dry run is a pass over the trades and the name-keyed maps -
+  // cheap enough to do on every load.
+  var pending=atNormalizeAccountNames({dryRun:true});
+  if(!pending.length){
+    state.settings._acctNamesNormalizedV=2;
+    delete state.settings._acctNamesNormalized;
+    return;
+  }
   var r=atNormalizeAccountNames();
   state.settings._acctNamesNormalizedV=2;
   delete state.settings._acctNamesNormalized;
