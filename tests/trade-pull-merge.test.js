@@ -76,7 +76,13 @@ const trade = (o) => Object.assign({
 console.log('\nround trip through the row format');
 {
   const s = harness({});
-  const orig = trade({ srcKey:'abc123', holdSec:412, importedFromCSV:true, scaleT1:null });
+  // A realistic trade: stock trades carry `shares`, futures carry
+  // `contracts`, and the qty column collapses all three. Both originals must
+  // come back — listing them as columns stripped them from data{} and they
+  // were silently lost on every pull.
+  const orig = trade({ srcKey:'abc123', holdSec:412, importedFromCSV:true, scaleT1:null,
+                       shares:9, contracts:2, exit:603, feesPlanned:0,
+                       scaleT2:null, scaleRun:null, entryTime:'09:47', instrument:'SPY' });
   const r = vm.runInContext('atTradeRow(' + JSON.stringify(orig) + ',"u1")', s);
   const back = vm.runInContext('atTradeFromRow(' + JSON.stringify(r) + ')', s);
   const lost = Object.keys(orig).filter(k => orig[k] !== null && JSON.stringify(back[k]) !== JSON.stringify(orig[k]));
@@ -85,6 +91,14 @@ console.log('\nround trip through the row format');
   if (back.srcKey === 'abc123' && back.holdSec === 412)
     pass('non-column fields survive via data{}');
   else fail('data{} fields lost');
+  if (back.shares === 9 && back.contracts === 2)
+    pass('shares and contracts survive alongside the collapsed qty column');
+  else fail('shares/contracts lost on the round trip: shares=' + back.shares + ' contracts=' + back.contracts);
+  if (back.entryTime === '09:47' && back.instrument === 'SPY')
+    pass('entryTime and instrument survive (import dedup depends on them)');
+  else fail('entryTime/instrument lost — import dedup would start duplicating');
+  if (r.qty === 1) pass('qty column still holds the collapsed number for querying');
+  else fail('qty column wrong: ' + r.qty);
 }
 
 console.log('\nnew remote trades arrive');
@@ -208,10 +222,16 @@ console.log('\nwiring');
   if (!wrap) fail('atReconcile wrapper not found');
   else {
     const iBlob = wrap.indexOf('atReconcileBlob()');
-    const iPull = wrap.indexOf('atPullTrades()');
+    const iPull = wrap.indexOf('atPullTrades');
     if (iBlob > -1 && iPull > -1 && iBlob < iPull)
-      pass('blob reconcile runs before the per-row pull');
+      pass('blob reconcile runs before the per-row pulls');
     else fail('ordering wrong: blob at ' + iBlob + ', pull at ' + iPull);
+    // Every entity pull must run, and one failing must not stop the rest.
+    for (const fn of ['atPullTrades','atPullWithdrawals','atPullOpportunities',
+                      'atPullArcherSignals','atPullClassSessions','atPullClassAnalysis']) {
+      if (wrap.includes(fn)) pass(fn + ' runs on reconcile');
+      else fail(fn + ' is never called');
+    }
     if (/catch\s*\(e\)\s*\{\s*console\.warn/.test(wrap))
       pass('a pull failure is logged and does not break sign-in');
     else fail('pull failure is unguarded or silent');
