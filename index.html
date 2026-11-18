@@ -10550,7 +10550,9 @@ function atApplyCloudState(obj,updatedAt){
 
 // Never silently overwrite a trade log. If both sides hold data and they
 // differ, the user decides which one wins.
-async function atReconcile(){
+// The blob reconcile, unchanged. Wrapped by atReconcile() below so the
+// per-row pull always runs after it.
+async function atReconcileBlob(){
   const row=await atCloudPull();
   const localRaw=atLocalRaw();
   let localObj=null; try{localObj=localRaw?JSON.parse(localRaw):null;}catch(e){}
@@ -10585,6 +10587,20 @@ async function atReconcile(){
   );
   if(useCloud){atApplyCloudState(row.state,row.updated_at);toast('☁ Cloud copy loaded — '+cloudN+' trades.','ok',9000);atSyncChip('☁ in sync','var(--green)');}
   else{await atCloudPush(true);toast('☁ This device pushed to the cloud — '+localN+' trades.','ok',9000);}
+}
+
+// Blob first, then per-row. Order matters: adopting a blob replaces state
+// wholesale, so pulling rows before it would have the merge thrown away.
+//
+// The blob is still a whole copy and still asks which side wins. The per-row
+// pull runs after whichever side was chosen and brings in anything the blob
+// did not carry, so a trade added on another device is no longer lost by
+// picking the wrong button.
+async function atReconcile(){
+  await atReconcileBlob();
+  try{
+    if(typeof atPullTrades==='function')await atPullTrades();
+  }catch(e){console.warn('[AT] trades pull threw',e);}
 }
 
 // ── Auth UI ───────────────────────────────────────────────────
@@ -13943,6 +13959,120 @@ function atTradeRow(t,uid){
 }
 
 // Mirror changed trades. Fire-and-forget after a successful blob push.
+
+// ── PHASE 2: PER-ROW PULL AND MERGE ─────────────────────────────────────
+// Until now the only cloud read was the whole app_state blob, which forces
+// the "cloud or this device?" dialog and lets a stale tab overwrite good
+// data. Pulling rows means two devices can both add trades and keep both.
+//
+// Merge rule, per row:
+//   local edit not yet pushed  -> local wins (it is about to push)
+//   otherwise                  -> remote wins
+//   remote tombstone           -> remove locally
+//
+// "Not yet pushed" comes from the signature map the push already maintains:
+// if a local row hashes differently from what was last sent, it is dirty.
+// That avoids stamping updated_at onto every local record.
+//
+// After adopting a remote row its signature is set to the rebuilt row's hash,
+// so the next push sees it as clean. Without that, rebuilding a trade from a
+// row would look like a local edit and push straight back — a sync loop.
+
+function atPullAt(table){
+  try{return localStorage.getItem('at_pull_at_'+table)||'';}catch(e){return'';}
+}
+function atSetPullAt(table,v){
+  try{if(v)localStorage.setItem('at_pull_at_'+table,v);}catch(e){}
+}
+
+// Inverse of atTradeRow. data{} carries every field the columns do not, so a
+// trade survives the round trip.
+function atTradeFromRow(r){
+  var t=Object.assign({},r.data||{});
+  t.id=String(r.id);
+  if(r.account_id)t.accountId=r.account_id;
+  t.account=r.account_name||'';
+  t.module=r.module||'';
+  t.date=r.trade_date||'';
+  if(r.symbol){t.symbol=r.symbol; if(t.ticker==null)t.ticker=r.symbol;}
+  if(r.direction)t.direction=r.direction;
+  if(r.opt_type)t.optType=r.opt_type;
+  if(r.setup)t.setup=r.setup;
+  if(r.regime)t.regime=r.regime;
+  ['entry','stop','t1','target','qty','rr'].forEach(function(k){
+    var v=r[k]; if(v!=null)t[k]=Number(v);
+  });
+  if(r.exit_price!=null)t.exitPrice=Number(r.exit_price);
+  if(r.gross_pl!=null)t.grossPL=Number(r.gross_pl);
+  if(r.fees!=null)t.feesActual=Number(r.fees);
+  if(r.net_pl!=null)t.netPL=Number(r.net_pl);
+  if(r.grade)t.grade=r.grade;
+  if(r.status)t.status=r.status;
+  var j=r.journal||{};
+  ['emotion','thesis','lesson','rulesFollowed','mistakeCategory'].forEach(function(k){
+    if(j[k]!=null)t[k]=j[k];
+  });
+  return t;
+}
+
+async function atPullTrades(){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser||!Array.isArray(state.trades))return false;
+
+  var since=atPullAt('trades');
+  var q=c.from('trades').select('*').eq('user_id',atUser.id)
+         .order('updated_at',{ascending:true}).limit(5000);
+  if(since)q=q.gt('updated_at',since);
+  var res=await q;
+  if(res.error){console.warn('[AT] trades pull failed',res.error);return false;}
+  var rows=res.data||[];
+  if(!rows.length)return true;
+
+  var sig=atSigMap();
+  var byId={};
+  state.trades.forEach(function(t){ if(t&&t.id)byId[String(t.id)]=t; });
+
+  var added=0,updated=0,removed=0,kept=0,maxAt=since||'';
+  var drop={};
+
+  rows.forEach(function(r){
+    if(r.updated_at&&String(r.updated_at)>maxAt)maxAt=String(r.updated_at);
+    var id=String(r.id);
+    var local=byId[id];
+
+    // A local row that differs from what was last pushed has unsent changes.
+    if(local&&sig[id]!==undefined&&atHash(JSON.stringify(local))!==sig[id]){kept++;return;}
+
+    if(r.deleted){
+      if(local){drop[id]=1; delete byId[id]; delete sig[id]; removed++;}
+      return;
+    }
+    var t=atTradeFromRow(r);
+    if(local){
+      Object.keys(local).forEach(function(k){delete local[k];});
+      Object.assign(local,t);
+      updated++;
+    }else{
+      state.trades.push(t); byId[id]=t; added++;
+    }
+    // Mark clean so the next push does not send it straight back.
+    sig[id]=atHash(JSON.stringify(byId[id]));
+  });
+
+  if(removed)state.trades=state.trades.filter(function(t){return !(t&&drop[String(t.id)]);});
+
+  if(added||updated||removed){
+    try{localStorage.setItem('at_trades_sig',JSON.stringify(sig));}catch(e){}
+    saveState();
+    try{renderAll();}catch(e){}
+    try{renderLog();}catch(e){}
+  }
+  atSetPullAt('trades',maxAt);
+  console.log('[AT] trades pulled: +'+added+' ~'+updated+' -'+removed
+    +(kept?(' ('+kept+' local edit'+(kept!==1?'s':'')+' kept)'):''));
+  return true;
+}
+
 async function atPushTrades(){
   var c=(typeof atSbReady==='function')?atSbReady():null;
   if(!c||!atUser||!Array.isArray(state.trades))return false;
