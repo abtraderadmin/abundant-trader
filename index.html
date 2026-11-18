@@ -10495,8 +10495,10 @@ async function atCloudPush(force){
   // reported now.
   [['accounts',atPushAccounts],['trades',atPushTrades],
    ['withdrawals',atPushWithdrawals],['holdings',atPushHoldings],
-   ['transactions',atPushTransactions],['settings',atPushSettings],
-   ['secrets',atPushSecrets]
+   ['transactions',atPushTransactions],
+   ['opportunities',atPushOpportunities],['archer',atPushArcherSignals],
+   ['class_sessions',atPushClassSessions],['class_analysis',atPushClassAnalysis],
+   ['settings',atPushSettings],['secrets',atPushSecrets]
   ].forEach(function(pair){
     if(typeof pair[1]!=='function')return;
     try{
@@ -13864,6 +13866,101 @@ async function atPushHoldings(){
   var a=await atPushRows('holdings','at_holdings_sig',rows,{data:{}});
   var b=await atPushRows('holding_snapshots','at_holdsnap_sig',snaps,{summary:{}});
   return a&&b;
+}
+
+
+// ── MIRRORS: opportunities · archer signals · class sessions/analysis ────
+// The last durable data that lived only in the blob.
+//
+// Deliberately not mirrored: state.ore (scratchpad of fetched bars/EMAs for
+// the ticker on screen, re-derivable and replaced every analysis),
+// state.importQueue (transient staging), state.portfolioOpen (UI state).
+
+// Fields that get their own column; everything else rides in data{} so the
+// round trip is lossless.
+var AT_OPP_COLS=['id','ticker','status','routeDecision','source','direction','analysisDate',
+  'price','entry','stop','target','support','resistance','rr','shares','totalRisk',
+  'setup','condition','note'];
+var AT_ARCHER_COLS=['id','ticker','direction','sessionDate','date','time','entry','stop',
+  'target','score','verdict','addedAt'];
+var AT_CLASS_COLS=['id','label','date','source','classWins','sessionNotes','tickers'];
+
+function atRest(o,cols){
+  var extra={};
+  Object.keys(o||{}).forEach(function(k){ if(cols.indexOf(k)===-1)extra[k]=o[k]; });
+  return extra;
+}
+
+async function atPushOpportunities(){
+  if(!atUser||!Array.isArray(state.discoveries))return false;
+  var rows=state.discoveries.map(function(d){
+    if(!d||d.id==null)return null;
+    return {
+      id:String(d.id), user_id:atUser.id,
+      ticker:d.ticker||null, status:d.status||null,
+      route_decision:d.routeDecision||null, source:d.source||null,
+      direction:d.direction||null, analysis_date:atDate(d.analysisDate),
+      price:atNum(d.price), entry:atNum(d.entry), stop:atNum(d.stop),
+      target:atNum(d.target), support:atNum(d.support), resistance:atNum(d.resistance),
+      rr:atNum(d.rr), shares:atNum(d.shares), total_risk:atNum(d.totalRisk),
+      setup:d.setup||null, condition:d.condition||null, note:d.note||null,
+      data:atRest(d,AT_OPP_COLS), deleted:false, updated_at:new Date().toISOString()
+    };
+  }).filter(Boolean);
+  return atPushRows('opportunities','at_opportunities_sig',rows,{data:{}});
+}
+
+async function atPushArcherSignals(){
+  if(!atUser)return false;
+  var rows=[];
+  [['watch',state.archerWatchlist],['reject',state.archerRejects]].forEach(function(pair){
+    (Array.isArray(pair[1])?pair[1]:[]).forEach(function(a){
+      if(!a||a.id==null)return;
+      rows.push({
+        // kind is part of the id: the same ticker can sit on the watchlist and
+        // later appear in the reject log, and those are different records.
+        id:pair[0]+':'+String(a.id), user_id:atUser.id, kind:pair[0],
+        ticker:a.ticker||null, direction:a.direction||null,
+        session_date:atDate(a.sessionDate), signal_date:atDate(a.date),
+        signal_time:a.time||null,
+        entry:atNum(a.entry), stop:atNum(a.stop), target:atNum(a.target),
+        score:atNum(a.score), verdict:a.verdict||null,
+        added_at:atTs(a.addedAt),
+        data:atRest(a,AT_ARCHER_COLS), deleted:false, updated_at:new Date().toISOString()
+      });
+    });
+  });
+  return atPushRows('archer_signals','at_archer_sig',rows,{data:{}});
+}
+
+async function atPushClassSessions(){
+  if(!atUser||!Array.isArray(state.classSessions))return false;
+  var rows=state.classSessions.map(function(s){
+    if(!s||s.id==null)return null;
+    return {
+      id:String(s.id), user_id:atUser.id,
+      label:s.label||null, session_date:atDate(s.date), source:s.source||null,
+      class_wins:atNum(s.classWins), session_notes:s.sessionNotes||null,
+      tickers:Array.isArray(s.tickers)?s.tickers:[],
+      data:atRest(s,AT_CLASS_COLS), deleted:false, updated_at:new Date().toISOString()
+    };
+  }).filter(Boolean);
+  return atPushRows('class_sessions','at_class_sessions_sig',rows,{data:{},tickers:[]});
+}
+
+async function atPushClassAnalysis(){
+  if(!atUser||!state.classAnalysis)return false;
+  var rows=Object.keys(state.classAnalysis).map(function(tk){
+    var v=state.classAnalysis[tk];
+    return {
+      id:String(tk), user_id:atUser.id, ticker:String(tk),
+      // values are sometimes an object and sometimes a bare string, so the
+      // payload is wrapped rather than spread.
+      data:(v&&typeof v==='object')?v:{value:v},
+      deleted:false, updated_at:new Date().toISOString()
+    };
+  });
+  return atPushRows('class_analysis','at_class_analysis_sig',rows,{data:{}});
 }
 
 async function atPushTransactions(){
