@@ -3304,8 +3304,8 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   const closedCash=closed.filter(t=>t.module!=='futures'&&acctNature(t)!=='paper');
   const cashNet=closedCash.reduce((s,t)=>s+t.netPL,0);
   // Build per-account goal entries
-  const evalNames=(state.settings.evalAccounts||[]).filter(n=>n.trim());
-  const paNames=(state.settings.paAccounts||[]).filter(n=>n.trim());
+  const evalNames=(state.settings.evalAccounts||[]).filter(n=>n.trim()&&!atAcctClosed(n));
+  const paNames=(state.settings.paAccounts||[]).filter(n=>n.trim()&&!atAcctClosed(n));
   const acctCards=[
     ...evalNames.map(n=>({name:n,type:'eval'})),
     ...paNames.map(n=>({name:n,type:'pa'})),
@@ -4096,7 +4096,8 @@ function renderCfg(){
   const ca3=s.cashAccounts||['','',''];
   // Futures accounts had no way to hold a daily goal at all - every path
   // filtered cashAccounts - so a funded account could not show one.
-  const fAccts=[].concat(s.evalAccounts||[],s.paAccounts||[]).filter(function(n){return n&&n.trim();});
+  const fAccts=[].concat(s.evalAccounts||[],s.paAccounts||[])
+                 .filter(function(n){return n&&n.trim()&&!atAcctClosed(n);});
   const dgF=g('cfg-day-goals-futures-rows');
   if(dgF){
     dgF.innerHTML=fAccts.map(function(nm,i){
@@ -4465,8 +4466,10 @@ function populateSwAccountSelect(){
 }
 function populateFAccountSelect(){
   const sel=document.getElementById('f-account');if(!sel)return;
-  const evals=(state.settings.evalAccounts||[]).filter(n=>n.trim());
-  const pas=(state.settings.paAccounts||[]).filter(n=>n.trim());
+  // A closed account is not somewhere to put a new trade. Its history stays
+  // in the log and in Performance; only the entry point is withdrawn.
+  const evals=(state.settings.evalAccounts||[]).filter(n=>n.trim()&&!atAcctClosed(n));
+  const pas=(state.settings.paAccounts||[]).filter(n=>n.trim()&&!atAcctClosed(n));
   const cur=sel.value;
   let html='<option value="">Select account…</option>';
   if(evals.length)html+=`<optgroup label="── Eval Accounts ──">${evals.map(n=>`<option value="${n}">${n}</option>`).join('')}</optgroup>`;
@@ -10477,11 +10480,14 @@ function openImportModal(){
   _importedTrades=[];
   // Populate account dropdown
   const sel=document.getElementById('import-account');
+  // Closed accounts stay here: a broker export can arrive after an account
+  // is finished and it still belongs to that account. Labelled, not hidden.
+  const lbl=n=>n+(atAcctClosed(n)?' (closed)':'');
   const evals=(state.settings.evalAccounts||[]).filter(n=>n.trim());
   const pas=(state.settings.paAccounts||[]).filter(n=>n.trim());
   let html='<option value="">— Unassigned —</option>';
-  if(evals.length)html+=`<optgroup label="── Eval Accounts ──">${evals.map(n=>`<option value="${n}">${n}</option>`).join('')}</optgroup>`;
-  if(pas.length)html+=`<optgroup label="── PA Accounts (Paid/Cash) ──">${pas.map(n=>`<option value="${n}">${n}</option>`).join('')}</optgroup>`;
+  if(evals.length)html+=`<optgroup label="── Eval Accounts ──">${evals.map(n=>`<option value="${n}">${lbl(n)}</option>`).join('')}</optgroup>`;
+  if(pas.length)html+=`<optgroup label="── PA Accounts (Paid/Cash) ──">${pas.map(n=>`<option value="${n}">${lbl(n)}</option>`).join('')}</optgroup>`;
   sel.innerHTML=html;
   futFeeEl();
   // Reset state
@@ -13127,6 +13133,48 @@ function apexCfg(acct){
   if(c.payoutMin==null)c.payoutMin=500;
   return c;
 }
+// ── Closing an account ──────────────────────────────────────────────────
+// A blown or finished account stops being a live account but never stops
+// being a record. Its trades keep its name, stay in the log and stay in
+// Performance; what changes is that it no longer appears as somewhere to
+// trade, no longer carries a daily goal, and no longer counts toward the
+// compliance badge. Nothing is deleted and the status can be set back.
+const AT_ACCT_STATUS={active:'Active',blown:'Blown',passed:'Passed / paid out',closed:'Closed'};
+function atAcctStatus(name){
+  var c=(state.settings.apexAccounts||{})[name];
+  return (c&&c.status)||'active';
+}
+function atAcctClosed(name){ return atAcctStatus(name)!=='active'; }
+// Accounts that can take a NEW trade. History and analytics must not use this.
+function atActiveFutAccts(){
+  return [].concat(state.settings.evalAccounts||[],state.settings.paAccounts||[])
+           .filter(function(n){return n&&String(n).trim()&&!atAcctClosed(n);});
+}
+function apexSetStatus(acct,v){
+  const c=apexCfg(acct);
+  if(v==='active'){ delete c.status; delete c.closedOn; }
+  else{
+    c.status=v;
+    if(!c.closedOn)c.closedOn=new Date().toISOString().slice(0,10);
+  }
+  saveState();
+  if(typeof renderAll==='function')renderAll(); else apexRender();
+}
+function apexSetClosedNote(acct,v){
+  const c=apexCfg(acct); c.closedNote=String(v||''); saveState();
+}
+function apexStatusSelect(e){
+  const a=e.acct.replace(/'/g,"\\'");
+  const cur=atAcctStatus(e.acct);
+  return '<span>status</span><select onchange="apexSetStatus(\''+a+'\',this.value)" '
+    +'style="padding:3px 6px;border-radius:5px;border:1px solid var(--border);background:var(--s2);color:'
+    +(cur==='active'?'var(--fg)':'var(--gold)')+';font-size:11px">'
+    +Object.keys(AT_ACCT_STATUS).map(function(k){
+        return '<option value="'+k+'"'+(cur===k?' selected':'')+'>'+AT_ACCT_STATUS[k]+'</option>';
+      }).join('')
+    +'</select>';
+}
+
 function apexSetCfg(acct,field,v){
   const c=apexCfg(acct);
   if(field==='firm'){c.firm=String(v||'Apex');}
@@ -13351,14 +13399,18 @@ function apexOtherFirmCard(e,i){
     +'</div>'
     +'<div id="apex-d-'+i+'" hidden style="padding:11px 13px">'
       +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">'+e.cfg.firm+' sets its own consistency, drawdown and scaling rules. Checking this account against Apex\'s would tell you it is compliant when it may not be, so it is left unchecked. '+e.trades+' trade'+(e.trades!==1?'s':'')+' recorded, $'+fmt(e.profit,2)+' profit.</div>'
-      +'<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--fg3)">'+apexFirmSelect(e)+'</div>'
+      +'<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--fg3)">'+apexFirmSelect(e)+apexStatusSelect(e)+'</div>'
     +'</div></div>';
 }
 
 function apexRender(){
   const el=apexPanelEl(); if(!el)return;
-  const accts=(state.settings.paAccounts||[]).filter(n=>n&&String(n).trim());
-  if(!accts.length){el.innerHTML='';return;}
+  const allPa=(state.settings.paAccounts||[]).filter(n=>n&&String(n).trim());
+  if(!allPa.length){el.innerHTML='';return;}
+  // A closed account is still evaluated -- that is how its final figures are
+  // read -- but it is judged separately and never counted as a live breach.
+  const accts=allPa.filter(function(n){return !atAcctClosed(n);});
+  const shut =allPa.filter(atAcctClosed);
   const evals=accts.map(apexEval);
   let fails=0,totalProfit=0,toGo=0;
   const bodies=evals.map((e,i)=>{
@@ -13405,6 +13457,46 @@ function apexRender(){
       +'</div>'
     +'</div>';
   }).join('');
+
+  // Closed accounts: the finished record, collapsed out of the way.
+  var shutHtml='';
+  if(shut.length){
+    shutHtml='<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">'
+      +'<div style="font-size:11px;color:var(--fg3);margin-bottom:7px">Closed — kept for the record, '
+      +'still in the trade log and in Performance. Set the status back to Active to reopen one.</div>'
+      +shut.map(function(nm){
+          var e=apexEval(nm), c=apexCfg(nm);
+          var label=AT_ACCT_STATUS[atAcctStatus(nm)]||'Closed';
+          var note=String(c.closedNote||'').replace(/"/g,'&quot;');
+          var a=nm.replace(/'/g,"\\'");
+          return '<div style="border:1px solid var(--border);border-radius:9px;margin-bottom:7px;padding:9px 13px;opacity:.78">'
+            +'<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+              +'<span style="font-weight:800;font-size:12px;color:var(--fg2)">'+nm+'</span>'
+              +'<span style="font-size:11px;color:var(--gold);font-weight:700">'+label
+                +(c.closedOn?(' · '+c.closedOn):'')+'</span>'
+              +'<span style="font-family:var(--mono);font-size:11px;color:'
+                +(e.profit>=0?'var(--green)':'var(--red)')+'">'
+                +(e.profit>=0?'+':'')+fmt(e.profit,2)+' final</span>'
+              +'<span style="font-size:11px;color:var(--fg3)">'+e.trades+' trades</span>'
+              +'<span style="margin-left:auto">'+apexStatusSelect(e)+'</span>'
+            +'</div>'
+            +'<input value="'+note+'" placeholder="what happened — kept with the account"'
+              +' onchange="apexSetClosedNote(\''+a+'\',this.value)"'
+              +' style="margin-top:7px;width:100%;padding:5px 8px;border-radius:5px;border:1px solid var(--border);'
+              +'background:var(--s2);color:var(--fg2);font-size:11px">'
+          +'</div>';
+        }).join('')
+      +'</div>';
+  }
+
+  if(!accts.length){
+    el.innerHTML='<div class="trade-form" style="margin-bottom:0">'
+      +'<div class="form-hd"><span class="form-title">Apex Rule Compliance</span></div>'
+      +'<div style="padding:11px 14px"><div style="font-size:11px;color:var(--fg3)">No active PA accounts.</div>'
+      +shutHtml+'</div></div>';
+    return;
+  }
+
   el.innerHTML='<div class="trade-form" style="margin-bottom:0">'
     +'<div class="form-hd"><span class="form-title">Apex Rule Compliance</span>'
       +'<span class="gov-badge" style="color:'+(fails?'var(--red)':'var(--green)')+';border-color:'+(fails?'var(--red)':'var(--green)')+'">'
@@ -13413,6 +13505,7 @@ function apexRender(){
       +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">PA and Live accounts only — Evaluations have no consistency rules. Total profit $'+fmt(totalProfit,2)
         +(toGo>0?' · $'+fmt(toGo,2)+' combined to payout eligibility':' · all eligible')+'.</div>'
       +bodies
+      +shutHtml
     +'</div></div>';
 }
 
