@@ -13139,7 +13139,9 @@ function apexCfg(acct){
 // Performance; what changes is that it no longer appears as somewhere to
 // trade, no longer carries a daily goal, and no longer counts toward the
 // compliance badge. Nothing is deleted and the status can be set back.
-const AT_ACCT_STATUS={active:'Active',blown:'Blown',passed:'Passed / paid out',closed:'Closed'};
+// Taking a payout is not a reason to close an account -- you withdraw and
+// carry on, so that case is simply Active. Only genuine endings are here.
+const AT_ACCT_STATUS={active:'Active',blown:'Blown',closed:'Closed'};
 function atAcctStatus(name){
   var c=(state.settings.apexAccounts||{})[name];
   return (c&&c.status)||'active';
@@ -13251,30 +13253,37 @@ function apexEval(acct){
     .filter(function(w){return String(w.account||'').trim()===String(acct).trim();}).length;
   const payoutNo=payoutsTaken+1;
   const capRow=APEX_PAYOUT_CAPS[c.size]||null;
-  const accountClosed=payoutsTaken>=APEX_MAX_PAYOUTS;
-  // No published figures for this size: cap unknown, never guessed.
-  const payoutCap=(capRow&&!accountClosed)?capRow[payoutNo-1]:null;
+  // Taking payouts does not end an account. The published schedule sets a cap
+  // for each of the first six; past that the account keeps trading and keeps
+  // withdrawing, so running off the end of the schedule means "no published
+  // cap for this one", NOT "finished". Treating it as closure would have
+  // zeroed the payout and blocked every withdrawal from the seventh onward.
+  const pastSchedule=payoutsTaken>=APEX_MAX_PAYOUTS;
+  // No published figures for this size, or past the published ones: unknown,
+  // never guessed.
+  const payoutCap=(capRow&&!pastSchedule)?capRow[payoutNo-1]:null;
 
   const blockers=[];
-  if(accountClosed)blockers.push(APEX_MAX_PAYOUTS+' of '+APEX_MAX_PAYOUTS
-    +' payouts taken, the PA is closed and needs a new evaluation');
   if(aboveNet<c.payoutMin)blockers.push(aboveNet<=0
     ? ("$"+fmt(safety-balance,2)+' below the safety net')
     : ('only '+"$"+fmt(aboveNet,2)+' above the net, minimum is '+"$"+fmt(c.payoutMin,0)));
   if(!daysOk)blockers.push((8-nDays)+' more qualifying day'+((8-nDays)!==1?'s':''));
   if(!consistencyOk)blockers.push('best day is over 30% of profit');
   if(!capRow)blockers.push('no published payout caps loaded for a '+"$"+fmt(c.size,0)+' account');
+  if(pastSchedule&&capRow)blockers.push('payout '+payoutNo+' is past the published schedule — confirm the cap with '+(c.firm||'Apex'));
 
   // The cap binds regardless of profit, so it is a floor on the answer, not a
-  // warning beside it.
-  const eligible=(!accountClosed&&aboveNet>=c.payoutMin&&daysOk&&consistencyOk&&capRow);
-  const canWithdraw=eligible?Math.min(aboveNet,payoutCap):0;
-  const cappedByApex=eligible&&payoutCap<aboveNet;
+  // warning beside it. Past the schedule there is no figure to apply, so the
+  // amount above the net is shown and the blocker above says to confirm it
+  // rather than the app inventing a limit.
+  const eligible=(aboveNet>=c.payoutMin&&daysOk&&consistencyOk&&capRow);
+  const canWithdraw=eligible?(payoutCap==null?aboveNet:Math.min(aboveNet,payoutCap)):0;
+  const cappedByApex=eligible&&payoutCap!=null&&payoutCap<aboveNet;
   return{acct:acct,cfg:c,trades:rs.length,profit:profit,balance:balance,safety:safety,
     withdrawn:withdrawn,aboveNet:aboveNet,canWithdraw:canWithdraw,blockers:blockers,
     dayGoal:dayGoal,todayPL:todayPL,tradedToday:tradedToday,goalPct:goalPct,avgDay:avgDay,
     payoutsTaken:payoutsTaken,payoutNo:payoutNo,payoutCap:payoutCap,
-    maxPayouts:APEX_MAX_PAYOUTS,accountClosed:accountClosed,cappedByApex:cappedByApex,
+    maxPayouts:APEX_MAX_PAYOUTS,pastSchedule:pastSchedule,cappedByApex:cappedByApex,
     cleared:cleared,scalingCap:scalingCap,maxPos:maxPos,best:best,worstDay:worstDay,
     consistency:profit>0?(best/profit):0,minTotalForBest:best/0.30,
     worstTrade:worstTrade,maeLimit:maeLimit,days:dayVals.length,
@@ -13348,17 +13357,17 @@ function apexRuleRows(e){
   }
   // The cap schedule is per payout number and the account closes after the
   // last one, so where you are in the sequence decides the ceiling.
-  add(!e.accountClosed,'Payouts used',
-      e.payoutsTaken+' of '+e.maxPayouts
-      +(e.accountClosed
-        ? ' - the PA is closed, a new evaluation is needed'
+  add(true,'Payouts used',
+      e.payoutsTaken+' taken'
+      +(e.pastSchedule
+        ? ' · past the published schedule — the account carries on, confirm the cap with '+(e.cfg.firm||'Apex')
         : (' · next is #'+e.payoutNo
            +(e.payoutCap!=null?(', capped at '+"$"+fmt(e.payoutCap,0)):', cap unknown for this size')
            +(e.cfg.size&&APEX_PAYOUT_CAPS[e.cfg.size]
              ? (' · remaining schedule '+APEX_PAYOUT_CAPS[e.cfg.size].slice(e.payoutNo-1)
                  .map(function(v){return "$"+fmt(v,0);}).join(', '))
              : ''))),
-      !e.accountClosed&&e.payoutsTaken>=e.maxPayouts-1);
+      e.pastSchedule);
   return R;
 }
 

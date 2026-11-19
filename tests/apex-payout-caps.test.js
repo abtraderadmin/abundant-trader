@@ -69,14 +69,25 @@ schedule.forEach((cap, i) => {
   else fail('payout #' + (i + 1) + ': expected ' + cap + ', got cap ' + e.payoutCap + ' / ' + e.canWithdraw);
 });
 
-console.log('\naccount closes after six');
+console.log('\npast the sixth payout the account carries on');
+// Taking payouts does not end an account. The published schedule simply runs
+// out: the seventh has no listed cap, which is a prompt to confirm it, not a
+// reason to block the withdrawal. The old behaviour zeroed it permanently.
 e = evalWith({ profit: 40000, withdrawals: payout(6, 100) });
-if (e.accountClosed) pass('six payouts taken — PA closed');
-else fail('expected accountClosed after 6');
-if (e.canWithdraw === 0) pass('nothing withdrawable once closed');
-else fail('expected 0 after closure, got ' + e.canWithdraw);
-if (/closed/.test(e.blockers.join(' '))) pass('blocker explains the closure');
-else fail('blocker should mention closure, got: ' + e.blockers.join(' · '));
+if (e.pastSchedule) pass('six taken — flagged as past the published schedule');
+else fail('expected pastSchedule after 6');
+if (!('accountClosed' in e)) pass('no accountClosed flag remains');
+else fail('accountClosed is still being set: ' + e.accountClosed);
+if (e.canWithdraw > 0) pass('still withdrawable — ' + e.canWithdraw);
+else fail('a seventh payout was blocked, got ' + e.canWithdraw);
+if (e.payoutCap === null) pass('no cap is invented for payout seven');
+else fail('a cap was guessed past the schedule: ' + e.payoutCap);
+if (!e.cappedByApex) pass('not reported as capped when there is no published cap');
+else fail('claims a cap it does not have');
+if (/past the published schedule/.test(e.blockers.join(' '))) pass('says to confirm the cap with the firm');
+else fail('no prompt to confirm, got: ' + e.blockers.join(' · '));
+if (!/closed|new evaluation/.test(e.blockers.join(' '))) pass('never calls the account closed');
+else fail('still says the account is closed: ' + e.blockers.join(' · '));
 
 console.log('\nthe cap does not override the other gates');
 
