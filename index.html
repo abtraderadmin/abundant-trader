@@ -3295,16 +3295,26 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   const el=document.getElementById(ribbonId);if(!el)return;
   const{personalGoal,accountGoals={}}=state.settings;
   const closed=state.trades.filter(t=>t.netPL!=null);
-  const totalNet=closed.reduce((s,t)=>s+t.netPL,0);
+  // Evaluation accounts are simulated. Passing one is worth something, but the
+  // money is not real and must not sit in a total alongside money that is --
+  // the same reason paper accounts are excluded. Evals are reported on their
+  // own, against their own target.
+  const isSim=t=>{const n=acctNature(t); return n==='paper'||n==='eval';};
+  const real=closed.filter(t=>!isSim(t));
+  const totalNet=real.reduce((s,t)=>s+t.netPL,0);
   // The Personal Goal is a FUTURES withdrawal target (Settings → Futures Goals).
   // It must not absorb stock/options/SPY results now that those are journaled too,
   // or a losing options week reads as a losing futures week.
   // A closed account's result is history, not part of what is being worked
   // toward. Its trades stay in the log and in Performance; they just stop
   // counting against the futures goal, the same way its card disappears.
-  const closedFut=closed.filter(t=>t.module==='futures'&&!atAcctClosed(t.account));
+  const closedFut=real.filter(t=>t.module==='futures'&&!atAcctClosed(t.account));
   const futNet=closedFut.reduce((s,t)=>s+t.netPL,0);
-  const closedCash=closed.filter(t=>t.module!=='futures'&&acctNature(t)!=='paper');
+  // What the evals are doing, kept separate so it can be shown without being
+  // added to anything real.
+  const closedEval=closed.filter(t=>acctNature(t)==='eval'&&!atAcctClosed(t.account));
+  const evalNet=closedEval.reduce((s,t)=>s+t.netPL,0);
+  const closedCash=real.filter(t=>t.module!=='futures');
   const cashNet=closedCash.reduce((s,t)=>s+t.netPL,0);
   // Build per-account goal entries
   const evalNames=(state.settings.evalAccounts||[]).filter(n=>n.trim()&&!atAcctClosed(n));
@@ -3335,19 +3345,29 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   // Futures ring has to include it too — otherwise the ring reads lower than the
   // accounts that make it up and the two never reconcile.
   const priorMapR=state.settings.accountPriorPL||{};
-  const futAcctNames=[...(state.settings.evalAccounts||[]),...(state.settings.paAccounts||[])]
+  // Prior P/L credited to the futures ring is real-money prior P/L only.
+  const futAcctNames=(state.settings.paAccounts||[])
     .filter(n=>n&&String(n).trim()&&!atAcctClosed(n));
   const futPrior=futAcctNames.reduce((s,n)=>s+(priorMapR[n]||0),0);
   const modCards=MODULE_RINGS.map(m=>{
-    const list=closed.filter(t=>t.module===m.k&&(incPaper||acctNature(t)!=='paper'));
+    const list=closed.filter(t=>t.module===m.k&&(incPaper||!isSim(t)));
     const tgt=m.k==='futures'?(mgR.futures||personalGoal||0):(mgR[m.k]||0);
     if(!list.length&&!tgt)return null;
     let amount=list.reduce((s,t)=>s+t.netPL,0);
     if(m.k==='futures')amount+=futPrior;
     return{label:m.label,amount:amount,target:tgt,color:m.color};
   }).filter(Boolean);
+  // One ring for the evaluations, combined and labelled as simulated so it
+  // reads as progress toward a funded account rather than as money earned.
+  const evalTarget=(state.settings.evalAccounts||[])
+    .filter(n=>n&&String(n).trim()&&!atAcctClosed(n))
+    .reduce((s,n)=>s+(accountGoals[n]||0),0);
+  const evalCard=(closedEval.length||evalTarget)
+    ? [{label:'Evaluations (sim)',amount:evalNet,target:evalTarget,color:'--gold'}]
+    : [];
   const goals=[
     ...modCards,
+    ...evalCard,
     ...acctCards,
   ];
   el.innerHTML=goals.map(g=>{
