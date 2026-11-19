@@ -1082,6 +1082,30 @@ body::before{
     </div>
 
     <!-- Liquidity Warning -->
+    <!-- Contract Planner: how far out to buy, and does the target clear breakeven -->
+    <div id="oPlanner" hidden style="margin:8px 0;padding:10px 12px;background:var(--card,#141821);border:1px solid var(--line,#283043);border-radius:8px;font-size:12px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+        <strong style="font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted,#8b94a7)">Contract Planner</strong>
+        <span id="op-move" class="mono" style="color:var(--muted,#8b94a7)"></span>
+      </div>
+      <table style="width:100%;border-collapse:collapse" class="mono">
+        <tr style="color:var(--muted,#8b94a7);font-size:11px">
+          <td style="padding:2px 6px 2px 0">regime</td><td>trending</td><td>normal</td><td>choppy</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 6px 2px 0;color:var(--muted,#8b94a7);font-size:11px">days to target</td>
+          <td id="op-d-trend">—</td><td id="op-d-norm">—</td><td id="op-d-chop">—</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 6px 2px 0;color:var(--muted,#8b94a7);font-size:11px">buy out to</td>
+          <td id="op-w-trend" class="blue">—</td><td id="op-w-norm" class="blue">—</td><td id="op-w-chop" class="blue">—</td>
+        </tr>
+      </table>
+      <div id="op-exp" style="margin-top:8px;color:var(--muted,#8b94a7)"></div>
+      <div id="op-money" style="margin-top:6px"></div>
+      <div id="op-be" style="margin-top:6px"></div>
+    </div>
+
     <div id="oLiqWarn" hidden style="margin:8px 0;padding:8px 12px;background:var(--gold-bg);border:1px solid var(--gold);border-radius:6px;font-size:12px;color:var(--gold)"></div>
 
     <!-- 1/3 Scaling Plan -->
@@ -2967,6 +2991,78 @@ function recalcO(){
          +' = '+fmt(tam,1)+' → '+fmt(ciw,1)+' weeks to expiry.')
       : 'Enter Avg Moving Day.';
   }
+
+  // ---- Contract Planner -------------------------------------------------
+  // The move expressed in ATR units drives everything. Price does not travel
+  // in a straight line, so M/ATR is the optimistic case and a pure random walk
+  // takes (M/ATR)^2. Real moves sit between, and which end depends on regime,
+  // so all three are shown rather than one being chosen for the trader.
+  //   expected trading days = N^p,  p = 1.3 trending / 1.6 normal / 2.0 choppy
+  //   DTE = 1.4 * (2 * expected) + 21
+  //         ^ trading->calendar   ^ never hold into the last three weeks
+  (function(){
+    const box=document.getElementById('oPlanner'); if(!box) return;
+    const move = (priceNow&&priceTgt) ? Math.abs(priceTgt-priceNow) : 0;
+    if(!move || !atrVal || signedPts<=0){
+      box.hidden=true; return;
+    }
+    box.hidden=false;
+    const N = move/atrVal;
+    const tdays = p => Math.max(1, Math.pow(N,p));
+    const dte   = d => Math.ceil(1.4*(2*d) + 21);
+    const wk    = d => (dte(d)/7);
+    const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+
+    set('op-move','$'+fmt(move,2)+' move · '+fmt(N,1)+'× ATR $'+fmt(atrVal,2));
+    [['trend',1.3],['norm',1.6],['chop',2.0]].forEach(([k,p])=>{
+      const d=tdays(p);
+      set('op-d-'+k, fmt(d,0)+'d');
+      set('op-w-'+k, fmt(wk(d),0)+'w');
+    });
+
+    // Turn the middle case into a date the trader can look for on the chain.
+    const target=new Date(Date.now()+dte(tdays(1.6))*86400000);
+    const expEl=document.getElementById('o-expiry');
+    const chosen=expEl&&expEl.value?new Date(expEl.value+' 00:00:00'):null;
+    const iso=target.toISOString().slice(0,10);
+    let line='Normal regime points at <strong>'+iso+'</strong> or later.';
+    if(chosen){
+      const haveDays=Math.round((chosen-new Date())/86400000);
+      const needDays=dte(tdays(1.6));
+      line += haveDays>=needDays
+        ? ' Your '+expEl.value+' gives '+haveDays+' days — enough.'
+        : ' <span style="color:var(--gold)">Your '+expEl.value+' gives only '
+          +haveDays+' days; '+needDays+' is the normal-regime read.</span>';
+    }
+    document.getElementById('op-exp').innerHTML=line;
+
+    // Moneyness of the planning strike.
+    const mnEl=document.getElementById('op-money');
+    if(strikeCalc&&stockPrice){
+      const pct=(strikeCalc-stockPrice)/stockPrice*100;
+      const otm=isPut ? pct<0 : pct>0;
+      const mag=Math.abs(pct);
+      const word=mag<0.75?'at the money':(otm?'out of the money':'in the money');
+      const warn=otm&&mag>10;
+      mnEl.innerHTML='Strike $'+fmt(strikeCalc,2)+' is <strong>'+fmt(mag,1)+'% '+word+'</strong>'
+        +(warn?' <span style="color:var(--gold)">— that far OTM needs the full move just to break even</span>':'');
+    } else mnEl.textContent='';
+
+    // Breakeven gate. Without clearing it the trade cannot win on a correct call.
+    const beEl=document.getElementById('op-be');
+    const strikeUse = gv('o-strike') || gv('o-strike-plan') || strikeCalc;
+    if(strikeUse && cost){
+      const be = isPut ? strikeUse-cost : strikeUse+cost;
+      const clears = isPut ? (priceTgt < be) : (priceTgt > be);
+      const by = Math.abs(priceTgt-be);
+      const span = Math.abs(priceTgt-priceNow)||1;
+      beEl.innerHTML = clears
+        ? 'Breakeven <strong>$'+fmt(be,2)+'</strong> — target clears it by $'+fmt(by,2)
+          +' ('+fmt(by/span*100,0)+'% of the move is profit)'
+        : '<span style="color:var(--red)">Breakeven <strong>$'+fmt(be,2)
+          +'</strong> — the target does not reach it. This cannot win even if the direction is right.</span>';
+    } else beEl.innerHTML='<span style="color:var(--muted,#8b94a7)">Add the premium to see breakeven.</span>';
+  })();
 
   // Weeks to expiry
   let weeks = 0;
