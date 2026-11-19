@@ -3293,6 +3293,11 @@ function clearOForm(){
 // ── GOALS ────────────────────────────────────────────────────
 function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   const el=document.getElementById(ribbonId);if(!el)return;
+  // The same ribbon was rendered on both screens, so the Stock page carried
+  // futures accounts and the Futures page carried stock results. Each screen
+  // now shows only its own side of the business.
+  const scope=(ribbonId==='goalsRibbon2')?'cash':'futures';
+  const inScope=t=>scope==='futures'?t.module==='futures':t.module!=='futures';
   const{personalGoal,accountGoals={}}=state.settings;
   const closed=state.trades.filter(t=>t.netPL!=null);
   // Evaluation accounts are simulated. Passing one is worth something, but the
@@ -3319,16 +3324,21 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   // Build per-account goal entries
   const evalNames=(state.settings.evalAccounts||[]).filter(n=>n.trim()&&!atAcctClosed(n));
   const paNames=(state.settings.paAccounts||[]).filter(n=>n.trim()&&!atAcctClosed(n));
-  const acctCards=[
-    ...evalNames.map(n=>({name:n,type:'eval'})),
-    ...paNames.map(n=>({name:n,type:'pa'})),
-  ].map(a=>{
+  // Cash accounts never had a card. Every futures account got one, so the
+  // stock side of the business was the only part with no per-account line.
+  const cashNames=(state.settings.cashAccounts||[]).filter(n=>n&&n.trim()&&!atAcctClosed(n));
+  const acctCards=(scope==='futures'
+    ? [...evalNames.map(n=>({name:n,type:'eval'})),
+       ...paNames.map(n=>({name:n,type:'pa'}))]
+    : cashNames.map(n=>({name:n,type:'cash'}))
+  ).map(a=>{
     const acctTrades=closed.filter(t=>t.account===a.name);
     const importedNet=acctTrades.reduce((s,t)=>s+t.netPL,0);
     const priorPL=(state.settings.accountPriorPL||{})[a.name]||0;
     const acctNet=importedNet+priorPL;
     const goal=accountGoals[a.name]||0;
-    return{label:a.name,amount:acctNet,target:goal,color:a.type==='pa'?'--green':'--blue',priorPL,importedNet};
+    return{label:a.name,amount:acctNet,target:goal,
+      color:a.type==='pa'?'--green':(a.type==='cash'?'--blue':'--gold'),priorPL,importedNet};
   });
   // One ring per trading area, each with its own goal. An area appears when it
   // has a goal set or has trades — never merged, so results can't cross over.
@@ -3349,7 +3359,7 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   const futAcctNames=(state.settings.paAccounts||[])
     .filter(n=>n&&String(n).trim()&&!atAcctClosed(n));
   const futPrior=futAcctNames.reduce((s,n)=>s+(priorMapR[n]||0),0);
-  const modCards=MODULE_RINGS.map(m=>{
+  const modCards=MODULE_RINGS.filter(m=>scope==='futures'?m.k==='futures':m.k!=='futures').map(m=>{
     const list=closed.filter(t=>t.module===m.k&&(incPaper||!isSim(t)));
     const tgt=m.k==='futures'?(mgR.futures||personalGoal||0):(mgR[m.k]||0);
     if(!list.length&&!tgt)return null;
@@ -3362,7 +3372,7 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   const evalTarget=(state.settings.evalAccounts||[])
     .filter(n=>n&&String(n).trim()&&!atAcctClosed(n))
     .reduce((s,n)=>s+(accountGoals[n]||0),0);
-  const evalCard=(closedEval.length||evalTarget)
+  const evalCard=(scope==='futures'&&(closedEval.length||evalTarget))
     ? [{label:'Evaluations (sim)',amount:evalNet,target:evalTarget,color:'--gold'}]
     : [];
   const goals=[
@@ -3384,7 +3394,8 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   const cashOn=!!state.cashFilter;
   // Use account NAME as truth — not accountType field which can be wrong on import
   // Cash = not in eval/paper named sets AND not the literal 'Paper Trade' account
-  const statBase=cashOn?closed.filter(t=>!excludedSet.has(t.account)&&t.account!=='Paper Trade'):closed;
+  const scoped=closed.filter(inScope);
+  const statBase=cashOn?scoped.filter(t=>!excludedSet.has(t.account)&&t.account!=='Paper Trade'):scoped;
   const statNet=statBase.reduce((s,t)=>s+t.netPL,0);
   const wins=statBase.filter(t=>t.netPL>0);
   const wr=statBase.length?wins.length/statBase.length*100:0;
@@ -3393,19 +3404,21 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   const avgL=losses.length?losses.reduce((s,t)=>s+t.netPL,0)/losses.length:0;
   const pf=avgL!==0?Math.abs(avgW/avgL):0;
   const cashToggle=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><button onclick="state.cashFilter=!state.cashFilter;renderGoals();renderGoals('goalsRibbon2','statsRow2');renderPerf()" style="font-size:10px;padding:3px 9px;border-radius:12px;border:1px solid var(--border);cursor:pointer;background:${cashOn?'var(--gold)':'transparent'};color:${cashOn?'#111':'var(--fg3)'};font-weight:700;letter-spacing:.06em">${cashOn?'CASH':'ALL'}</button>${cashOn?'<span style="font-size:10px;color:var(--gold)">Eval &amp; sim excluded · PA counts as cash</span>':''}</div>`;
+  // Within a screen there is only one kind of trade now, so the split tiles
+  // are gone; the headline figure is this screen's figure.
   const futStat=statBase.filter(t=>t.module==='futures');
   const nonFutStat=statBase.filter(t=>t.module!=='futures');
-  // Same prior-period credit as the rings, so tiles and account cards agree.
   const futNetT=futStat.reduce((s,t)=>s+t.netPL,0)+futPrior;
   const nonFutNetT=nonFutStat.reduce((s,t)=>s+t.netPL,0);
-  const statNetT=statNet+futPrior;
+  const statNetT=statNet+(scope==='futures'?futPrior:0);
   const overallTiles=[
-    {l:'Total Net P/L',v:$(statNetT),c:statNetT>=0?'green':'red'},
+    {l:scope==='futures'?'Futures Net P/L':'Stock / Options / SPY',
+     v:$(statNetT),c:statNetT>=0?'green':'red'},
     ...(futStat.length&&nonFutStat.length?[
       {l:'└ Futures',v:$(futNetT),c:futNetT>=0?'green':'red'},
       {l:'└ Stock/Opt/SPY',v:$(nonFutNetT),c:nonFutNetT>=0?'green':'red'},
     ]:[]),
-    {l:cashOn?'Cash Trades':'All Trades',v:cashOn?statBase.length:state.trades.length,c:''},
+    {l:cashOn?'Cash Trades':'Trades',v:statBase.length,c:''},
     {l:'Win Rate',v:statBase.length?wr.toFixed(0)+'%':'—',c:wr>=50?'green':wr>0?'red':''},
     {l:'Avg Win',v:avgW?$(avgW):'—',c:'green'},
     {l:'Avg Loss',v:avgL?$(avgL):'—',c:'red'},
@@ -3425,7 +3438,10 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
     simTiles.push(`<div class="stat-tile"><div class="stat-lbl" style="color:var(--fg3)">📋 Paper S&amp;O</div><div class="stat-val ${pNet>=0?'green':'red'}">${$(pNet)}</div><div class="stat-lbl">${paperTrades.length}t · ${pWr.toFixed(0)}%wr</div></div>`);
   }
   // Only eval accounts go in Paper & Sim — PA accounts are shown in goal cards above
-  const evalSet=new Set((state.settings.evalAccounts||[]).filter(n=>n.trim()));
+  // Eval accounts are futures accounts, so they belong on the futures screen
+  // only -- they were appearing under Paper & Sim on the stock page too.
+  const evalSet=new Set(scope==='futures'
+    ? (state.settings.evalAccounts||[]).filter(n=>n.trim()) : []);
   acctWithTrades.forEach(n=>{
     if(!evalSet.has(n))return; // skip PA accounts — they belong in goal cards, not here
     const at=closed.filter(t=>t.account===n);
