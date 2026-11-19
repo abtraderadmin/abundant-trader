@@ -4082,6 +4082,43 @@ function renderCfg(){
     if(g(`cfg-pa${i}-goal`)&&nm&&ag[nm])g(`cfg-pa${i}-goal`).value=ag[nm];
     if(g(`cfg-pa${i}-prior`)&&nm&&ap[nm])g(`cfg-pa${i}-prior`).value=ap[nm];
   });
+  // A status control beside every named futures account. Settings is where
+  // accounts are managed, so it is where an account is retired -- and it is
+  // the only place an EVAL can be, since the Apex compliance panel is PA-only.
+  // Attached here rather than written into fifteen fixed rows of markup.
+  [['ev',10,ev],['pa',5,pa]].forEach(function(grp){
+    var kind=grp[0], n=grp[1], names=grp[2]||[];
+    // `let`, not `var`: the change handler below closes over i, and with a
+    // function-scoped i every dropdown would write to the last account.
+    for(let i=1;i<=n;i++){
+      var inp=g('cfg-'+kind+i); if(!inp)continue;
+      var row=inp.parentNode; if(!row)continue;
+      var nm=String(names[i-1]||'').trim();
+      var sel=g('cfg-'+kind+i+'-st');
+      if(!nm){ if(sel)sel.style.display='none'; continue; }
+      if(!sel){
+        sel=document.createElement('select');
+        sel.id='cfg-'+kind+i+'-st';
+        sel.className='fc';
+        sel.style.cssText='max-width:120px;font-size:11px;padding:4px 6px';
+        sel.title='Retire an account without losing it. Its trades stay in the log and in Performance; it stops appearing as somewhere to trade and stops counting toward the futures total.';
+        Object.keys(AT_ACCT_STATUS).forEach(function(k){
+          var o=document.createElement('option');
+          o.value=k; o.textContent=AT_ACCT_STATUS[k];
+          sel.appendChild(o);
+        });
+        sel.addEventListener('change',function(){
+          var live=String((g('cfg-'+kind+i)||{}).value||'').trim();
+          if(live)apexSetStatus(live,this.value);
+        });
+        row.appendChild(sel);
+      }
+      sel.style.display='';
+      sel.value=atAcctStatus(nm);
+      sel.style.color=sel.value==='active'?'':'var(--gold)';
+    }
+  });
+
   const sim=s.paperAccounts||['','','','',''];
   [1,2,3,4,5].forEach(i=>{if(g(`cfg-sim${i}`))g(`cfg-sim${i}`).value=sim[i-1]||'';});
   if(g('cfg-max-loss'))g('cfg-max-loss').value=s.maxLossPerTrade;
