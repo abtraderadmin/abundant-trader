@@ -13438,6 +13438,11 @@ function apexRuleRows(e){
   return R;
 }
 
+function apexToggleShut(){
+  state.settings.apexShutOpen=!(state.settings.apexShutOpen===true);
+  saveState();
+  apexRender();
+}
 function apexToggle(i){
   const el=document.getElementById('apex-d-'+i);
   if(el)el.hidden=!el.hidden;
@@ -13541,8 +13546,22 @@ function apexRender(){
   // Closed accounts: the finished record, collapsed out of the way.
   var shutHtml='';
   if(shut.length){
+    // Collapsed by default and click to open. Closed accounts accumulate, and
+    // a list that only grows would crowd out the accounts actually being
+    // traded. The preference is remembered.
+    var shutOpen=state.settings.apexShutOpen===true;
+    var shutPL=shut.reduce(function(n,nm){return n+(apexEval(nm).profit||0);},0);
     shutHtml='<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">'
-      +'<div style="font-size:11px;color:var(--fg3);margin-bottom:7px">Closed — kept for the record, '
+      +'<div onclick="apexToggleShut()" style="display:flex;align-items:center;gap:9px;cursor:pointer;'
+       +'font-size:11px;color:var(--fg3);padding:3px 0;margin-bottom:'+(shutOpen?'7px':'0')+'">'
+        +'<span style="font-weight:700;color:var(--fg2)">Closed accounts</span>'
+        +'<span style="padding:1px 7px;border-radius:9px;border:1px solid var(--border);">'+shut.length+'</span>'
+        +'<span style="font-family:var(--mono);color:'+(shutPL>=0?'var(--green)':'var(--red)')+'">'
+          +(shutPL>=0?'+':'')+fmt(shutPL,2)+'</span>'
+        +'<span style="margin-left:auto">'+(shutOpen?'hide ▴':'show ▾')+'</span>'
+      +'</div>'
+      +'<div'+(shutOpen?'':' hidden')+'>'
+      +'<div style="font-size:11px;color:var(--fg3);margin-bottom:7px">Kept for the record, '
       +'still in the trade log and in Performance. Set the status back to Active to reopen one.</div>'
       +shut.map(function(nm){
           var e=apexEval(nm), c=apexCfg(nm);
@@ -13566,7 +13585,7 @@ function apexRender(){
               +'background:var(--s2);color:var(--fg2);font-size:11px">'
           +'</div>';
         }).join('')
-      +'</div>';
+      +'</div></div>';
   }
 
   if(!accts.length){

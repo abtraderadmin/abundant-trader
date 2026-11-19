@@ -74,9 +74,29 @@ console.log('\nthe panel separates the two');
 t('closed accounts render in their own section',()=>{
   w.apexRender();
   const html=(w.document.getElementById('apex-panel')||{}).innerHTML||'';
-  assert(html.includes('Closed — kept for the record'),'no closed section');
+  assert(html.includes('Closed accounts'),'no closed section');
   assert(html.includes(BLOWN),'the closed account is not listed');
   assert(html.includes('final'),'no final figure shown');
+});
+t('the section is collapsed by default and says how many',()=>{
+  const html=(w.document.getElementById('apex-panel')||{}).innerHTML||'';
+  assert(/show ▾/.test(html),'not collapsed on first render');
+  assert(/apexToggleShut\(\)/.test(html),'no way to open it');
+  // the header carries the count and the combined final figure
+  const hdr=(html.match(/Closed accounts[\s\S]{0,420}?show ▾/)||[''])[0];
+  assert(/>1</.test(hdr),'count missing from the header');
+  assert(/-3,?028/.test(hdr.replace(/<[^>]+>/g,' ')),'combined final P/L missing: '+
+    hdr.replace(/<[^>]+>/g,' ').slice(0,160));
+});
+t('clicking opens it, and the choice sticks',()=>{
+  w.apexToggleShut();
+  let html=(w.document.getElementById('apex-panel')||{}).innerHTML||'';
+  assert(/hide ▴/.test(html),'did not open');
+  assert.strictEqual(
+    JSON.parse(w.localStorage.getItem(BLOB)).settings.apexShutOpen,true,'not remembered');
+  w.apexToggleShut();
+  html=(w.document.getElementById('apex-panel')||{}).innerHTML||'';
+  assert(/show ▾/.test(html),'did not close again');
 });
 t('a closed account cannot register as a live breach',()=>{
   const html=(w.document.getElementById('apex-panel')||{}).innerHTML||'';
