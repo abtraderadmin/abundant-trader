@@ -13219,6 +13219,10 @@ function atActiveFutAccts(){
   return [].concat(state.settings.evalAccounts||[],state.settings.paAccounts||[])
            .filter(function(n){return n&&String(n).trim()&&!atAcctClosed(n);});
 }
+function atRenderAcctPanels(){
+  try{ if(typeof apexRender==='function')apexRender(); }catch(e){}
+  try{ if(typeof evalRender==='function')evalRender(); }catch(e){}
+}
 function apexSetStatus(acct,v){
   const c=apexCfg(acct);
   if(v==='active'){ delete c.status; delete c.closedOn; }
@@ -13227,7 +13231,7 @@ function apexSetStatus(acct,v){
     if(!c.closedOn)c.closedOn=new Date().toISOString().slice(0,10);
   }
   saveState();
-  if(typeof renderAll==='function')renderAll(); else apexRender();
+  if(typeof renderAll==='function')renderAll(); else atRenderAcctPanels();
 }
 function apexSetClosedNote(acct,v){
   const c=apexCfg(acct); c.closedNote=String(v||''); saveState();
@@ -13608,6 +13612,223 @@ function apexRender(){
     +'</div></div>';
 }
 
+// ── Evaluation accounts ─────────────────────────────────────────────────
+// Evals are judged by different rules from a funded account. There is no
+// consistency rule. What decides survival is the trailing threshold, which
+// follows the highest end-of-day balance down by the drawdown amount and
+// then LOCKS once it reaches the starting balance plus $100 -- after that
+// point the account can no longer be lost to a drawdown below where it
+// started. The lock is stated on screen so it can be checked against the
+// firm rather than taken on trust.
+//
+// Only end-of-day balances are known here, so the floor is the end-of-day
+// one. A firm that trails intraday can stop an account before this does;
+// this figure is therefore the kindest reading, never the harshest.
+const EVAL_LOCK_OVER_START=100;
+
+function evalEval(acct){
+  const c=apexCfg(acct);
+  const start=c.size||50000;
+  const dd=c.dd||2500;
+  const rs=(state.trades||[]).filter(function(t){
+    return t.module==='futures'&&String(t.account||'').trim()===String(acct).trim();
+  });
+  // Daily buckets, in order, so the high-water mark is an end-of-day one.
+  const byDay={};
+  rs.forEach(function(t){
+    const d=String(t.date||'').slice(0,10); if(!d)return;
+    if(!byDay[d])byDay[d]={pl:0,n:0,maxQty:0};
+    byDay[d].pl+=parseFloat(t.netPL)||0;
+    byDay[d].n++;
+    const q=Math.abs(parseFloat(t.qty)||0);
+    if(q>byDay[d].maxQty)byDay[d].maxQty=q;
+  });
+  const days=Object.keys(byDay).sort();
+  let run=start, highWater=start;
+  const series=days.map(function(d){
+    run=parseFloat((run+byDay[d].pl).toFixed(2));
+    if(run>highWater)highWater=run;
+    return {date:d,pl:byDay[d].pl,n:byDay[d].n,bal:run};
+  });
+  const profit=parseFloat((run-start).toFixed(2));
+  const balance=run;
+  const lockAt=start+EVAL_LOCK_OVER_START;
+  const rawFloor=parseFloat((highWater-dd).toFixed(2));
+  const locked=rawFloor>=lockAt;
+  const floor=locked?lockAt:rawFloor;
+  const headroom=parseFloat((balance-floor).toFixed(2));
+
+  const target=parseFloat((state.settings.accountGoals||{})[acct])||0;
+  const toTarget=target?parseFloat((target-profit).toFixed(2)):null;
+  const pct=target>0?Math.max(0,Math.min(100,profit/target*100)):0;
+
+  // The trader's own baseline, not a general rule: the typical trade count
+  // on a day that made money. Overtrading shows up here long before the loss
+  // does, which is the whole point of surfacing it.
+  const winDays=series.filter(function(x){return x.pl>0;}).map(function(x){return x.n;}).sort(function(a,b){return a-b;});
+  const baseline=winDays.length?winDays[Math.floor(winDays.length/2)]:null;
+  const todayKey=new Date().toISOString().slice(0,10);
+  const today=byDay[todayKey]||null;
+  const todayN=today?today.n:0;
+  const overtrading=!!(baseline&&todayN>=Math.max(baseline*2,baseline+5));
+
+  const maxQty=series.length?Math.max.apply(null,days.map(function(d){return byDay[d].maxQty;})):0;
+  const avgDay=series.length?parseFloat((profit/series.length).toFixed(2)):0;
+  const daysToTarget=(toTarget!=null&&avgDay>0)?Math.ceil(toTarget/avgDay):null;
+
+  return{acct:acct,cfg:c,start:start,dd:dd,trades:rs.length,days:series.length,
+    profit:profit,balance:balance,highWater:highWater,floor:floor,locked:locked,
+    headroom:headroom,target:target,toTarget:toTarget,pct:pct,
+    maxQty:maxQty,maxContracts:c.maxContracts||10,avgDay:avgDay,daysToTarget:daysToTarget,
+    baseline:baseline,todayN:todayN,overtrading:overtrading,series:series};
+}
+
+function evalRuleRows(e){
+  const R=[];
+  const add=function(ok,rule,detail,warn){R.push({ok:ok,rule:rule,detail:detail,warn:!!warn});};
+  add(e.headroom>0,'Trailing threshold',
+      '$'+fmt(e.headroom,2)+' of room — balance $'+fmt(e.balance,2)
+      +' against a floor of $'+fmt(e.floor,2)
+      +(e.locked?' (locked at start + $'+EVAL_LOCK_OVER_START+')'
+                :' (high-water $'+fmt(e.highWater,2)+' − $'+fmt(e.dd,0)+')'),
+      e.headroom>0&&e.headroom<e.dd*0.4);
+  add(e.target>0&&e.profit>=e.target,'Profit target',
+      e.target>0
+        ? ('$'+fmt(e.profit,2)+' of $'+fmt(e.target,0)+' — '+fmt(e.pct,0)+'%'
+           +(e.daysToTarget!=null?(', about '+e.daysToTarget+' more day'+(e.daysToTarget!==1?'s':'')+' at $'+fmt(e.avgDay,0)+'/day'):''))
+        : 'no target set for this account',
+      e.target>0&&e.profit<e.target);
+  add(e.maxQty<=e.maxContracts,'Contract limit',
+      e.maxQty+' of '+e.maxContracts+' used at most');
+  add(true,'Days traded',e.days+' day'+(e.days!==1?'s':''),false);
+  if(e.baseline){
+    add(!e.overtrading,'Trade count today',
+        e.todayN+' today — a day that makes money usually takes '+e.baseline,
+        false);
+  }
+  return R;
+}
+
+function evalToggleShut(){
+  state.settings.evalShutOpen=!(state.settings.evalShutOpen===true);
+  saveState(); evalRender();
+}
+function evalToggle(i){
+  const el=document.getElementById('eval-d-'+i);
+  if(el)el.hidden=!el.hidden;
+}
+function evalPanelEl(){
+  let el=document.getElementById('eval-panel');
+  if(el)return el;
+  const anchor=document.getElementById('screen-futures');
+  if(!anchor)return null;
+  el=document.createElement('div');
+  el.id='eval-panel';
+  el.style.cssText='margin-bottom:18px';
+  const apex=document.getElementById('apex-panel');
+  if(apex&&apex.nextSibling)anchor.insertBefore(el,apex.nextSibling);
+  else anchor.insertBefore(el,anchor.firstChild);
+  return el;
+}
+
+function evalRender(){
+  const el=evalPanelEl(); if(!el)return;
+  const all=(state.settings.evalAccounts||[]).filter(function(n){return n&&String(n).trim();});
+  if(!all.length){el.innerHTML='';return;}
+  const live=all.filter(function(n){return !atAcctClosed(n);});
+  const shut=all.filter(atAcctClosed);
+
+  let atRisk=0,combined=0;
+  const bodies=live.map(function(nm,i){
+    const e=evalEval(nm);
+    const rows=evalRuleRows(e);
+    const bad=rows.filter(function(r){return !r.ok&&!r.warn;}).length;
+    combined+=e.profit;
+    if(e.headroom<=0)atRisk++;
+    const chip=e.headroom<=0
+      ? '<span style="color:var(--red);font-weight:700">below the floor</span>'
+      : (e.overtrading
+          ? '<span style="color:var(--red);font-weight:700">'+e.todayN+' trades today</span>'
+          : (e.profit>=e.target&&e.target>0
+              ? '<span style="color:var(--green);font-weight:700">target met</span>'
+              : '<span style="color:var(--fg3)">'+fmt(e.pct,0)+'% of target</span>'));
+    return '<div style="border:1px solid '+(e.headroom<=0?'var(--red)':'var(--border)')
+        +';border-radius:9px;margin-bottom:8px;overflow:hidden">'
+      +'<div onclick="evalToggle('+i+')" style="display:flex;align-items:center;gap:12px;padding:10px 13px;cursor:pointer;background:var(--bg2);flex-wrap:wrap">'
+        +'<span style="font-weight:800;font-size:12px;color:var(--gold)">'+nm+'</span>'
+        +'<span style="font-family:var(--mono);font-size:12px">$'+fmt(e.balance,2)+'</span>'
+        +'<span style="font-family:var(--mono);font-size:11px;color:'+(e.profit>=0?'var(--green)':'var(--red)')+'">'
+          +(e.profit>=0?'+':'')+fmt(e.profit,2)+'</span>'
+        +'<span style="font-size:11px;color:'+(e.headroom<e.dd*0.4?'var(--gold)':'var(--fg3)')+'" '
+          +'title="How far the balance can fall before the account is lost.">$'
+          +fmt(e.headroom,2)+' to the floor</span>'
+        +'<span style="margin-left:auto;font-size:11px">'+chip+' ▾</span>'
+      +'</div>'
+      +'<div onclick="event.stopPropagation()" style="display:flex;gap:9px;align-items:center;padding:0 13px 9px;font-size:11px;color:var(--fg3)">'
+        +apexStatusSelect(e)+'</div>'
+      +'<div id="eval-d-'+i+'" hidden style="padding:9px 13px 12px">'
+        +rows.map(function(r){
+          return '<div style="display:flex;gap:10px;align-items:baseline;font-size:11px;padding:3px 0;border-top:1px solid var(--border)">'
+            +'<span style="font-weight:700;min-width:40px;color:'+(r.ok?'var(--green)':(r.warn?'var(--gold)':'var(--red)'))+'">'
+              +(r.ok?'PASS':(r.warn?'NOTE':'FAIL'))+'</span>'
+            +'<span style="min-width:170px;color:var(--fg2)">'+r.rule+'</span>'
+            +'<span style="color:var(--fg3)">'+r.detail+'</span>'
+          +'</div>';
+        }).join('')
+      +'</div></div>';
+  }).join('');
+
+  var shutHtml='';
+  if(shut.length){
+    var open=state.settings.evalShutOpen===true;
+    var shutPL=shut.reduce(function(n,nm){return n+(evalEval(nm).profit||0);},0);
+    shutHtml='<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">'
+      +'<div onclick="evalToggleShut()" style="display:flex;align-items:center;gap:9px;cursor:pointer;font-size:11px;color:var(--fg3);padding:3px 0;margin-bottom:'+(open?'7px':'0')+'">'
+        +'<span style="font-weight:700;color:var(--fg2)">Closed evaluations</span>'
+        +'<span style="padding:1px 7px;border-radius:9px;border:1px solid var(--border)">'+shut.length+'</span>'
+        +'<span style="font-family:var(--mono);color:'+(shutPL>=0?'var(--green)':'var(--red)')+'">'
+          +(shutPL>=0?'+':'')+fmt(shutPL,2)+'</span>'
+        +'<span style="margin-left:auto">'+(open?'hide ▴':'show ▾')+'</span>'
+      +'</div>'
+      +'<div'+(open?'':' hidden')+'>'
+      +shut.map(function(nm){
+          var e=evalEval(nm), c=apexCfg(nm);
+          var label=AT_ACCT_STATUS[atAcctStatus(nm)]||'Closed';
+          var note=String(c.closedNote||'').replace(/"/g,'&quot;');
+          var a=nm.replace(/'/g,"\\'");
+          return '<div style="border:1px solid var(--border);border-radius:9px;margin-bottom:7px;padding:9px 13px;opacity:.78">'
+            +'<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+              +'<span style="font-weight:800;font-size:12px;color:var(--fg2)">'+nm+'</span>'
+              +'<span style="font-size:11px;color:var(--gold);font-weight:700">'+label
+                +(c.closedOn?(' · '+c.closedOn):'')+'</span>'
+              +'<span style="font-family:var(--mono);font-size:11px;color:'+(e.profit>=0?'var(--green)':'var(--red)')+'">'
+                +(e.profit>=0?'+':'')+fmt(e.profit,2)+' final</span>'
+              +'<span style="font-size:11px;color:var(--fg3)">'+e.trades+' trades</span>'
+              +'<span style="margin-left:auto">'+apexStatusSelect(e)+'</span>'
+            +'</div>'
+            +'<input value="'+note+'" placeholder="what happened — kept with the account"'
+              +' onchange="apexSetClosedNote(\''+a+'\',this.value)"'
+              +' style="margin-top:7px;width:100%;padding:5px 8px;border-radius:5px;border:1px solid var(--border);background:var(--s2);color:var(--fg2);font-size:11px">'
+          +'</div>';
+        }).join('')
+      +'</div></div>';
+  }
+
+  const badge=atRisk
+    ? '<span class="gov-badge" style="color:var(--red);border-color:var(--red)">'+atRisk+' below the floor</span>'
+    : '<span class="gov-badge" style="color:var(--gold);border-color:var(--gold)">'+live.length+' in evaluation</span>';
+  el.innerHTML='<div class="trade-form" style="margin-bottom:0">'
+    +'<div class="form-hd"><span class="form-title">Evaluation Rule Compliance</span>'+badge+'</div>'
+    +'<div style="padding:11px 14px">'
+      +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">'
+        +'Simulated accounts — no consistency rule, and none of this counts as real money. '
+        +'The trailing threshold follows the highest end-of-day balance and locks at start + $'
+        +EVAL_LOCK_OVER_START+'. Combined '+(combined>=0?'+':'')+'$'+fmt(Math.abs(combined),2)+'.</div>'
+      +(bodies||'<div style="font-size:11px;color:var(--fg3)">No active evaluations.</div>')
+      +shutHtml
+    +'</div></div>';
+}
+
 (function(){
   const o=window.renderAll;
   window.renderAll=function(){
@@ -13616,6 +13837,7 @@ function apexRender(){
     // A thrown render is a bug worth hearing about, so log it.
     const _q=(n,f)=>{ try{f();}catch(e){ try{console.error('[AT] '+n+' failed:',e);}catch(_){} } };
     _q('apexRender',apexRender);
+    _q('evalRender',evalRender);
     _q('paOrdRender',paOrdRender);
     _q('woRender',woRender);
     _q('bulkRender',function(){ if(!window._bulkPending)bulkRender(); });
