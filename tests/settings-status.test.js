@@ -36,6 +36,23 @@ t('it offers exactly the three real states',()=>{
   assert.strictEqual(o.join(','),'active,blown,closed');
 });
 
+console.log('\nadding it must not squeeze the name box out of the row');
+t('the name input keeps a usable width and the row wraps',()=>{
+  [1,2,3].forEach(i=>{
+    const inp=w.document.getElementById('cfg-ev'+i);
+    assert.strictEqual(inp.parentNode.style.flexWrap,'wrap','eval row '+i+' does not wrap');
+    assert(parseInt(inp.style.minWidth||'0',10)>=100,'eval row '+i+' name box can collapse');
+  });
+});
+t('the names are still there — a collapsed box is not a deleted account',()=>{
+  const ev=JSON.parse(w.localStorage.getItem(BLOB)).settings.evalAccounts;
+  assert.deepStrictEqual(ev.slice(0,3).join('|'),EV.join('|'));
+  [1,2,3].forEach(i=>assert.strictEqual(
+    w.document.getElementById('cfg-ev'+i).value,EV[i-1],'row '+i+' lost its name'));
+});
+t('the status control never shrinks at the name box\'s expense',()=>
+  assert(/flex:0 0 auto;max-width:120px/.test(src),'the select can grow and crowd the row'));
+
 console.log('\nit writes to the account on its own row');
 // The bug this guards: a change handler closing over a function-scoped loop
 // index sends every row's change to the last account.
