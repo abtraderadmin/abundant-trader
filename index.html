@@ -3299,7 +3299,10 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   // The Personal Goal is a FUTURES withdrawal target (Settings → Futures Goals).
   // It must not absorb stock/options/SPY results now that those are journaled too,
   // or a losing options week reads as a losing futures week.
-  const closedFut=closed.filter(t=>t.module==='futures');
+  // A closed account's result is history, not part of what is being worked
+  // toward. Its trades stay in the log and in Performance; they just stop
+  // counting against the futures goal, the same way its card disappears.
+  const closedFut=closed.filter(t=>t.module==='futures'&&!atAcctClosed(t.account));
   const futNet=closedFut.reduce((s,t)=>s+t.netPL,0);
   const closedCash=closed.filter(t=>t.module!=='futures'&&acctNature(t)!=='paper');
   const cashNet=closedCash.reduce((s,t)=>s+t.netPL,0);
@@ -3332,7 +3335,8 @@ function renderGoals(ribbonId='goalsRibbon',statsId='statsRow'){
   // Futures ring has to include it too — otherwise the ring reads lower than the
   // accounts that make it up and the two never reconcile.
   const priorMapR=state.settings.accountPriorPL||{};
-  const futAcctNames=[...(state.settings.evalAccounts||[]),...(state.settings.paAccounts||[])].filter(n=>n&&String(n).trim());
+  const futAcctNames=[...(state.settings.evalAccounts||[]),...(state.settings.paAccounts||[])]
+    .filter(n=>n&&String(n).trim()&&!atAcctClosed(n));
   const futPrior=futAcctNames.reduce((s,n)=>s+(priorMapR[n]||0),0);
   const modCards=MODULE_RINGS.map(m=>{
     const list=closed.filter(t=>t.module===m.k&&(incPaper||acctNature(t)!=='paper'));
@@ -13448,6 +13452,10 @@ function apexRender(){
                         :'<span style="font-size:11px;color:var(--gold)">above the net, but '+(e.blockers[0]||'not yet eligible')+'</span>'))
         +'<span style="margin-left:auto;font-size:11px">'+chip+' ▾</span>'
       +'</div>'
+      // Reachable without expanding the card: closing an account should not
+      // require hunting through its rule detail first.
+      +'<div onclick="event.stopPropagation()" style="display:flex;gap:9px;align-items:center;'
+       +'padding:0 13px 9px;font-size:11px;color:var(--fg3)">'+apexStatusSelect(e)+'</div>'
       +'<div id="apex-d-'+i+'" hidden style="padding:9px 13px 12px">'
         +rows.map(r=>'<div style="display:flex;gap:10px;align-items:baseline;font-size:11px;padding:3px 0;border-top:1px solid var(--border)">'
           +'<span style="font-weight:700;min-width:40px;color:'+(r.ok?'var(--green)':(r.warn?'var(--gold)':'var(--red)'))+'">'+(r.ok?'PASS':(r.warn?'NOTE':'FAIL'))+'</span>'
