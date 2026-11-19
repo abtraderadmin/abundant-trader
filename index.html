@@ -15094,7 +15094,15 @@ async function atPushTrades(){
   // so another device cannot resurrect them.
   var gone=Object.keys(sig).filter(function(id){return !seen[id];});
   gone.forEach(function(id){
-    changed.push({id:id,user_id:atUser.id,deleted:true,updated_at:new Date().toISOString()});
+    // journal and data are both NOT NULL. A tombstone has neither, but
+    // PostgREST unions the column set across a batch: the live rows in the
+    // same request carry those keys, so every row that omits them is sent an
+    // explicit null, which overrides the column default and fails the whole
+    // batch with 23502. Every other mirror passes these through
+    // atPushRows(tombstoneExtra); this one builds its tombstones inline and
+    // was missed, so one deleted trade blocked every new trade from syncing.
+    changed.push({id:id,user_id:atUser.id,deleted:true,
+                  journal:{},data:{},updated_at:new Date().toISOString()});
   });
 
   if(!changed.length)return true;
