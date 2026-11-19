@@ -247,12 +247,19 @@ else {
   for (const n of ['atPushWithdrawals','atPushHoldings','atPushTransactions'])
     if (wiring.includes(n)) pass(n + ' is driven from the push path');
     else fail(n + ' is not in the push path');
-  if (/catch\s*\(e\)\s*\{\s*console\.warn/.test(wiring))
-    pass('a sync throw is logged, not swallowed');
-  else fail('sync throws are still swallowed silently');
-  if (/r\.catch\(function\(e\)\{console\.warn/.test(wiring))
-    pass('a rejected promise is logged too — these are async');
-  else fail('async rejections are not reported');
+  // Since the blob was retired the mirrors ARE the save, so a failure has to
+  // be awaited and surfaced, not merely logged. One catch now covers a sync
+  // throw and a rejected promise alike, because each call is wrapped in
+  // Promise.resolve().then(...).
+  if (/Promise\.resolve\(\)[\s\S]{0,80}?\.catch\(function\(e\)\{/.test(wiring))
+    pass('a throw and a rejection are both caught');
+  else fail('mirror failures are not caught');
+  if (/failed\.push\(pair\[0\]\)/.test(wiring) && /console\.warn\('\[AT\] '\+pair\[0\]/.test(wiring))
+    pass('the failing mirror is named, and recorded for the caller');
+  else fail('a failure is not recorded or not named');
+  if (/await Promise\.all\(mirrors\.map/.test(wiring))
+    pass('every mirror is awaited, so a failure cannot be missed');
+  else fail('mirrors are fire-and-forget — a failure would go unnoticed');
   if (/catch/.test(wiring))
     pass('still guarded, so a mirror failure cannot break a save');
   else fail('unguarded — a mirror failure could break a save');

@@ -10836,45 +10836,83 @@ async function atCloudPull(){
   return data||null;
 }
 
+// ── The JSON blob is retired ────────────────────────────────────────────
+// Every durable collection now has its own table, and each one pulls as well
+// as pushes. Before this was switched off, the blob and the tables were
+// compared row for row and agreed on all nine collections; Settings →
+// "Database vs. this device" re-runs that comparison at any time.
+//
+// app_state is still READ on load, so a device that has not synced since the
+// change still recovers from it. Only the write stops.
+//
+// To put the blob back, set this to true. Nothing else needs changing: the
+// write path below is unchanged, it is only skipped.
+const AT_BLOB_WRITES=false;
+
+// Four keys never had a table and are not missed: `ore` (scratch for the
+// ticker on screen), `levels` (a cache of the CURRENT ATR, fibs and pivots --
+// the durable copy is the snapshot written onto each trade), `importQueue`
+// (staging between parsing a report and deciding on it) and `portfolioOpen`
+// (which panel is expanded). All are re-derivable and all stay in
+// localStorage, so they simply no longer follow you between devices.
+
 async function atCloudPush(force){
   const c=atSbReady(); if(!c||!atUser)return false;
   const raw=atLocalRaw(); if(!raw)return false;
   let obj; try{obj=JSON.parse(raw);}catch(e){return false;}
-  const seen=atCloudSeen();
-  if(!force&&seen){
-    const chk=await c.from('app_state').select('updated_at').eq('user_id',atUser.id).maybeSingle();
-    if(!chk.error&&chk.data&&chk.data.updated_at&&String(chk.data.updated_at)!==seen){
-      console.warn('[AT] push blocked — cloud changed since last sync',{seen:seen,cloud:chk.data.updated_at});
-      atFlagConflict(true);
-      return false;
+
+  if(AT_BLOB_WRITES){
+    const seen=atCloudSeen();
+    if(!force&&seen){
+      const chk=await c.from('app_state').select('updated_at').eq('user_id',atUser.id).maybeSingle();
+      if(!chk.error&&chk.data&&chk.data.updated_at&&String(chk.data.updated_at)!==seen){
+        console.warn('[AT] push blocked — cloud changed since last sync',{seen:seen,cloud:chk.data.updated_at});
+        atFlagConflict(true);
+        return false;
+      }
     }
+    atSyncChip('☁ saving…','var(--gold)');
+    const stamp=new Date().toISOString();
+    let res=await c.from('app_state').upsert({user_id:atUser.id,state:obj,updated_at:stamp},{onConflict:'user_id'}).select('updated_at').maybeSingle();
+    if(res.error&&/updated_at/i.test(res.error.message||''))
+      res=await c.from('app_state').upsert({user_id:atUser.id,state:obj},{onConflict:'user_id'}).select('updated_at').maybeSingle();
+    if(res.error){atSyncChip('☁ save failed','var(--red)');console.warn('[AT] cloud push failed',res.error);return false;}
+    atSetCloudSeen((res.data&&res.data.updated_at)||stamp);
+    atFlagConflict(false);
+  } else {
+    atSyncChip('☁ saving…','var(--gold)');
+    // Whole-blob conflict detection went with the blob. Each table merges per
+    // row on the way in instead: an edit made here that has not been sent yet
+    // wins over the remote copy, and anything else is adopted.
+    atFlagConflict(false);
   }
-  atSyncChip('☁ saving…','var(--gold)');
-  const stamp=new Date().toISOString();
-  let res=await c.from('app_state').upsert({user_id:atUser.id,state:obj,updated_at:stamp},{onConflict:'user_id'}).select('updated_at').maybeSingle();
-  if(res.error&&/updated_at/i.test(res.error.message||''))
-    res=await c.from('app_state').upsert({user_id:atUser.id,state:obj},{onConflict:'user_id'}).select('updated_at').maybeSingle();
-  if(res.error){atSyncChip('☁ save failed','var(--red)');console.warn('[AT] cloud push failed',res.error);return false;}
-  atSetCloudSeen((res.data&&res.data.updated_at)||stamp);
-  atFlagConflict(false);
-  // A mirror must never break a save, but it must never fail invisibly
-  // either. An empty catch hid a RangeError here for two days while every
-  // holdings row quietly failed to sync. Both sync and async throws are
-  // reported now.
-  [['accounts',atPushAccounts],['trades',atPushTrades],
+
+  // The mirrors ARE the save now. A failure used to be survivable because the
+  // blob held everything anyway; it no longer does, so every one is awaited
+  // and a failure is put on screen rather than left in the console.
+  var mirrors=[['accounts',atPushAccounts],['trades',atPushTrades],
    ['withdrawals',atPushWithdrawals],['holdings',atPushHoldings],
    ['transactions',atPushTransactions],
    ['opportunities',atPushOpportunities],['archer',atPushArcherSignals],
    ['class_sessions',atPushClassSessions],['class_analysis',atPushClassAnalysis],
-   ['settings',atPushSettings],['secrets',atPushSecrets]
-  ].forEach(function(pair){
-    if(typeof pair[1]!=='function')return;
-    try{
-      var r=pair[1]();
-      if(r&&typeof r.catch==='function')
-        r.catch(function(e){console.warn('[AT] '+pair[0]+' mirror threw',e);});
-    }catch(e){console.warn('[AT] '+pair[0]+' mirror threw',e);}
-  });
+   ['settings',atPushSettings],['secrets',atPushSecrets]];
+  var failed=[];
+  await Promise.all(mirrors.map(function(pair){
+    if(typeof pair[1]!=='function')return Promise.resolve();
+    return Promise.resolve()
+      .then(function(){return pair[1]();})
+      .catch(function(e){
+        failed.push(pair[0]);
+        console.warn('[AT] '+pair[0]+' mirror threw',e);
+      });
+  }));
+  if(failed.length){
+    atSyncChip('☁ '+failed.length+' not saved','var(--red)');
+    if(typeof toast==='function')
+      toast('Could not save to the database: '+failed.join(', ')
+            +'. The data is still on this device — press Sync again.','warn',12000);
+    return false;
+  }
   try{localStorage.setItem('at_cloud_synced_at',new Date().toISOString());}catch(e){}
   atSyncChip('☁ saved '+new Date().toLocaleTimeString(),'var(--green)');
   if(typeof atRenderCloudStatus==='function')atRenderCloudStatus();
@@ -10947,6 +10985,19 @@ async function atReconcileBlob(){
     toast('☁ This device had no trades — loaded '+cloudN+' from the cloud.','ok',9000);
     return;
   }
+  // With the blob retired its copy is frozen at the moment writes stopped, so
+  // it must never be offered as "the cloud copy" against a live device — that
+  // dialog would be inviting a rollback. The two adoption branches above still
+  // run, because a device with nothing to lose should recover from it. Here,
+  // where both sides hold trades, the blob has no say: the per-row pulls that
+  // follow merge the tables in, which is the real current state.
+  if(!AT_BLOB_WRITES){
+    atSetCloudSeen(row.updated_at);
+    atFlagConflict(false);
+    atSyncChip('☁ in sync','var(--green)');
+    return;
+  }
+
   const when=row.updated_at?new Date(row.updated_at).toLocaleString():'unknown';
   const useCloud=confirm(
     'The cloud copy and this device are different.\n\n'+
@@ -10962,10 +11013,10 @@ async function atReconcileBlob(){
 // Blob first, then per-row. Order matters: adopting a blob replaces state
 // wholesale, so pulling rows before it would have the merge thrown away.
 //
-// The blob is still a whole copy and still asks which side wins. The per-row
-// pull runs after whichever side was chosen and brings in anything the blob
-// did not carry, so a trade added on another device is no longer lost by
-// picking the wrong button.
+// Since the blob was retired it is read-only and only adopted by a device
+// that holds nothing — a fresh browser, or one that has never synced. Every
+// other case is settled by the per-row pulls below, which merge table by
+// table and keep an unsent local edit over the remote copy.
 async function atReconcile(){
   await atReconcileBlob();
   // Each pull is independent: one failing must not stop the others.
