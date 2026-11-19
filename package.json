@@ -1,5 +1,11 @@
 {
-  "dependencies": {
+  "name": "abundant-trader",
+  "private": true,
+  "description": "Abundant Trader AI — governed trading OS. The app is index.html; this file exists only for the test harness.",
+  "scripts": {
+    "test": "for f in tests/*.test.js; do echo \"— $(basename $f)\"; node \"$f\" || exit 1; done"
+  },
+  "devDependencies": {
     "jsdom": "^31.0.1"
   }
 }
