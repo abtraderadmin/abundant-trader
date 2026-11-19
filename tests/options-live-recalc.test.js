@@ -133,6 +133,62 @@ t('empty field leaves the readout blank',()=>{
   assert.strictEqual(g.points,10);   // Points still works without it
 });
 
+console.log('\nthe planning level is rounded to a strike you can actually buy');
+const strikeHint=()=>{const e=w.document.getElementById('o-strike-real');
+  return e.hidden?null:parseFloat(e.dataset.v);};
+[
+  // underlying, are, going -> exact planning level, nearest listed strike
+  {n:'$344 underlying uses $5 strikes', type:'PUT', are:350,going:305,stockPrice:344,exact:321.50,real:320},
+  {n:'$97 underlying uses $1 strikes',  type:'CALL',are:96, going:106,stockPrice:97, exact:102.00,real:102},
+  {n:'$14 underlying uses $0.50 strikes',type:'CALL',are:13,going:16, stockPrice:14, exact:15.50, real:15.5},
+  {n:'$39 underlying rounds 40.50 to 41',type:'CALL',are:39,going:42, stockPrice:39, exact:40.50, real:41},
+].forEach(r=>t(r.n,()=>{
+  const g=plan({...r,avgDay:5});
+  assert.strictEqual(g.strike,r.exact,'planning level moved');
+  assert.strictEqual(strikeHint(),r.real,'wrong listed strike');
+}));
+t('the exact level is never overwritten by the rounding',()=>{
+  const g=plan({type:'PUT',are:350,going:305,stockPrice:344,avgDay:6});
+  assert.strictEqual(g.strike,321.50);
+  assert.strictEqual(w.document.getElementById('o-strike-plan').value,'');
+});
+t('clicking fills Planned Strike, then the prompt goes away',()=>{
+  plan({type:'CALL',are:39,going:42,stockPrice:39,avgDay:5});
+  w.oUseStrikeReal();
+  assert.strictEqual(w.document.getElementById('o-strike-plan').value,'41');
+  assert.strictEqual(w.document.getElementById('o-strike-real').hidden,true);
+});
+
+console.log('\nreversed levels can be swapped, not silently corrected');
+t('the swap prompt appears only when the direction is wrong',()=>{
+  plan({type:'CALL',are:99,going:98,stockPrice:99,avgDay:1});
+  assert.strictEqual(w.document.getElementById('o-swap-levels').hidden,false);
+  plan({type:'CALL',are:98,going:99,stockPrice:98,avgDay:1});
+  assert.strictEqual(w.document.getElementById('o-swap-levels').hidden,true);
+});
+t('swapping fixes a backwards put without touching Stock Price',()=>{
+  plan({type:'PUT',are:8,going:15,stockPrice:8,avgDay:1});   // HOOD as entered
+  assert.strictEqual(read('oc-pts'),'check direction');
+  w.oSwapLevels();
+  assert.strictEqual(money(read('oc-pts')),3.5);
+  assert.strictEqual(money(read('oc-strike-calc')),4.50);
+  assert.strictEqual(w.document.getElementById('o-stock-price').value,'8');
+});
+
+console.log('\nAvg Moving Day is suggested, never written on its own');
+t('no ATR on file means no suggestion and no value',()=>{
+  plan({type:'CALL',are:100,going:120,stockPrice:100,avgDay:''});
+  assert.strictEqual(w.document.getElementById('o-avg-day-hint').hidden,true);
+  assert.strictEqual(w.document.getElementById('o-avg-day').value,'');
+});
+t('the field stays empty until the suggestion is clicked',()=>{
+  const h=w.document.getElementById('o-avg-day-hint');
+  h.hidden=false; h.dataset.v='3';
+  assert.strictEqual(w.document.getElementById('o-avg-day').value,'');
+  w.oUseAvgDayHint();
+  assert.strictEqual(w.document.getElementById('o-avg-day').value,'3');
+});
+
 console.log(fail?'\n'+fail+' failure(s)\n':'\nall checks passed\n');
 dom.window.close();
 process.exit(fail?1:0);

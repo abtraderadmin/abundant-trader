@@ -34,10 +34,17 @@ t('Stock Price is its own field, falling back to the level',()=>{
   assert(/id="o-stock-price"/.test(src),'no Stock Price input');
   assert(/gv\('o-stock-price'\) \|\| priceNow/.test(src),'no fallback to Where You Are');
 });
-t('it never overwrites the strike fields',()=>{
-  const m=src.match(/const strikeCalc[\s\S]{0,900}?oc-strike-calc[\s\S]{0,700}?\n  \}/);
-  assert(m,'planning-strike block not found');
-  assert(!/o-strike'\)\.value\s*=/.test(m[0]),'planning strike writes into an input');
+t('recalcO never writes the strike inputs',()=>{
+  // Only the click handler and the form reset may assign to them.
+  const body=src.slice(src.indexOf('function recalcO('),src.indexOf('function oUseAvgDayHint'));
+  [...body.matchAll(/getElementById\('(o-strike|o-strike-plan)'\)[\s\S]{0,120}?\.value\s*=/g)]
+    .forEach(m=>assert.fail('recalcO assigns to '+m[1]));
+});
+t('the rounded strike is a separate suggestion, not the level',()=>{
+  assert(/id="o-strike-real"/.test(src),'no rounded-strike element');
+  assert(/function oUseStrikeReal/.test(src),'no click handler');
+  assert(/Math\.round\(strikeCalc\/strikeStep\)\*strikeStep/.test(src),'no rounding');
+  assert(/strikePriceRounded:/.test(src),'rounded strike is not persisted');
 });
 
 console.log('\nTotal Avg Move -- the Access expression (4.3)');
@@ -70,9 +77,21 @@ t('weeks = TotalAvgMove / 5',()=>{
 
 console.log('\nAvg Moving Day is entered by hand');
 // Access type: Long Integer, DisplayControl Text Box -- NOT a calculated column.
-t('nothing derives it',()=>{
-  assert(!/pts\/atrVal|oPts\/atr/.test(src),'a derivation crept back in');
-  assert(!/atTouched/.test(src),'override plumbing left behind');
+t('nothing writes the field without a click',()=>{
+  // A suggestion is allowed; an autofill is not. The only assignment to
+  // o-avg-day outside a reset must be inside the click handler.
+  assert(!/atTouched/.test(src),'autofill override plumbing left behind');
+  const writes=[...src.matchAll(/getElementById\('o-avg-day'\)[\s\S]{0,120}?\.value\s*=/g)];
+  writes.forEach(m=>{
+    const ctx=src.slice(Math.max(0,m.index-420),m.index);
+    assert(/function oUseAvgDayHint/.test(ctx),'o-avg-day is written outside the click handler');
+  });
+  assert(!/set\('o-avg-day',\s*(?!''\))/.test(src),'ORE writes a value into o-avg-day');
+});
+t('the suggestion is offered, labelled, and separate from the field',()=>{
+  assert(/id="o-avg-day-hint"/.test(src),'no suggestion element');
+  assert(/function oUseAvgDayHint/.test(src),'no click handler');
+  assert(/hidden=true/.test(src)||/hintEl.hidden=true/.test(src),'suggestion never hides');
 });
 t('the EMA period no longer lands in it',()=>{
   assert(!/set\('o-avg-day',emaRef\)/.test(src),'ORE still writes the EMA period in');

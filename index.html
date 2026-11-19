@@ -991,11 +991,11 @@ body::before{
       <div class="fg"><label class="fl">Invalidation Level (underlying)</label><input class="fc mono" id="o-invalidation" type="number" step="0.01" placeholder="181.00" title="Underlying price where thesis is wrong — size from this, not from option premium alone" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Price Target (Where Going)<span class="req">*</span></label><input class="fc mono" id="o-price-target" type="number" step="0.01" placeholder="195.00" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Stock Price (for strike)</label><input class="fc mono" id="o-stock-price" type="number" step="0.01" placeholder="same as price now" title="The underlying price the strike is built from. Access keeps this separate from Where You Are: Points comes from the levels, the strike comes from this price. Leave blank to use Underlying Price Now." oninput="recalcO()"></div>
-      <div class="fg"><label class="fl">Avg Moving Day (days)</label><input class="fc mono" id="o-avg-day" type="number" step="1" placeholder="5" title="Avg Moving Day, as entered in the Access database (whole number). Feeds Total Avg Move and the weeks to expiry." oninput="recalcO()"></div>
+      <div class="fg"><label class="fl">Avg Moving Day (days)</label><input class="fc mono" id="o-avg-day" type="number" step="1" placeholder="5" title="Avg Moving Day, as entered in the Access database (whole number). Feeds Total Avg Move and the weeks to expiry." oninput="recalcO()"><div id="o-avg-day-hint" hidden style="margin-top:4px;font-size:11px;color:var(--blue);cursor:pointer;text-decoration:underline" onclick="oUseAvgDayHint()"></div></div>
       <div class="fg"><label class="fl">Total Avg Move (pts)</label><input class="fc mono" id="o-avg-move" type="number" step="0.01" placeholder="8.50" oninput="recalcO()"></div>
 
       <!-- Strike + Expiry -->
-      <div class="fg"><label class="fl">Planned Strike Price</label><input class="fc mono" id="o-strike-plan" type="number" step="0.5" placeholder="190.00" oninput="recalcO()"></div>
+      <div class="fg"><label class="fl">Planned Strike Price</label><input class="fc mono" id="o-strike-plan" type="number" step="0.5" placeholder="190.00" title="The strike you intend to trade. The Planning Strike readout is the calculated level; this is the listed contract nearest it." oninput="recalcO()"><div id="o-strike-real" hidden style="margin-top:4px;font-size:11px;color:var(--blue);cursor:pointer;text-decoration:underline" onclick="oUseStrikeReal()"></div></div>
       <div class="fg"><label class="fl">Strike Price Bought<span class="req">*</span></label><input class="fc mono" id="o-strike" type="number" step="0.5" placeholder="190.00" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Expiry Date<span class="req">*</span></label><input class="fc" id="o-expiry" type="date" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Weeks to Expiry</label><input class="fc mono" id="o-weeks" type="number" step="0.5" placeholder="auto" readonly style="opacity:.7" title="Auto-calculated from expiry date"></div>
@@ -1066,7 +1066,7 @@ body::before{
 
     <!-- Live Calcs -->
     <div class="calc-grid">
-      <div class="ci" title="Points = half the distance from the underlying now to the target (Calculation Registry 4.1)."><div class="cl">Points (half move)</div><div class="cv gold" id="oc-pts">—</div></div>
+      <div class="ci" title="Points = half the distance from the underlying now to the target (Calculation Registry 4.1)."><div class="cl">Points (half move)</div><div class="cv gold" id="oc-pts">—</div><div id="o-swap-levels" hidden style="margin-top:4px;font-size:11px;color:var(--blue);cursor:pointer;text-decoration:underline" onclick="oSwapLevels()">swap the levels</div></div>
       <div class="ci" title="Planning strike = underlying now + Points for a call, − Points for a put. The halfway strike (Calculation Registry 4.2)."><div class="cl">Planning Strike</div><div class="cv gold" id="oc-strike-calc">—</div></div>
       <div class="ci" title="Total Avg Move = Avg Moving Day / 2 + 5, or Avg Moving Day + 5 when the planning strike is under $20. Contract in Weeks = that / 5. Options module only — SPY Day uses its own 0DTE rules."><div class="cl">Total Avg Move · weeks</div><div class="cv blue" id="oc-tam">—</div></div>
       <div class="ci"><div class="cl">Gross Cost</div><div class="cv" id="oc-gross-cost">—</div></div>
@@ -2783,6 +2783,18 @@ function setOptType(t){
   document.getElementById('o-type-put').classList.toggle('al',t==='PUT');
   recalcO();
 }
+function oUseAvgDayHint(){
+  const h=document.getElementById('o-avg-day-hint'), f=document.getElementById('o-avg-day');
+  if(h&&f&&h.dataset.v){ f.value=h.dataset.v; recalcO(); }
+}
+function oUseStrikeReal(){
+  const h=document.getElementById('o-strike-real'), f=document.getElementById('o-strike-plan');
+  if(h&&f&&h.dataset.v){ f.value=h.dataset.v; recalcO(); }
+}
+function oSwapLevels(){
+  const a=document.getElementById('o-price-now'), b=document.getElementById('o-price-target');
+  if(a&&b){ const t=a.value; a.value=b.value; b.value=t; recalcO(); }
+}
 function setODir(d){
   state.oDir=d;
   document.getElementById('o-dir-bull').classList.toggle('al',d==='BULLISH');
@@ -2823,6 +2835,8 @@ function recalcO(){
   // out backwards. Strike Price has no such gate. The $20 test is a defect in
   // the source expression, not a rule, so it is deliberately not reproduced.
   const pts = signedPts > 0 ? signedPts : 0;
+  const swapEl = document.getElementById('o-swap-levels');
+  if(swapEl) swapEl.hidden = !(priceNow && priceTgt && signedPts < 0);
   const ptsEl = document.getElementById('oc-pts');
   if(!priceNow || !priceTgt){ ptsEl.textContent='—'; ptsEl.title=''; ptsEl.style.color=''; }
   else if(signedPts <= 0){
@@ -2842,6 +2856,25 @@ function recalcO(){
   // differ from the level. Blank falls back to the level. Readout only.
   const stockPrice = gv('o-stock-price') || priceNow;
   const strikeCalc = pts ? parseFloat((isPut ? stockPrice - pts : stockPrice + pts).toFixed(2)) : 0;
+  // The planning strike is a level, not a listed contract. Access keeps
+  // "Strike Price" (calculated) and "Strike Price Brought" (what was actually
+  // traded) apart for this reason. Round to the nearest standard increment so
+  // there is a real strike to buy, offered as a click -- never written on its
+  // own, and the exact level above is left alone.
+  const strikeStep = !stockPrice ? 0 : (stockPrice < 25 ? 0.5 : (stockPrice < 200 ? 1 : 5));
+  const strikeReal = (strikeCalc && strikeStep)
+    ? parseFloat((Math.round(strikeCalc/strikeStep)*strikeStep).toFixed(2)) : 0;
+  const srEl = document.getElementById('o-strike-real');
+  if(srEl){
+    const already = gv('o-strike-plan');
+    if(strikeReal && already !== strikeReal){
+      srEl.hidden=false;
+      srEl.dataset.v=String(strikeReal);
+      srEl.textContent='use $'+strikeReal.toFixed(2)+(strikeReal!==strikeCalc?(' — nearest $'+strikeStep+' strike'):' strike');
+      srEl.title='Planning level $'+fmt(strikeCalc,2)+' rounded to the nearest $'+strikeStep
+        +' strike. Standard increments for a $'+fmt(stockPrice,2)+' underlying; check the chain, some names list finer strikes.';
+    } else { srEl.hidden=true; }
+  }
   const scEl = document.getElementById('oc-strike-calc');
   if(scEl){
     scEl.textContent = strikeCalc ? '$'+strikeCalc.toFixed(2) : '—';
@@ -2899,6 +2932,22 @@ function recalcO(){
   //
   // TotalAvgMove uses AvgMovingDay / 2 + 5, which reproduces 7 of the 8 worked
   // examples in the registry. The written "+ 4.5" reproduces 1 of 8.
+  // Avg Moving Day suggestion. There is no formula for this field in the
+  // Access database -- it is typed in, and nothing in the twenty historical
+  // rows predicts it (it tracks neither Points, price, nor the EMA periods).
+  // So this is an aid, not a recovered rule: the trading days the underlying
+  // needs to cover Points at its recent average daily range. Offered as a
+  // click, never written on its own.
+  const hintEl = document.getElementById('o-avg-day-hint');
+  if(hintEl){
+    const sugg = (pts && atrVal) ? Math.max(1,Math.round(pts/atrVal)) : null;
+    if(sugg){
+      hintEl.hidden=false;
+      hintEl.dataset.v=String(sugg);
+      hintEl.textContent='use '+sugg+' day'+(sugg===1?'':'s')+' — Points $'+fmt(pts,2)+' ÷ ATR $'+fmt(atrVal,2);
+      hintEl.title='A suggestion, not your Access formula: how long the move takes at the recent average daily range. Your own entries were judgement calls and did not follow this.';
+    } else { hintEl.hidden=true; }
+  }
   const avgDay = gv('o-avg-day');
   // Access: IIf([Strike Price]<20, [Avg Moving Day]+5, ([Avg Moving Day]/2)+5)
   // [Strike Price] is the CALCULATED planning strike, not the strike bought.
@@ -3075,6 +3124,7 @@ function saveOTrade(){
     // checked against the method after the fact. The fields above stay as the
     // trader typed them.
     strikePriceCalc:strikeCalc||null,
+    strikePriceRounded:strikeReal||null,
     totalAvgMoveDays:tam||null,
     contractInWeeksCalc:ciw||null,
     atrAtPlan:atrVal||null,
