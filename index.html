@@ -990,11 +990,12 @@ body::before{
       <div class="fg"><label class="fl">Underlying Price Now<span class="req">*</span></label><input class="fc mono" id="o-price-now" type="number" step="0.01" placeholder="185.00" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Invalidation Level (underlying)</label><input class="fc mono" id="o-invalidation" type="number" step="0.01" placeholder="181.00" title="Underlying price where thesis is wrong — size from this, not from option premium alone" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Price Target (Where Going)<span class="req">*</span></label><input class="fc mono" id="o-price-target" type="number" step="0.01" placeholder="195.00" oninput="recalcO()"></div>
-      <div class="fg"><label class="fl">Avg Moving Day (EMA ref)</label><input class="fc mono" id="o-avg-day" type="number" step="1" placeholder="9" title="Which EMA period guides strike selection"></div>
+      <div class="fg"><label class="fl">Stock Price (for strike)</label><input class="fc mono" id="o-stock-price" type="number" step="0.01" placeholder="same as price now" title="The underlying price the strike is built from. Access keeps this separate from Where You Are: Points comes from the levels, the strike comes from this price. Leave blank to use Underlying Price Now." oninput="recalcO()"></div>
+      <div class="fg"><label class="fl">Avg Moving Day (days)</label><input class="fc mono" id="o-avg-day" type="number" step="1" placeholder="5" title="Avg Moving Day, as entered in the Access database (whole number). Feeds Total Avg Move and the weeks to expiry." oninput="recalcO()"><div id="o-avg-day-hint" hidden style="margin-top:4px;font-size:11px;color:var(--blue);cursor:pointer;text-decoration:underline" onclick="oUseAvgDayHint()"></div></div>
       <div class="fg"><label class="fl">Total Avg Move (pts)</label><input class="fc mono" id="o-avg-move" type="number" step="0.01" placeholder="8.50" oninput="recalcO()"></div>
 
       <!-- Strike + Expiry -->
-      <div class="fg"><label class="fl">Planned Strike Price</label><input class="fc mono" id="o-strike-plan" type="number" step="0.5" placeholder="190.00" oninput="recalcO()"></div>
+      <div class="fg"><label class="fl">Planned Strike Price</label><input class="fc mono" id="o-strike-plan" type="number" step="0.5" placeholder="190.00" title="The strike you intend to trade. The Planning Strike readout is the calculated level; this is the listed contract nearest it." oninput="recalcO()"><div id="o-strike-real" hidden style="margin-top:4px;font-size:11px;color:var(--blue);cursor:pointer;text-decoration:underline" onclick="oUseStrikeReal()"></div></div>
       <div class="fg"><label class="fl">Strike Price Bought<span class="req">*</span></label><input class="fc mono" id="o-strike" type="number" step="0.5" placeholder="190.00" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Expiry Date<span class="req">*</span></label><input class="fc" id="o-expiry" type="date" oninput="recalcO()"></div>
       <div class="fg"><label class="fl">Weeks to Expiry</label><input class="fc mono" id="o-weeks" type="number" step="0.5" placeholder="auto" readonly style="opacity:.7" title="Auto-calculated from expiry date"></div>
@@ -1065,7 +1066,9 @@ body::before{
 
     <!-- Live Calcs -->
     <div class="calc-grid">
-      <div class="ci"><div class="cl">Expected Move</div><div class="cv gold" id="oc-pts">—</div></div>
+      <div class="ci" title="Points = half the distance from the underlying now to the target (Calculation Registry 4.1)."><div class="cl">Points (half move)</div><div class="cv gold" id="oc-pts">—</div><div id="o-swap-levels" hidden style="margin-top:4px;font-size:11px;color:var(--blue);cursor:pointer;text-decoration:underline" onclick="oSwapLevels()">swap the levels</div></div>
+      <div class="ci" title="Planning strike = underlying now + Points for a call, − Points for a put. The halfway strike (Calculation Registry 4.2)."><div class="cl">Planning Strike</div><div class="cv gold" id="oc-strike-calc">—</div></div>
+      <div class="ci" title="Total Avg Move = Avg Moving Day / 2 + 5, or Avg Moving Day + 5 when the planning strike is under $20. Contract in Weeks = that / 5. Options module only — SPY Day uses its own 0DTE rules."><div class="cl">Total Avg Move · weeks</div><div class="cv blue" id="oc-tam">—</div></div>
       <div class="ci"><div class="cl">Gross Cost</div><div class="cv" id="oc-gross-cost">—</div></div>
       <div class="ci"><div class="cl">Net Total Cost</div><div class="cv red" id="oc-net-cost">—</div></div>
       <div class="ci"><div class="cl">Risk : Reward</div><div class="cv" id="oc-rr">—</div></div>
@@ -1079,6 +1082,30 @@ body::before{
     </div>
 
     <!-- Liquidity Warning -->
+    <!-- Contract Planner: how far out to buy, and does the target clear breakeven -->
+    <div id="oPlanner" hidden style="margin:8px 0;padding:10px 12px;background:var(--card,#141821);border:1px solid var(--line,#283043);border-radius:8px;font-size:12px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+        <strong style="font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted,#8b94a7)">Contract Planner</strong>
+        <span id="op-move" class="mono" style="color:var(--muted,#8b94a7)"></span>
+      </div>
+      <table style="width:100%;border-collapse:collapse" class="mono">
+        <tr style="color:var(--muted,#8b94a7);font-size:11px">
+          <td style="padding:2px 6px 2px 0">regime</td><td>trending</td><td>normal</td><td>choppy</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 6px 2px 0;color:var(--muted,#8b94a7);font-size:11px">days to target</td>
+          <td id="op-d-trend">—</td><td id="op-d-norm">—</td><td id="op-d-chop">—</td>
+        </tr>
+        <tr>
+          <td style="padding:2px 6px 2px 0;color:var(--muted,#8b94a7);font-size:11px">buy out to</td>
+          <td id="op-w-trend" class="blue">—</td><td id="op-w-norm" class="blue">—</td><td id="op-w-chop" class="blue">—</td>
+        </tr>
+      </table>
+      <div id="op-exp" style="margin-top:8px;color:var(--muted,#8b94a7)"></div>
+      <div id="op-money" style="margin-top:6px"></div>
+      <div id="op-be" style="margin-top:6px"></div>
+    </div>
+
     <div id="oLiqWarn" hidden style="margin:8px 0;padding:8px 12px;background:var(--gold-bg);border:1px solid var(--gold);border-radius:6px;font-size:12px;color:var(--gold)"></div>
 
     <!-- 1/3 Scaling Plan -->
@@ -2342,6 +2369,15 @@ body::before{
       </div>
     </div>
     <div class="cfg-card">
+      <div class="cfg-hd" style="color:var(--blue)">🗄 Database vs. this device <span style="font-size:11px;color:var(--fg3);font-weight:400">— run before retiring the JSON blob</span></div>
+      <div class="cfg-body">
+        <div class="cfg-sub" style="margin-bottom:10px">Everything still saves to a single JSON blob as well as to its own table. The blob is the safety net, and it stays until this check is clean: each collection here is counted on this device and in the database.</div>
+        <button class="cfg-btn" onclick="atRetireCheckUI()">Run the check</button>
+        <div id="at-retire-report" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div class="cfg-card">
       <div class="cfg-hd" style="color:var(--green)">💾 Backup &amp; Restore <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">full app state</span></div>
       <div class="cfg-body">
         <div class="cfg-sub" style="margin-bottom:10px">A full backup captures <strong>everything</strong> — all trades (futures, stock, options, SPY Day, Swing), ORE watchlist &amp; discoveries, Class Trade Analysis decisions and notes, SPY/XSP transaction history, withdrawals, and every setting on this screen.</div>
@@ -2780,6 +2816,18 @@ function setOptType(t){
   document.getElementById('o-type-put').classList.toggle('al',t==='PUT');
   recalcO();
 }
+function oUseAvgDayHint(){
+  const h=document.getElementById('o-avg-day-hint'), f=document.getElementById('o-avg-day');
+  if(h&&f&&h.dataset.v){ f.value=h.dataset.v; recalcO(); }
+}
+function oUseStrikeReal(){
+  const h=document.getElementById('o-strike-real'), f=document.getElementById('o-strike-plan');
+  if(h&&f&&h.dataset.v){ f.value=h.dataset.v; recalcO(); }
+}
+function oSwapLevels(){
+  const a=document.getElementById('o-price-now'), b=document.getElementById('o-price-target');
+  if(a&&b){ const t=a.value; a.value=b.value; b.value=t; recalcO(); }
+}
 function setODir(d){
   state.oDir=d;
   document.getElementById('o-dir-bull').classList.toggle('al',d==='BULLISH');
@@ -2806,9 +2854,70 @@ function recalcO(){
   const oi         = gv('o-oi');
   const spread     = gv('o-spread');
 
-  // Expected move / Points
-  const pts = priceNow && priceTgt ? Math.abs(priceTgt - priceNow) : (avgMove || 0);
-  document.getElementById('oc-pts').textContent = pts ? '$'+pts.toFixed(2) : '—';
+  // Points / planning strike — Calculation Registry 4.1-4.2.
+  // Points is HALF the distance to the target, so the planning strike lands
+  // midway between the underlying now and the target: the halfway strike the
+  // AT class method uses. Direction-aware, and a negative value means the
+  // target contradicts the option type, which is flagged rather than hidden.
+  const isPut = state.oOptType === 'PUT';
+  const signedPts = priceNow && priceTgt
+    ? (isPut ? (priceNow - priceTgt) : (priceTgt - priceNow)) / 2
+    : 0;
+  // Access gates the Put branch on "And [Stock Price]>20", so a put under $20
+  // -- or with Stock Price blank -- falls through to the Call form and comes
+  // out backwards. Strike Price has no such gate. The $20 test is a defect in
+  // the source expression, not a rule, so it is deliberately not reproduced.
+  const pts = signedPts > 0 ? signedPts : 0;
+  const swapEl = document.getElementById('o-swap-levels');
+  if(swapEl) swapEl.hidden = !(priceNow && priceTgt && signedPts < 0);
+  const ptsEl = document.getElementById('oc-pts');
+  if(!priceNow || !priceTgt){ ptsEl.textContent='—'; ptsEl.title=''; ptsEl.style.color=''; }
+  else if(signedPts <= 0){
+    ptsEl.textContent='check direction';
+    ptsEl.style.color='var(--red)';
+    ptsEl.title='Target $'+fmt(priceTgt,2)+' is on the wrong side of $'+fmt(priceNow,2)
+      +' for a '+(isPut?'PUT':'CALL')+'. Points would be '+fmt(signedPts,2)+'.';
+  } else {
+    ptsEl.textContent='$'+pts.toFixed(2);
+    ptsEl.style.color='';
+    ptsEl.title='Half of the $'+fmt(Math.abs(priceTgt-priceNow),2)+' move to target.';
+  }
+
+  // Planning strike = Stock Price ± Points (Access: [Stock Price]±[Points]).
+  // Points above comes from Where You Are / Where You Are Going; the strike is
+  // built from Stock Price, which Access keeps as its own field and which can
+  // differ from the level. Blank falls back to the level. Readout only.
+  const stockPrice = gv('o-stock-price') || priceNow;
+  const strikeCalc = pts ? parseFloat((isPut ? stockPrice - pts : stockPrice + pts).toFixed(2)) : 0;
+  // The planning strike is a level, not a listed contract. Access keeps
+  // "Strike Price" (calculated) and "Strike Price Brought" (what was actually
+  // traded) apart for this reason. Round to the nearest standard increment so
+  // there is a real strike to buy, offered as a click -- never written on its
+  // own, and the exact level above is left alone.
+  const strikeStep = !stockPrice ? 0 : (stockPrice < 25 ? 0.5 : (stockPrice < 200 ? 1 : 5));
+  const strikeReal = (strikeCalc && strikeStep)
+    ? parseFloat((Math.round(strikeCalc/strikeStep)*strikeStep).toFixed(2)) : 0;
+  const srEl = document.getElementById('o-strike-real');
+  if(srEl){
+    const already = gv('o-strike-plan');
+    if(strikeReal && already !== strikeReal){
+      srEl.hidden=false;
+      srEl.dataset.v=String(strikeReal);
+      srEl.textContent='use $'+strikeReal.toFixed(2)+(strikeReal!==strikeCalc?(' — nearest $'+strikeStep+' strike'):' strike');
+      srEl.title='Planning level $'+fmt(strikeCalc,2)+' rounded to the nearest $'+strikeStep
+        +' strike. Standard increments for a $'+fmt(stockPrice,2)+' underlying; check the chain, some names list finer strikes.';
+    } else { srEl.hidden=true; }
+  }
+  const scEl = document.getElementById('oc-strike-calc');
+  if(scEl){
+    scEl.textContent = strikeCalc ? '$'+strikeCalc.toFixed(2) : '—';
+    scEl.title = strikeCalc
+      ? ('Stock price $'+fmt(stockPrice,2)+(isPut?' − ':' + ')+'Points $'+fmt(pts,2)
+         +' = $'+fmt(strikeCalc,2)+'. Points is half the $'+fmt(Math.abs(priceTgt-priceNow),2)
+         +' move from $'+fmt(priceNow,2)+' to $'+fmt(priceTgt,2)
+         +'. Planning level — the strike actually bought is its own field.')
+      : '';
+  }
 
   // Gross cost = cost × 100 × contracts
   const gross = cost * 100 * contracts;
@@ -2822,6 +2931,7 @@ function recalcO(){
   // ATR for the ticker being planned. state.ore holds one ticker at a time,
   // so this reads the per-ticker levels cache and works even when the last
   // analysis was something else. Reference only -- it changes no input.
+  let atrVal=null;
   try{
     const atrEl=document.getElementById('oc-atr');
     if(atrEl){
@@ -2829,6 +2939,7 @@ function recalcO(){
       const a=(typeof atAtrFor==='function')?atAtrFor(tk):null;
       if(!a){atrEl.textContent='—'; atrEl.title='No analysis on file for this ticker yet.';}
       else{
+        atrVal=a.atr;
         const ex=document.getElementById('o-expiry');
         const days=ex&&ex.value
           ? Math.max(1,Math.round((new Date(ex.value+' 00:00:00')-new Date())/86400000))
@@ -2843,6 +2954,124 @@ function recalcO(){
       }
     }
   }catch(e){}
+
+  // Avg Moving Day / Total Avg Move / Contract in Weeks — Calculation Registry 4.3-4.4.
+  //
+  // AvgMovingDay is a DAY COUNT: how long the underlying needs to cover Points
+  // at its average daily range. ContractInWeeks = TotalAvgMove / 5 only divides
+  // out to weeks if TotalAvgMove is in trading days, which fixes the unit.
+  // Points / ATR(14) is the only derivation that yields days, and it is why the
+  // Access database needed ATR. Auto-filled, and editable — typing over it wins.
+  //
+  // TotalAvgMove uses AvgMovingDay / 2 + 5, which reproduces 7 of the 8 worked
+  // examples in the registry. The written "+ 4.5" reproduces 1 of 8.
+  // Avg Moving Day suggestion. There is no formula for this field in the
+  // Access database -- it is typed in, and nothing in the twenty historical
+  // rows predicts it (it tracks neither Points, price, nor the EMA periods).
+  // So this is an aid, not a recovered rule: the trading days the underlying
+  // needs to cover Points at its recent average daily range. Offered as a
+  // click, never written on its own.
+  const hintEl = document.getElementById('o-avg-day-hint');
+  if(hintEl){
+    const sugg = (pts && atrVal) ? Math.max(1,Math.round(pts/atrVal)) : null;
+    if(sugg){
+      hintEl.hidden=false;
+      hintEl.dataset.v=String(sugg);
+      hintEl.textContent='use '+sugg+' day'+(sugg===1?'':'s')+' — Points $'+fmt(pts,2)+' ÷ ATR $'+fmt(atrVal,2);
+      hintEl.title='A suggestion, not your Access formula: how long the move takes at the recent average daily range. Your own entries were judgement calls and did not follow this.';
+    } else { hintEl.hidden=true; }
+  }
+  const avgDay = gv('o-avg-day');
+  // Access: IIf([Strike Price]<20, [Avg Moving Day]+5, ([Avg Moving Day]/2)+5)
+  // [Strike Price] is the CALCULATED planning strike, not the strike bought.
+  // A blank strike is Null in Access, and IIf(Null,...) takes the false branch,
+  // so only a strike that is actually priced and under $20 halves nothing.
+  const lowStrike = strikeCalc > 0 && strikeCalc < 20;
+  const tam    = avgDay ? parseFloat(((lowStrike ? avgDay : avgDay/2) + 5).toFixed(2)) : 0;
+  const ciw    = tam ? parseFloat((tam/5).toFixed(2)) : 0;
+  const tamEl  = document.getElementById('oc-tam');
+  if(tamEl){
+    tamEl.textContent = tam ? (fmt(tam,1)+' · '+fmt(ciw,1)+'w') : '—';
+    tamEl.title = tam
+      ? ('Avg Moving Day '+fmt(avgDay,0)+' → '
+         +(lowStrike
+            ? ('strike $'+fmt(strikeCalc,2)+' is under $20, so Avg Moving Day + 5')
+            : 'Avg Moving Day / 2 + 5')
+         +' = '+fmt(tam,1)+' → '+fmt(ciw,1)+' weeks to expiry.')
+      : 'Enter Avg Moving Day.';
+  }
+
+  // ---- Contract Planner -------------------------------------------------
+  // The move expressed in ATR units drives everything. Price does not travel
+  // in a straight line, so M/ATR is the optimistic case and a pure random walk
+  // takes (M/ATR)^2. Real moves sit between, and which end depends on regime,
+  // so all three are shown rather than one being chosen for the trader.
+  //   expected trading days = N^p,  p = 1.3 trending / 1.6 normal / 2.0 choppy
+  //   DTE = 1.4 * (2 * expected) + 21
+  //         ^ trading->calendar   ^ never hold into the last three weeks
+  (function(){
+    const box=document.getElementById('oPlanner'); if(!box) return;
+    const move = (priceNow&&priceTgt) ? Math.abs(priceTgt-priceNow) : 0;
+    if(!move || !atrVal || signedPts<=0){
+      box.hidden=true; return;
+    }
+    box.hidden=false;
+    const N = move/atrVal;
+    const tdays = p => Math.max(1, Math.pow(N,p));
+    const dte   = d => Math.ceil(1.4*(2*d) + 21);
+    const wk    = d => (dte(d)/7);
+    const set=(id,v)=>{const e=document.getElementById(id); if(e)e.textContent=v;};
+
+    set('op-move','$'+fmt(move,2)+' move · '+fmt(N,1)+'× ATR $'+fmt(atrVal,2));
+    [['trend',1.3],['norm',1.6],['chop',2.0]].forEach(([k,p])=>{
+      const d=tdays(p);
+      set('op-d-'+k, fmt(d,0)+'d');
+      set('op-w-'+k, fmt(wk(d),0)+'w');
+    });
+
+    // Turn the middle case into a date the trader can look for on the chain.
+    const target=new Date(Date.now()+dte(tdays(1.6))*86400000);
+    const expEl=document.getElementById('o-expiry');
+    const chosen=expEl&&expEl.value?new Date(expEl.value+' 00:00:00'):null;
+    const iso=target.toISOString().slice(0,10);
+    let line='Normal regime points at <strong>'+iso+'</strong> or later.';
+    if(chosen){
+      const haveDays=Math.round((chosen-new Date())/86400000);
+      const needDays=dte(tdays(1.6));
+      line += haveDays>=needDays
+        ? ' Your '+expEl.value+' gives '+haveDays+' days — enough.'
+        : ' <span style="color:var(--gold)">Your '+expEl.value+' gives only '
+          +haveDays+' days; '+needDays+' is the normal-regime read.</span>';
+    }
+    document.getElementById('op-exp').innerHTML=line;
+
+    // Moneyness of the planning strike.
+    const mnEl=document.getElementById('op-money');
+    if(strikeCalc&&stockPrice){
+      const pct=(strikeCalc-stockPrice)/stockPrice*100;
+      const otm=isPut ? pct<0 : pct>0;
+      const mag=Math.abs(pct);
+      const word=mag<0.75?'at the money':(otm?'out of the money':'in the money');
+      const warn=otm&&mag>10;
+      mnEl.innerHTML='Strike $'+fmt(strikeCalc,2)+' is <strong>'+fmt(mag,1)+'% '+word+'</strong>'
+        +(warn?' <span style="color:var(--gold)">— that far OTM needs the full move just to break even</span>':'');
+    } else mnEl.textContent='';
+
+    // Breakeven gate. Without clearing it the trade cannot win on a correct call.
+    const beEl=document.getElementById('op-be');
+    const strikeUse = gv('o-strike') || gv('o-strike-plan') || strikeCalc;
+    if(strikeUse && cost){
+      const be = isPut ? strikeUse-cost : strikeUse+cost;
+      const clears = isPut ? (priceTgt < be) : (priceTgt > be);
+      const by = Math.abs(priceTgt-be);
+      const span = Math.abs(priceTgt-priceNow)||1;
+      beEl.innerHTML = clears
+        ? 'Breakeven <strong>$'+fmt(be,2)+'</strong> — target clears it by $'+fmt(by,2)
+          +' ('+fmt(by/span*100,0)+'% of the move is profit)'
+        : '<span style="color:var(--red)">Breakeven <strong>$'+fmt(be,2)
+          +'</strong> — the target does not reach it. This cannot win even if the direction is right.</span>';
+    } else beEl.innerHTML='<span style="color:var(--muted,#8b94a7)">Add the premium to see breakeven.</span>';
+  })();
 
   // Weeks to expiry
   let weeks = 0;
@@ -2989,12 +3218,21 @@ function saveOTrade(){
     regime:gs('o-regime'),
     setup:gs('o-setup'),
     priceNow:gv('o-price-now'),
+    stockPrice:gv('o-stock-price')||gv('o-price-now'),
     priceTarget:gv('o-price-target'),
     points:pts,
     strikePrice:gv('o-strike'),
     strikePricePlanned:gv('o-strike-plan'),
     avgMovingDay:gv('o-avg-day'),
     totalAvgMove:gv('o-avg-move'),
+    // Registry 4.2-4.4 values, kept beside the entered ones so a plan can be
+    // checked against the method after the fact. The fields above stay as the
+    // trader typed them.
+    strikePriceCalc:strikeCalc||null,
+    strikePriceRounded:strikeReal||null,
+    totalAvgMoveDays:tam||null,
+    contractInWeeksCalc:ciw||null,
+    atrAtPlan:atrVal||null,
     expiryDate:expiry,
     contractInWeeks:parseFloat(weeks),
     contractsBought:contracts,
@@ -3040,7 +3278,7 @@ function saveOTrade(){
 
 function clearOForm(){
   ['o-ticker','o-account','o-regime','o-setup','o-style','o-catalyst','o-emotion','o-grade','o-rules'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
-  ['o-price-now','o-price-target','o-avg-move','o-avg-day','o-strike','o-strike-plan','o-cost','o-commission','o-iv','o-delta','o-spread','o-volume','o-oi','o-stop','o-t1','o-exit','o-commission-actual'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  ['o-price-now','o-stock-price','o-price-target','o-avg-move','o-avg-day','o-strike','o-strike-plan','o-cost','o-commission','o-iv','o-delta','o-spread','o-volume','o-oi','o-stop','o-t1','o-exit','o-commission-actual'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   document.getElementById('o-contracts').value='1';
   document.getElementById('o-commission').value='0';
   document.getElementById('o-expiry').value='';
@@ -4724,7 +4962,14 @@ function parseEtradeTransactions(text){
     rows.push({date,actType,desc,sym,underlying,optType,strike,expiry,qty,price,amount,comm});
   }
   if(!rows.length)return null;
-  // Group by date
+  return atTxnRecord(acctName,dateRange,rows);
+}
+
+// Grouping and totals for a transaction account. Shared by the CSV parser and
+// by the database pull, so a record rebuilt from `transactions` is identical
+// to one built from the original export -- the day buckets, the per-day
+// counters and every aggregate come from this one place.
+function atTxnRecord(acctName,dateRange,rows){
   const byDate={};
   for(const r of rows){
     if(!byDate[r.date])byDate[r.date]={date:r.date,trades:[],netPnl:0,commission:0,spyCount:0,xspCount:0,qqCount:0};
@@ -8067,9 +8312,13 @@ function orePromoteToOptions(){
     set('o-regime',oreOptRegime(o,cond));
     if(setup)set('o-setup',setup);
     set('o-price-now',entry);
+    set('o-stock-price','');   // defaults to the level unless the trader splits them
     set('o-invalidation',invalid);
     set('o-price-target',target||'');
-    set('o-avg-day',emaRef);
+    // Avg Moving Day is entered by hand in the Access database -- it is a plain
+    // Long Integer, not a calculated column. It is left blank rather than
+    // guessed. The EMA reference appears in the thesis text below.
+    set('o-avg-day','');
     set('o-avg-move',swing);
     set('o-strike-plan',strike);
     set('o-strike',strike);
@@ -10721,6 +10970,7 @@ async function atReconcile(){
   await atReconcileBlob();
   // Each pull is independent: one failing must not stop the others.
   var pulls=[['trades',atPullTrades],['withdrawals',atPullWithdrawals],
+             ['holdings',atPullHoldings],['transactions',atPullTransactions],
              ['opportunities',atPullOpportunities],['archer',atPullArcherSignals],
              ['class sessions',atPullClassSessions],['class analysis',atPullClassAnalysis]];
   for(var i=0;i<pulls.length;i++){
@@ -13966,7 +14216,10 @@ async function atPushHoldings(){
       cash:atNum(rec.cash),
       // as_of can be null when the broker's string will not parse, so the
       // original is kept verbatim rather than lost.
-      summary:Object.assign({},rec.summary||{},{as_of_text:rec.ts||null}),
+      // accountType and the raw timestamp live nowhere else, so they ride in
+      // the summary jsonb rather than needing a column of their own.
+      summary:Object.assign({},rec.summary||{},{as_of_text:rec.ts||null,
+                            at_account_type:rec.accountType||'cash'}),
       as_of:asOf,
       deleted:false, updated_at:new Date().toISOString()
     });
@@ -14176,6 +14429,184 @@ async function atPullWithdrawals(){
   });
 }
 
+// ── holdings and transactions: the last two write-only mirrors ──────────
+// Both are objects keyed by account name holding nested records, so each is
+// pulled as a flat array through the array engine and then regrouped. The
+// regrouping is the inverse of the push, field for field, so what comes back
+// renders and totals exactly as what went out.
+
+// ── Pre-retirement check ────────────────────────────────────────────────
+// The blob is the safety net. It is not switched off on a promise that the
+// tables are complete -- it is switched off after this report says so, for
+// every mirrored collection, with the numbers visible. Each line compares
+// what is loaded in memory against what the table actually holds.
+const AT_RETIRE_CHECKS=[
+  {label:'trades',            table:'trades',
+   local:function(){return (state.trades||[]).length;}},
+  {label:'withdrawals',       table:'withdrawals',
+   local:function(){return (state.withdrawals||[]).length;}},
+  {label:'holdings',          table:'holdings',
+   local:function(){return Object.keys(state.stockHoldings||{})
+     .reduce(function(n,k){return n+(((state.stockHoldings[k]||{}).positions)||[]).length;},0);}},
+  {label:'holding snapshots', table:'holding_snapshots',
+   local:function(){return Object.keys(state.stockHoldings||{}).length;}},
+  {label:'transactions',      table:'transactions',
+   local:function(){return Object.keys(state.transactionHistory||{})
+     .reduce(function(n,k){var d=((state.transactionHistory[k]||{}).days)||[];
+       return n+d.reduce(function(m,x){return m+((x.trades||[]).length);},0);},0);}},
+  {label:'opportunities',     table:'opportunities',
+   local:function(){return (state.discoveries||[]).length;}},
+  {label:'archer signals',    table:'archer_signals',
+   local:function(){return (state.archerWatchlist||[]).length+(state.archerRejects||[]).length;}},
+  {label:'class sessions',    table:'class_sessions',
+   local:function(){return (state.classSessions||[]).length;}},
+  {label:'class analysis',    table:'class_analysis',
+   local:function(){return Object.keys(state.classAnalysis||{}).length;}},
+  {label:'accounts',          table:'accounts',
+   local:function(){return null;}}   // derived; counted for information only
+];
+
+async function atRetireReport(){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser)return {ok:false,reason:'not signed in',lines:[]};
+  var lines=[];
+  for(var i=0;i<AT_RETIRE_CHECKS.length;i++){
+    var chk=AT_RETIRE_CHECKS[i], remote=null, err=null;
+    try{
+      var res=await c.from(chk.table).select('id',{count:'exact',head:true})
+                     .eq('user_id',atUser.id).eq('deleted',false);
+      if(res.error)err=res.error.message; else remote=res.count;
+    }catch(e){err=String(e&&e.message||e);}
+    var local=null;
+    try{local=chk.local();}catch(e){err=err||String(e&&e.message||e);}
+    var info=(local===null);
+    lines.push({
+      label:chk.label, local:local, remote:remote, error:err, info:info,
+      ok: info ? true : (!err && remote!==null && remote>=local)
+    });
+  }
+  var bad=lines.filter(function(l){return !l.ok;});
+  return {ok:bad.length===0, lines:lines, failed:bad.length};
+}
+
+// Shown before anything is switched off. Nothing here changes data.
+async function atRetireCheckUI(){
+  toast('Checking every table against this device…','',4000);
+  var rep=await atRetireReport();
+  var rows=rep.lines.map(function(l){
+    var v = l.error ? ('<span style="color:var(--red)">'+l.error+'</span>')
+          : l.info  ? ('<span style="color:var(--fg3)">'+l.remote+' in table</span>')
+          : (l.local+' here · '+l.remote+' in table');
+    var mark = l.error?'✕':(l.info?'·':(l.ok?'✓':'✕'));
+    var col  = l.error||!l.ok?'var(--red)':(l.info?'var(--fg3)':'var(--green)');
+    return '<div style="display:flex;gap:10px;align-items:baseline;padding:3px 0;border-top:1px solid var(--border);font-size:12px">'
+      +'<span style="color:'+col+';font-weight:800;min-width:14px">'+mark+'</span>'
+      +'<span style="min-width:150px">'+l.label+'</span>'
+      +'<span style="font-family:var(--mono);color:var(--fg2)">'+v+'</span></div>';
+  }).join('');
+  var verdict = rep.reason ? ('<span style="color:var(--gold)">'+rep.reason+'</span>')
+    : rep.ok ? '<span style="color:var(--green);font-weight:800">Every table holds at least what this device holds. Safe to retire the blob.</span>'
+             : '<span style="color:var(--red);font-weight:800">'+rep.failed+' collection'+(rep.failed!==1?'s are':' is')
+               +' short in the database. Do not retire the blob — press Sync first, then re-check.</span>';
+  var el=document.getElementById('at-retire-report');
+  if(el)el.innerHTML='<div style="margin-bottom:8px">'+verdict+'</div>'+rows
+    +'<div style="margin-top:8px;font-size:11px;color:var(--fg3)">A table may legitimately hold more than this device: another device, or rows since deleted here. Fewer is the failure.</div>';
+  return rep;
+}
+
+async function atPullHoldings(){
+  var pos=[], snap=[];
+  var a=await atPullArray({
+    table:'holdings', sigKey:'at_holdings_sig', label:'holdings',
+    read:function(){return pos;}, write:function(x){pos=x;},
+    fromRow:function(r){
+      // The push stored the whole position object in `data`, so the position
+      // comes back verbatim; the columns are the queryable projection of it.
+      var o=(r.data&&typeof r.data==='object'&&Object.keys(r.data).length)?r.data:{
+        symbol:r.symbol, qty:r.qty, pricePaid:r.price_paid, lastPrice:r.last_price,
+        value:r.market_value, daysGain:r.days_gain, totalGain:r.total_gain,
+        totalGainPct:r.total_gain_pct, totalCost:r.total_cost
+      };
+      return {__id:String(r.id), __acct:atAcctNameTarget(r.account_name||''), __pos:o};
+    },
+    idOf:function(o){return String(o.__id);}
+  });
+  var b=await atPullArray({
+    table:'holding_snapshots', sigKey:'at_holdsnap_sig', label:'holding snapshots',
+    read:function(){return snap;}, write:function(x){snap=x;},
+    fromRow:function(r){
+      var sum=Object.assign({},r.summary||{});
+      var ts=sum.as_of_text||r.as_of||'';
+      var at=sum.at_account_type||'cash';
+      delete sum.as_of_text; delete sum.at_account_type;
+      return {__id:String(r.id), __acct:atAcctNameTarget(r.account_name||''),
+              cash:r.cash!=null?Number(r.cash):null, ts:ts, summary:sum, accountType:at};
+    },
+    idOf:function(o){return String(o.__id);}
+  });
+  if(!a&&!b)return false;
+  if(!pos.length&&!snap.length)return a&&b;
+
+  if(!state.stockHoldings||typeof state.stockHoldings!=='object')state.stockHoldings={};
+  var next={};
+  snap.forEach(function(sn){
+    if(!sn||!sn.__acct)return;
+    next[sn.__acct]={acctName:sn.__acct, accountType:sn.accountType,
+                     cash:sn.cash, ts:sn.ts, summary:sn.summary, positions:[]};
+  });
+  pos.forEach(function(pr){
+    if(!pr||!pr.__acct)return;
+    if(!next[pr.__acct]){
+      // A position with no snapshot still beats losing it.
+      var prev=state.stockHoldings[pr.__acct]||{};
+      next[pr.__acct]={acctName:pr.__acct, accountType:prev.accountType||'cash',
+                       cash:prev.cash!=null?prev.cash:null, ts:prev.ts||'',
+                       summary:prev.summary||{}, positions:[]};
+    }
+    next[pr.__acct].positions.push(pr.__pos);
+  });
+  // Accounts the pull did not mention keep whatever is already loaded.
+  Object.keys(next).forEach(function(k){ state.stockHoldings[k]=next[k]; });
+  return a&&b;
+}
+
+async function atPullTransactions(){
+  var flat=[];
+  var ok=await atPullArray({
+    table:'transactions', sigKey:'at_transactions_sig', label:'transactions',
+    read:function(){return flat;}, write:function(x){flat=x;},
+    fromRow:function(r){
+      return {__id:String(r.id), __acct:atAcctNameTarget(r.account_name||''),
+              __dr:(r.data&&r.data.dr)||'',
+              date:r.txn_date||'', actType:r.act_type||null, desc:r.description||null,
+              sym:r.symbol||null, underlying:r.underlying||null, optType:r.opt_type||null,
+              strike:r.strike!=null?Number(r.strike):null, expiry:r.expiry||null,
+              qty:r.qty!=null?Number(r.qty):null, price:r.price!=null?Number(r.price):null,
+              amount:r.amount!=null?Number(r.amount):0, comm:r.commission!=null?Number(r.commission):0};
+    },
+    idOf:function(o){return String(o.__id);}
+  });
+  if(!ok||!flat.length)return ok;
+
+  if(!state.transactionHistory||typeof state.transactionHistory!=='object')state.transactionHistory={};
+  var byAcct={}, drs={};
+  flat.forEach(function(r){
+    if(!r||!r.__acct)return;
+    var a=r.__acct;
+    if(!byAcct[a])byAcct[a]=[];
+    if(r.__dr)drs[a]=r.__dr;
+    var c=Object.assign({},r);
+    delete c.__id; delete c.__acct; delete c.__dr;
+    byAcct[a].push(c);
+  });
+  Object.keys(byAcct).forEach(function(a){
+    // Same grouping and totals the CSV parser uses, so nothing recomputes
+    // differently from the imported original.
+    state.transactionHistory[a]=atTxnRecord(a,drs[a]||((state.transactionHistory[a]||{}).dateRange||''),byAcct[a]);
+  });
+  return ok;
+}
+
 // classAnalysis is an object keyed by ticker, not an array, so it is pulled
 // through the array engine with a thin adapter.
 async function atPullClassAnalysis(){
@@ -14290,7 +14721,7 @@ async function atPushTransactions(){
           description:r.desc||null, symbol:r.sym||null, underlying:r.underlying||null,
           opt_type:r.optType||null, strike:atNum(r.strike), expiry:atDate(r.expiry),
           qty:atNum(r.qty), price:atNum(r.price), amount:atNum(r.amount),
-          commission:atNum(r.comm), data:{}, deleted:false,
+          commission:atNum(r.comm), data:{dr:rec.dateRange||''}, deleted:false,
           updated_at:new Date().toISOString()
         });
       });
