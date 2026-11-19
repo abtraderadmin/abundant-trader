@@ -2369,6 +2369,15 @@ body::before{
       </div>
     </div>
     <div class="cfg-card">
+      <div class="cfg-hd" style="color:var(--blue)">🗄 Database vs. this device <span style="font-size:11px;color:var(--fg3);font-weight:400">— run before retiring the JSON blob</span></div>
+      <div class="cfg-body">
+        <div class="cfg-sub" style="margin-bottom:10px">Everything still saves to a single JSON blob as well as to its own table. The blob is the safety net, and it stays until this check is clean: each collection here is counted on this device and in the database.</div>
+        <button class="cfg-btn" onclick="atRetireCheckUI()">Run the check</button>
+        <div id="at-retire-report" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div class="cfg-card">
       <div class="cfg-hd" style="color:var(--green)">💾 Backup &amp; Restore <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">full app state</span></div>
       <div class="cfg-body">
         <div class="cfg-sub" style="margin-bottom:10px">A full backup captures <strong>everything</strong> — all trades (futures, stock, options, SPY Day, Swing), ORE watchlist &amp; discoveries, Class Trade Analysis decisions and notes, SPY/XSP transaction history, withdrawals, and every setting on this screen.</div>
@@ -4953,7 +4962,14 @@ function parseEtradeTransactions(text){
     rows.push({date,actType,desc,sym,underlying,optType,strike,expiry,qty,price,amount,comm});
   }
   if(!rows.length)return null;
-  // Group by date
+  return atTxnRecord(acctName,dateRange,rows);
+}
+
+// Grouping and totals for a transaction account. Shared by the CSV parser and
+// by the database pull, so a record rebuilt from `transactions` is identical
+// to one built from the original export -- the day buckets, the per-day
+// counters and every aggregate come from this one place.
+function atTxnRecord(acctName,dateRange,rows){
   const byDate={};
   for(const r of rows){
     if(!byDate[r.date])byDate[r.date]={date:r.date,trades:[],netPnl:0,commission:0,spyCount:0,xspCount:0,qqCount:0};
@@ -10954,6 +10970,7 @@ async function atReconcile(){
   await atReconcileBlob();
   // Each pull is independent: one failing must not stop the others.
   var pulls=[['trades',atPullTrades],['withdrawals',atPullWithdrawals],
+             ['holdings',atPullHoldings],['transactions',atPullTransactions],
              ['opportunities',atPullOpportunities],['archer',atPullArcherSignals],
              ['class sessions',atPullClassSessions],['class analysis',atPullClassAnalysis]];
   for(var i=0;i<pulls.length;i++){
@@ -14199,7 +14216,10 @@ async function atPushHoldings(){
       cash:atNum(rec.cash),
       // as_of can be null when the broker's string will not parse, so the
       // original is kept verbatim rather than lost.
-      summary:Object.assign({},rec.summary||{},{as_of_text:rec.ts||null}),
+      // accountType and the raw timestamp live nowhere else, so they ride in
+      // the summary jsonb rather than needing a column of their own.
+      summary:Object.assign({},rec.summary||{},{as_of_text:rec.ts||null,
+                            at_account_type:rec.accountType||'cash'}),
       as_of:asOf,
       deleted:false, updated_at:new Date().toISOString()
     });
@@ -14409,6 +14429,184 @@ async function atPullWithdrawals(){
   });
 }
 
+// ── holdings and transactions: the last two write-only mirrors ──────────
+// Both are objects keyed by account name holding nested records, so each is
+// pulled as a flat array through the array engine and then regrouped. The
+// regrouping is the inverse of the push, field for field, so what comes back
+// renders and totals exactly as what went out.
+
+// ── Pre-retirement check ────────────────────────────────────────────────
+// The blob is the safety net. It is not switched off on a promise that the
+// tables are complete -- it is switched off after this report says so, for
+// every mirrored collection, with the numbers visible. Each line compares
+// what is loaded in memory against what the table actually holds.
+const AT_RETIRE_CHECKS=[
+  {label:'trades',            table:'trades',
+   local:function(){return (state.trades||[]).length;}},
+  {label:'withdrawals',       table:'withdrawals',
+   local:function(){return (state.withdrawals||[]).length;}},
+  {label:'holdings',          table:'holdings',
+   local:function(){return Object.keys(state.stockHoldings||{})
+     .reduce(function(n,k){return n+(((state.stockHoldings[k]||{}).positions)||[]).length;},0);}},
+  {label:'holding snapshots', table:'holding_snapshots',
+   local:function(){return Object.keys(state.stockHoldings||{}).length;}},
+  {label:'transactions',      table:'transactions',
+   local:function(){return Object.keys(state.transactionHistory||{})
+     .reduce(function(n,k){var d=((state.transactionHistory[k]||{}).days)||[];
+       return n+d.reduce(function(m,x){return m+((x.trades||[]).length);},0);},0);}},
+  {label:'opportunities',     table:'opportunities',
+   local:function(){return (state.discoveries||[]).length;}},
+  {label:'archer signals',    table:'archer_signals',
+   local:function(){return (state.archerWatchlist||[]).length+(state.archerRejects||[]).length;}},
+  {label:'class sessions',    table:'class_sessions',
+   local:function(){return (state.classSessions||[]).length;}},
+  {label:'class analysis',    table:'class_analysis',
+   local:function(){return Object.keys(state.classAnalysis||{}).length;}},
+  {label:'accounts',          table:'accounts',
+   local:function(){return null;}}   // derived; counted for information only
+];
+
+async function atRetireReport(){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser)return {ok:false,reason:'not signed in',lines:[]};
+  var lines=[];
+  for(var i=0;i<AT_RETIRE_CHECKS.length;i++){
+    var chk=AT_RETIRE_CHECKS[i], remote=null, err=null;
+    try{
+      var res=await c.from(chk.table).select('id',{count:'exact',head:true})
+                     .eq('user_id',atUser.id).eq('deleted',false);
+      if(res.error)err=res.error.message; else remote=res.count;
+    }catch(e){err=String(e&&e.message||e);}
+    var local=null;
+    try{local=chk.local();}catch(e){err=err||String(e&&e.message||e);}
+    var info=(local===null);
+    lines.push({
+      label:chk.label, local:local, remote:remote, error:err, info:info,
+      ok: info ? true : (!err && remote!==null && remote>=local)
+    });
+  }
+  var bad=lines.filter(function(l){return !l.ok;});
+  return {ok:bad.length===0, lines:lines, failed:bad.length};
+}
+
+// Shown before anything is switched off. Nothing here changes data.
+async function atRetireCheckUI(){
+  toast('Checking every table against this device…','',4000);
+  var rep=await atRetireReport();
+  var rows=rep.lines.map(function(l){
+    var v = l.error ? ('<span style="color:var(--red)">'+l.error+'</span>')
+          : l.info  ? ('<span style="color:var(--fg3)">'+l.remote+' in table</span>')
+          : (l.local+' here · '+l.remote+' in table');
+    var mark = l.error?'✕':(l.info?'·':(l.ok?'✓':'✕'));
+    var col  = l.error||!l.ok?'var(--red)':(l.info?'var(--fg3)':'var(--green)');
+    return '<div style="display:flex;gap:10px;align-items:baseline;padding:3px 0;border-top:1px solid var(--border);font-size:12px">'
+      +'<span style="color:'+col+';font-weight:800;min-width:14px">'+mark+'</span>'
+      +'<span style="min-width:150px">'+l.label+'</span>'
+      +'<span style="font-family:var(--mono);color:var(--fg2)">'+v+'</span></div>';
+  }).join('');
+  var verdict = rep.reason ? ('<span style="color:var(--gold)">'+rep.reason+'</span>')
+    : rep.ok ? '<span style="color:var(--green);font-weight:800">Every table holds at least what this device holds. Safe to retire the blob.</span>'
+             : '<span style="color:var(--red);font-weight:800">'+rep.failed+' collection'+(rep.failed!==1?'s are':' is')
+               +' short in the database. Do not retire the blob — press Sync first, then re-check.</span>';
+  var el=document.getElementById('at-retire-report');
+  if(el)el.innerHTML='<div style="margin-bottom:8px">'+verdict+'</div>'+rows
+    +'<div style="margin-top:8px;font-size:11px;color:var(--fg3)">A table may legitimately hold more than this device: another device, or rows since deleted here. Fewer is the failure.</div>';
+  return rep;
+}
+
+async function atPullHoldings(){
+  var pos=[], snap=[];
+  var a=await atPullArray({
+    table:'holdings', sigKey:'at_holdings_sig', label:'holdings',
+    read:function(){return pos;}, write:function(x){pos=x;},
+    fromRow:function(r){
+      // The push stored the whole position object in `data`, so the position
+      // comes back verbatim; the columns are the queryable projection of it.
+      var o=(r.data&&typeof r.data==='object'&&Object.keys(r.data).length)?r.data:{
+        symbol:r.symbol, qty:r.qty, pricePaid:r.price_paid, lastPrice:r.last_price,
+        value:r.market_value, daysGain:r.days_gain, totalGain:r.total_gain,
+        totalGainPct:r.total_gain_pct, totalCost:r.total_cost
+      };
+      return {__id:String(r.id), __acct:atAcctNameTarget(r.account_name||''), __pos:o};
+    },
+    idOf:function(o){return String(o.__id);}
+  });
+  var b=await atPullArray({
+    table:'holding_snapshots', sigKey:'at_holdsnap_sig', label:'holding snapshots',
+    read:function(){return snap;}, write:function(x){snap=x;},
+    fromRow:function(r){
+      var sum=Object.assign({},r.summary||{});
+      var ts=sum.as_of_text||r.as_of||'';
+      var at=sum.at_account_type||'cash';
+      delete sum.as_of_text; delete sum.at_account_type;
+      return {__id:String(r.id), __acct:atAcctNameTarget(r.account_name||''),
+              cash:r.cash!=null?Number(r.cash):null, ts:ts, summary:sum, accountType:at};
+    },
+    idOf:function(o){return String(o.__id);}
+  });
+  if(!a&&!b)return false;
+  if(!pos.length&&!snap.length)return a&&b;
+
+  if(!state.stockHoldings||typeof state.stockHoldings!=='object')state.stockHoldings={};
+  var next={};
+  snap.forEach(function(sn){
+    if(!sn||!sn.__acct)return;
+    next[sn.__acct]={acctName:sn.__acct, accountType:sn.accountType,
+                     cash:sn.cash, ts:sn.ts, summary:sn.summary, positions:[]};
+  });
+  pos.forEach(function(pr){
+    if(!pr||!pr.__acct)return;
+    if(!next[pr.__acct]){
+      // A position with no snapshot still beats losing it.
+      var prev=state.stockHoldings[pr.__acct]||{};
+      next[pr.__acct]={acctName:pr.__acct, accountType:prev.accountType||'cash',
+                       cash:prev.cash!=null?prev.cash:null, ts:prev.ts||'',
+                       summary:prev.summary||{}, positions:[]};
+    }
+    next[pr.__acct].positions.push(pr.__pos);
+  });
+  // Accounts the pull did not mention keep whatever is already loaded.
+  Object.keys(next).forEach(function(k){ state.stockHoldings[k]=next[k]; });
+  return a&&b;
+}
+
+async function atPullTransactions(){
+  var flat=[];
+  var ok=await atPullArray({
+    table:'transactions', sigKey:'at_transactions_sig', label:'transactions',
+    read:function(){return flat;}, write:function(x){flat=x;},
+    fromRow:function(r){
+      return {__id:String(r.id), __acct:atAcctNameTarget(r.account_name||''),
+              __dr:(r.data&&r.data.dr)||'',
+              date:r.txn_date||'', actType:r.act_type||null, desc:r.description||null,
+              sym:r.symbol||null, underlying:r.underlying||null, optType:r.opt_type||null,
+              strike:r.strike!=null?Number(r.strike):null, expiry:r.expiry||null,
+              qty:r.qty!=null?Number(r.qty):null, price:r.price!=null?Number(r.price):null,
+              amount:r.amount!=null?Number(r.amount):0, comm:r.commission!=null?Number(r.commission):0};
+    },
+    idOf:function(o){return String(o.__id);}
+  });
+  if(!ok||!flat.length)return ok;
+
+  if(!state.transactionHistory||typeof state.transactionHistory!=='object')state.transactionHistory={};
+  var byAcct={}, drs={};
+  flat.forEach(function(r){
+    if(!r||!r.__acct)return;
+    var a=r.__acct;
+    if(!byAcct[a])byAcct[a]=[];
+    if(r.__dr)drs[a]=r.__dr;
+    var c=Object.assign({},r);
+    delete c.__id; delete c.__acct; delete c.__dr;
+    byAcct[a].push(c);
+  });
+  Object.keys(byAcct).forEach(function(a){
+    // Same grouping and totals the CSV parser uses, so nothing recomputes
+    // differently from the imported original.
+    state.transactionHistory[a]=atTxnRecord(a,drs[a]||((state.transactionHistory[a]||{}).dateRange||''),byAcct[a]);
+  });
+  return ok;
+}
+
 // classAnalysis is an object keyed by ticker, not an array, so it is pulled
 // through the array engine with a thin adapter.
 async function atPullClassAnalysis(){
@@ -14523,7 +14721,7 @@ async function atPushTransactions(){
           description:r.desc||null, symbol:r.sym||null, underlying:r.underlying||null,
           opt_type:r.optType||null, strike:atNum(r.strike), expiry:atDate(r.expiry),
           qty:atNum(r.qty), price:atNum(r.price), amount:atNum(r.amount),
-          commission:atNum(r.comm), data:{}, deleted:false,
+          commission:atNum(r.comm), data:{dr:rec.dateRange||''}, deleted:false,
           updated_at:new Date().toISOString()
         });
       });
