@@ -2297,6 +2297,11 @@ body::before{
         <div class="cfg-row" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
           <div class="cfg-lbl">Stock/Options Account Value <span style="font-size:10px;color:var(--fg3);font-weight:400">for % of capital calculations</span></div>
           <div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-so-acct-value" oninput="atRiskBudgetPaint()" type="number" step="1000" placeholder="e.g. 25000"></div>
+          <label style="display:flex;gap:7px;align-items:center;margin-top:6px;font-size:11px;color:var(--fg3);cursor:pointer">
+            <input type="checkbox" id="cfg-acct-value-manual" onchange="atSetAcctValueManual(this.checked)">
+            <span>Use the value I typed instead of the imported portfolio</span>
+          </label>
+          <div class="cfg-sub" id="cfg-acct-value-note" style="margin-top:6px;padding:8px 10px;border-radius:6px;background:var(--s2);border:1px solid var(--border);line-height:1.6"></div>
         </div>
         <div class="cfg-row">
           <div class="cfg-lbl">Risk Per Trade (%)</div>
@@ -2464,6 +2469,8 @@ let state = {
     // Per-trade limits say nothing about five of them at once, which is
     // the number that actually decides whether a bad week matters.
     maxPortfolioRiskPct:0,
+    // Tick to keep a hand-typed account value over the imported one.
+    stockAcctValueManual:false,
     // Rule breaches, once seen, are remembered. Only what cannot be derived
     // is kept here: when it was first seen and what was learnt.
     ruleLog:{},
@@ -2526,6 +2533,95 @@ const fmt=(n,d=2)=>n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFrac
 const $=(n)=>(n<0?'-$':'$')+fmt(Math.abs(n));
 const fmtDate=(d)=>{if(!d)return'—';const p=d.split('-');return p[1]+'/'+p[2]+'/'+p[0];};
 
+// ── STOCK ACCOUNT VALUE, FROM THE BROKER ────────────────────────────
+// The E*TRADE portfolio export already carries the account's net value and
+// its cash line, and parseEtradePortfolio has been reading both into
+// stockHoldings[acct].summary all along. Nothing used them. The figure the
+// whole risk budget rests on was a number typed into Settings by hand, which
+// is why it was $3,831.87 adrift after thirteen days of market.
+//
+// So it is derived now. The broker's own net value is the account value, and
+// it updates whenever a portfolio export is imported -- no retyping, and the
+// as-of date is visible so a stale import looks stale instead of looking
+// like today.
+//
+// Paper accounts are excluded for the same reason evaluation accounts do not
+// count as cash on the futures side: money that is not real cannot fund a
+// risk budget. A manual override stays available, because a broker export is
+// not the only way someone might know what their account is worth.
+function atStockAccountValue(){
+  const h=(typeof state!=='undefined'&&state.stockHoldings)||{};
+  const st=(typeof state!=='undefined'&&state.settings)||{};
+  const accounts=Object.keys(h).map(function(nm){
+    const d=h[nm]||{}, sum=d.summary||{};
+    const net=parseFloat(sum.netValue)||0;
+    const paper=(d.accountType||'cash')==='paper';
+    const cash=parseFloat(d.cash)||0;
+    // E*TRADE reports what can be withdrawn, which on a margin account is far
+    // more than the cash: the broker will lend against the securities. The
+    // difference is borrowing capacity, NOT money, and it must never reach
+    // anything that sizes a position. Net value stays the right base for a
+    // risk budget because it is equity -- securities plus cash, with any
+    // debit already netted.
+    const wd=parseFloat((sum.availableForWithdrawal))||0;
+    const marginAvail=parseFloat(Math.max(0,wd-cash).toFixed(2));
+    return{name:nm,netValue:net,cash:cash,
+           withdrawable:wd,marginAvail:marginAvail,margin:marginAvail>1,
+           positions:((d.positions||[]).length),
+           ts:d.ts||'',paper:paper,counted:(!paper&&net>0)};
+  }).sort(function(a,b){return b.netValue-a.netValue;});
+  const counted=accounts.filter(function(a){return a.counted;});
+  const imported=parseFloat(counted.reduce(function(n,a){return n+a.netValue;},0).toFixed(2));
+  const cash=parseFloat(counted.reduce(function(n,a){return n+a.cash;},0).toFixed(2));
+  const typed=parseFloat(st.stockOptionsAccountValue)||0;
+  const manual=st.stockAcctValueManual===true;
+  const source=(imported>0&&!manual)?'imported':(typed>0?'typed':'none');
+  const marginAvailable=parseFloat(counted.reduce(function(n,a){return n+a.marginAvail;},0).toFixed(2));
+  return{accounts:accounts,counted:counted.length,
+         imported:imported,cash:cash,typed:typed,manual:manual,source:source,
+         marginAvailable:marginAvailable,
+         marginAccounts:counted.filter(function(a){return a.margin;}).map(function(a){return a.name;}),
+         value:source==='imported'?imported:(source==='typed'?typed:0),
+         // Whatever the export said, verbatim. A broker's own wording beats a
+         // date this reformats and gets subtly wrong.
+         asOf:(counted.map(function(a){return a.ts;}).filter(Boolean)[0])||''};
+}
+function atStockAccountValueNote(){
+  const v=atStockAccountValue();
+  if(v.source==='none')
+    return 'No portfolio export imported and no value set. Import an E*TRADE portfolio CSV on the Stocks screen, or type a value above.';
+  if(v.source==='typed'){
+    const extra=v.imported>0
+      ? ' An imported export says $'+fmt(v.imported,2)+' — untick the override to use it.'
+      : ' Import an E*TRADE portfolio CSV and this stops being a number you maintain by hand.';
+    return '<strong>$'+fmt(v.typed,2)+'</strong>, typed in above.'+extra;
+  }
+  let out='<strong>$'+fmt(v.imported,2)+'</strong>, from '+v.counted+' imported account'
+    +(v.counted!==1?'s':'')+' — the broker’s own net value, not a typed figure.';
+  if(v.cash>0)out+=' Real cash across them: $'+fmt(v.cash,2)+'.';
+  if(v.marginAvailable>0)
+    out+=' <strong style="color:var(--gold)">$'+fmt(v.marginAvailable,2)
+      +' of that is borrowable, not cash</strong> ('+v.marginAccounts.join(', ')
+      +'), and nothing here sizes a position from it.';
+  if(v.asOf)out+=' Exported '+v.asOf+'.';
+  const paper=v.accounts.filter(function(a){return a.paper;});
+  if(paper.length)out+=' '+paper.length+' paper account'+(paper.length!==1?'s':'')
+    +' excluded — simulated money cannot fund a risk budget.';
+  if(v.typed>0&&Math.abs(v.typed-v.imported)>=1)
+    out+=' The typed value of $'+fmt(v.typed,2)+' is $'+fmt(Math.abs(v.typed-v.imported),2)
+      +(v.typed>v.imported?' higher':' lower')+' and is being ignored.';
+  return out;
+}
+function atStockAcctValuePaint(){
+  const el=document.getElementById('cfg-acct-value-note');
+  if(el)el.innerHTML=atStockAccountValueNote();
+  atRiskBudgetPaint(); atPortfolioRiskPaint();
+}
+function atSetAcctValueManual(on){
+  state.settings.stockAcctValueManual=!!on;
+  saveState(); atStockAcctValuePaint();
+}
+
 // ── ONE RISK BUDGET ──────────────────────────────────────────────────
 // There used to be three, and they disagreed. The opportunities queue sized
 // on account x percent, the stock plan sized on a flat maxLossPerTrade, and
@@ -2551,7 +2647,10 @@ function atRiskBudget(over){
   const s=(typeof state!=='undefined'&&state.settings)||{};
   const o=over||{};
   const num=function(a,b){const n=parseFloat(a);return isFinite(n)?n:b;};
-  const acctValue=num(o.acctValue,parseFloat(s.stockOptionsAccountValue)||0)||0;
+  // The broker's figure when there is one, the typed one otherwise.
+  const acctValue=num(o.acctValue,
+    (typeof atStockAccountValue==='function')?atStockAccountValue().value
+                                            :(parseFloat(s.stockOptionsAccountValue)||0))||0;
   const pct=num(o.pct,parseFloat(s.tradeRiskPct)||2)||2;
   const hardCap=num(o.hardCap,parseFloat(s.maxLossPerTrade)||0)||0;
   const pctBudget=acctValue>0?parseFloat((acctValue*pct/100).toFixed(2)):0;
@@ -4408,8 +4507,10 @@ function renderCfg(){
   if(g('cfg-cap-ceiling'))g('cfg-cap-ceiling').value=s.capitalCeiling;
   if(g('cfg-min-rr'))g('cfg-min-rr').value=s.minRR;
   if(g('cfg-portfolio-risk-pct'))g('cfg-portfolio-risk-pct').value=s.maxPortfolioRiskPct||'';
+  if(g('cfg-acct-value-manual'))g('cfg-acct-value-manual').checked=s.stockAcctValueManual===true;
   atRiskBudgetPaint();
   atPortfolioRiskPaint();
+  atStockAcctValuePaint();
   if(g('cfg-trading-days'))g('cfg-trading-days').value=s.tradingDays;
   if(g('trade-count'))g('trade-count').textContent=state.trades.length+' trades stored';
   const ca=s.cashAccounts||['','',''];
@@ -6847,6 +6948,9 @@ function importPortfolioCSV(){
       if(state.portfolioOpen[result.acctName]===undefined)state.portfolioOpen[result.acctName]=true;
       saveState();
       renderPortfolioHoldings();
+      // The import is where the account value comes from now, so the risk
+      // figures derived from it have to be repainted with it.
+      try{atStockAcctValuePaint();}catch(e){}
     };
     rdr.readAsText(f);
   };
