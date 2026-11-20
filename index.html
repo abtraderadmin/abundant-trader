@@ -2341,6 +2341,8 @@ body::before{
         <div class="cfg-row"><div class="cfg-lbl">Capital Review Ceiling</div><div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-cap-ceiling" type="number" step="100" placeholder="1500"></div></div>
         <div class="cfg-row"><div class="cfg-lbl">Min R:R to Take Trade</div><input class="fc mono" id="cfg-min-rr" type="number" step="0.1" placeholder="1.5"></div>
         <div class="cfg-sub" id="cfg-risk-budget-note" style="margin:2px 0 8px;padding:8px 10px;border-radius:6px;background:var(--s2);border:1px solid var(--border);line-height:1.6"></div>
+        <div class="cfg-row"><div class="cfg-lbl">Max Open Risk, All Trades (%)</div><input class="fc mono" id="cfg-portfolio-risk-pct" type="number" step="0.25" min="0" max="25" placeholder="0 = off" style="max-width:80px" oninput="atPortfolioRiskPaint()"></div>
+        <div class="cfg-sub" id="cfg-portfolio-risk-note" style="margin:2px 0 8px;padding:8px 10px;border-radius:6px;background:var(--s2);border:1px solid var(--border);line-height:1.6"></div>
         <div class="cfg-row"><div class="cfg-lbl">Trading Days / Year</div><input class="fc mono" id="cfg-trading-days" type="number" step="1" placeholder="252"></div>
         <div style="margin:8px 0 4px;padding:8px 10px;border-radius:6px;background:var(--blue-bg);border:1px solid rgba(96,165,250,0.2);font-size:11px;color:var(--fg2)">
           <span style="color:var(--blue);font-weight:600">📋 Trade Duration Rule —</span> Any trade held past the close of its entry day is classified as a <strong style="color:var(--blue)">Short Swing</strong>. Same-day open &amp; close = Day Trade. Multi-week+ = Position.
@@ -2458,6 +2460,10 @@ let state = {
     // sends the same orders everywhere, so the limits belong to the
     // platform rather than to any one account.
     futLockProfit:0, futLockLoss:0,
+    // Aggregate open risk ceiling, as a percent of the account. 0 = off.
+    // Per-trade limits say nothing about five of them at once, which is
+    // the number that actually decides whether a bad week matters.
+    maxPortfolioRiskPct:0,
     // Rule breaches, once seen, are remembered. Only what cannot be derived
     // is kept here: when it was first seen and what was learnt.
     ruleLog:{},
@@ -2591,6 +2597,62 @@ function atRiskBudgetNote(over){
       +' is tighter than your $'+fmt(b.hardCap,0)+' max-loss cap, so the percentage governs.';
   return '<strong>$'+fmt(b.budget,2)+' of risk per trade</strong> — '+fmt(b.pct,1)+'% of '+acct
     +' and your max-loss cap are the same figure.';
+}
+
+// ── AGGREGATE OPEN RISK ─────────────────────────────────────────────
+// A per-trade cap polices one trade. It says nothing about five of them held
+// at the same time, which is the number that decides whether a bad week is an
+// inconvenience or a problem. Nothing in here used to state that figure at
+// all, so the portfolio exposure was carried without ever being named.
+//
+// Only open positions with BOTH an entry and a stop can contribute: without a
+// stop there is no defined risk to add up, and guessing one would turn an
+// honest blank into a confident wrong total. Positions without stops are
+// counted and reported separately, because "six open positions whose risk
+// cannot be measured" is itself the thing worth knowing.
+function atPortfolioRisk(){
+  const b=atRiskBudget();
+  const pct=parseFloat((state.settings||{}).maxPortfolioRiskPct)||0;
+  const cap=(pct>0&&b.acctValue>0)?parseFloat((b.acctValue*pct/100).toFixed(2)):0;
+  let risk=0,counted=0,unmeasured=0;
+  (state.trades||[]).forEach(function(t){
+    if(String(t.status||'').toUpperCase()==='CLOSED')return;
+    if(t.module==='futures')return;      // governed by its own drawdown rules
+    const e=parseFloat(t.entry), st=parseFloat(t.stop);
+    const q=Math.abs(parseFloat(t.qty)||0);
+    if(!(e>0&&q>0)){unmeasured++;return;}
+    if(!(st>0)){unmeasured++;return;}
+    const per=Math.abs(e-st);
+    if(!(per>0)){unmeasured++;return;}
+    risk+=per*q; counted++;
+  });
+  risk=parseFloat(risk.toFixed(2));
+  return{pct:pct,cap:cap,openRisk:risk,counted:counted,unmeasured:unmeasured,
+         acctValue:b.acctValue,
+         pctOfAccount:b.acctValue>0?parseFloat((risk/b.acctValue*100).toFixed(2)):null,
+         headroom:cap>0?parseFloat((cap-risk).toFixed(2)):null,
+         over:cap>0&&risk>cap,
+         // How many more trades at the per-trade budget would fit.
+         slots:(cap>0&&b.budget>0)?Math.max(0,Math.floor((cap-risk)/b.budget)):null};
+}
+function atPortfolioRiskNote(){
+  const p=atPortfolioRisk();
+  if(!p.pct)
+    return 'No aggregate limit set. Each trade is checked on its own, so five at once is five times the figure above and nothing will mention it.';
+  if(!p.acctValue)
+    return 'Set your account value above to turn the '+fmt(p.pct,2)+'% aggregate limit into a figure.';
+  let out='<strong>$'+fmt(p.cap,2)+' of open risk allowed</strong> ('+fmt(p.pct,2)+'% of the account). '
+    +'Currently $'+fmt(p.openRisk,2)+' across '+p.counted+' open position'+(p.counted!==1?'s':'')+'';
+  if(p.over)out+=' — <strong style="color:var(--red)">over by $'+fmt(p.openRisk-p.cap,2)+'</strong>.';
+  else out+=', leaving $'+fmt(p.headroom,2)
+    +(p.slots!=null?(' — about '+p.slots+' more trade'+(p.slots!==1?'s':'')+' at the per-trade budget'):'')+'.';
+  if(p.unmeasured)out+=' '+p.unmeasured+' open position'+(p.unmeasured!==1?'s have':' has')
+    +' no stop recorded, so '+(p.unmeasured!==1?'they are':'it is')+' not in that total.';
+  return out;
+}
+function atPortfolioRiskPaint(){
+  const el=document.getElementById('cfg-portfolio-risk-note');
+  if(el)el.innerHTML=atPortfolioRiskNote();
 }
 
 // ── CAPITAL-CAPPED? CHECK OPTIONS ───────────────────────────────────
@@ -4345,7 +4407,9 @@ function renderCfg(){
   if(g('cfg-max-loss'))g('cfg-max-loss').value=s.maxLossPerTrade;
   if(g('cfg-cap-ceiling'))g('cfg-cap-ceiling').value=s.capitalCeiling;
   if(g('cfg-min-rr'))g('cfg-min-rr').value=s.minRR;
+  if(g('cfg-portfolio-risk-pct'))g('cfg-portfolio-risk-pct').value=s.maxPortfolioRiskPct||'';
   atRiskBudgetPaint();
+  atPortfolioRiskPaint();
   if(g('cfg-trading-days'))g('cfg-trading-days').value=s.tradingDays;
   if(g('trade-count'))g('trade-count').textContent=state.trades.length+' trades stored';
   const ca=s.cashAccounts||['','',''];
@@ -4793,6 +4857,8 @@ function saveSettings(){
   const rr=parseFloat(document.getElementById('cfg-min-rr').value);
   const td=parseInt(document.getElementById('cfg-trading-days').value);
   if(ml>0)state.settings.maxLossPerTrade=ml;if(cc>0)state.settings.capitalCeiling=cc;
+  const pr=parseFloat(document.getElementById('cfg-portfolio-risk-pct')?.value);
+  if(!isNaN(pr)&&pr>=0)state.settings.maxPortfolioRiskPct=pr;
   if(rr>0)state.settings.minRR=rr;if(td>0)state.settings.tradingDays=td;
   saveState();recalcF();recalcS();recalcO();
   const el=document.getElementById('settings-saved');el.hidden=false;setTimeout(()=>el.hidden=true,2000);
