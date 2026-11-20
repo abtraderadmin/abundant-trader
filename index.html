@@ -4105,18 +4105,26 @@ function renderCfg(){
   if(g('cfg-goal-paper'))g('cfg-goal-paper').checked=!!s.moduleGoalsIncludePaper;
   const ev=s.evalAccounts||Array(10).fill('');
   const ag=s.accountGoals||{};
+  // Anything typed and not yet saved must survive a repaint. Without this a
+  // render triggered from elsewhere on the page wipes half-entered account
+  // names, which is indistinguishable from the app deleting them.
+  const atKeep=el=>!!el&&(el===document.activeElement||el.dataset.atDirty==='1');
+  const atSet=(el,v)=>{ if(!el)return;
+    if(!el.dataset.atWired){ el.dataset.atWired='1';
+      el.addEventListener('input',function(){this.dataset.atDirty='1';}); }
+    if(!atKeep(el))el.value=v; };
   [1,2,3,4,5,6,7,8,9,10].forEach(i=>{
-    if(g(`cfg-ev${i}`))g(`cfg-ev${i}`).value=ev[i-1]||'';
+    atSet(g(`cfg-ev${i}`),ev[i-1]||'');
     const nm=ev[i-1]||'';
-    if(g(`cfg-ev${i}-goal`)&&nm&&ag[nm])g(`cfg-ev${i}-goal`).value=ag[nm];
+    if(nm&&ag[nm])atSet(g(`cfg-ev${i}-goal`),ag[nm]);
   });
   const pa=s.paAccounts||['','','','',''];
   const ap=s.accountPriorPL||{};
   [1,2,3,4,5].forEach(i=>{
-    if(g(`cfg-pa${i}`))g(`cfg-pa${i}`).value=pa[i-1]||'';
+    atSet(g(`cfg-pa${i}`),pa[i-1]||'');
     const nm=pa[i-1]||'';
-    if(g(`cfg-pa${i}-goal`)&&nm&&ag[nm])g(`cfg-pa${i}-goal`).value=ag[nm];
-    if(g(`cfg-pa${i}-prior`)&&nm&&ap[nm])g(`cfg-pa${i}-prior`).value=ap[nm];
+    if(nm&&ag[nm])atSet(g(`cfg-pa${i}-goal`),ag[nm]);
+    if(nm&&ap[nm])atSet(g(`cfg-pa${i}-prior`),ap[nm]);
   });
   // A status control beside every named futures account. Settings is where
   // accounts are managed, so it is where an account is retired -- and it is
@@ -4241,6 +4249,8 @@ function saveModuleGoals(){
 function savePAAccounts(){
   const ev=[1,2,3,4,5,6,7,8,9,10].map(i=>(document.getElementById(`cfg-ev${i}`)?.value||'').trim());
   const pa=[1,2,3,4,5].map(i=>(document.getElementById(`cfg-pa${i}`)?.value||'').trim());
+  // Saved, so no longer unsaved: a later repaint may refresh these freely.
+  document.querySelectorAll('[data-at-dirty="1"]').forEach(function(el){delete el.dataset.atDirty;});
   const _oldEv=(state.settings.evalAccounts||[]).slice();
   const _oldPa=(state.settings.paAccounts||[]).slice();
   state.settings.evalAccounts=ev;
@@ -13254,6 +13264,8 @@ function atActiveFutAccts(){
 function atRenderAcctPanels(){
   try{ if(typeof apexRender==='function')apexRender(); }catch(e){}
   try{ if(typeof evalRender==='function')evalRender(); }catch(e){}
+  // Closing an account changes the goal cards and the futures total too.
+  try{ if(typeof renderGoals==='function'){renderGoals();renderGoals('goalsRibbon2','statsRow2');} }catch(e){}
 }
 function apexSetStatus(acct,v){
   const c=apexCfg(acct);
@@ -13263,7 +13275,11 @@ function apexSetStatus(acct,v){
     if(!c.closedOn)c.closedOn=new Date().toISOString().slice(0,10);
   }
   saveState();
-  if(typeof renderAll==='function')renderAll(); else atRenderAcctPanels();
+  // NOT renderAll(): that repaints the settings form from saved state, and
+  // the account name inputs have no save-on-type -- they are committed by the
+  // Save button. Repainting mid-edit silently erased names that had been
+  // typed but not yet saved. Only the panels that depend on status refresh.
+  atRenderAcctPanels();
 }
 function apexSetClosedNote(acct,v){
   const c=apexCfg(acct); c.closedNote=String(v||''); saveState();
