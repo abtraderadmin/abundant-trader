@@ -13365,7 +13365,10 @@ function apexSetCfg(acct,field,v){
     c[field]=isFinite(n)?n:0;
     if(field==='size'&&APEX_KNOWN[c.size]){c.dd=APEX_KNOWN[c.size].dd;c.maxContracts=APEX_KNOWN[c.size].max;}
   }
-  saveState(); apexRender();
+  // The firm decides the drawdown, the lock behaviour, the contract cap and
+  // whether a consistency rule applies at all. Repainting only the PA panel
+  // left an eval card and the rule ledger showing the old rulebook.
+  saveState(); atRenderAcctPanels();
 }
 
 function apexEval(acct){
@@ -13622,7 +13625,7 @@ function atRuleFindings(){
     }
     if(e.rules.shortDuration&&e.shortPct!=null){
       const rv=e.rules.shortDuration.review*100;
-      add({acct:nm,firm:e.firm,rule:'Short-duration share',kind:'gate',open:e.shortPct>rv,
+      add({acct:nm,firm:e.firm,rule:'Hold time share',kind:'gate',open:e.shortPct>rv,
            detail:fmt(e.shortPct,1)+'% of winning profit came from trades under '
              +e.rules.shortDuration.seconds+'s'+(e.shortPct>rv?', past the '+fmt(rv,0)+'% review line':''),
            have:null,need:null,more:null});
@@ -13786,7 +13789,10 @@ function apexPanelEl(){
 // Other prop firms have their own consistency, drawdown and scaling rules, and
 // applying Apex's to them would produce a confident wrong answer. So an account
 // set to another firm is listed without being judged.
-const APEX_FIRMS=['Apex','Topstep','TradeDay','Tradeify','Take Profit Trader','Earn2Trade','Other'];
+// Firms the app can name. Having rules for one is a separate question:
+// AT_FIRM_RULES decides that, and an eval set to a firm with no entry
+// there is judged on Apex's figures with the firm shown on the card.
+const APEX_FIRMS=['Apex','Black Vault','Topstep','TradeDay','Tradeify','Take Profit Trader','Earn2Trade','Other'];
 function apexFirmSelect(e){
   const a=e.acct.replace(/'/g,"\\'");
   return '<span>firm</span><select onchange="apexSetCfg(\''+a+'\',\'firm\',this.value)" style="padding:3px 6px;border-radius:5px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:11px">'
@@ -14160,15 +14166,23 @@ function evalEval(acct){
   }
   // Short-duration share: winning profit from trades held <= N seconds over
   // all winning profit. Losing trades are excluded from both totals.
-  let shortPct=null,shortWins=0,allWins=0;
+  let shortPct=null,shortWins=0,allWins=0,shortN=0,holdN=0,holdSum=0,holdAvg=null,holdMin=null;
   if(fr.shortDuration){
     rs.forEach(function(t){
+      const h=parseFloat(t.holdSec);
+      // Hold time is tracked on every trade, win or lose, because "how long am
+      // I in these for" is a question about the habit, not about the winners.
+      if(isFinite(h)){
+        holdN++; holdSum+=h;
+        if(holdMin==null||h<holdMin)holdMin=h;
+        if(h<=fr.shortDuration.seconds)shortN++;
+      }
       const pl=parseFloat(t.netPL)||0; if(pl<=0)return;
       allWins+=pl;
-      const h=parseFloat(t.holdSec);
       if(isFinite(h)&&h<=fr.shortDuration.seconds)shortWins+=pl;
     });
     if(allWins>0)shortPct=parseFloat((shortWins/allWins*100).toFixed(1));
+    if(holdN>0)holdAvg=parseFloat((holdSum/holdN).toFixed(1));
   }
 
   const maxQty=series.length?Math.max.apply(null,days.map(function(d){return byDay[d].maxQty;})):0;
@@ -14182,6 +14196,7 @@ function evalEval(acct){
     firm:c.firm||'Apex',rules:fr,
     consistency:consistency,bestDay:bestDay,needTotal:needTotal,needMore:needMore,
     shortPct:shortPct,shortWins:shortWins,allWins:allWins,
+    shortN:shortN,holdN:holdN,holdAvg:holdAvg,holdMin:holdMin,
     minDays:fr.minDays,
     maxQty:maxQty,maxContracts:fr.maxContracts||c.maxContracts||10,avgDay:avgDay,daysToTarget:daysToTarget,
     baseline:baseline,todayN:todayN,overtrading:overtrading,series:series,
@@ -14221,14 +14236,28 @@ function evalRuleRows(e){
                 : ' — clear')),
         false);
   }
-  if(e.rules.shortDuration&&e.shortPct!=null){
+  // Hold time. There is no minimum hold on a trade -- the rule is about the
+  // SHARE of winning profit that came from very short ones, so the row leads
+  // with that share and then says how long the trades actually ran, which is
+  // the part that tells you whether the share is about to move.
+  if(e.rules.shortDuration){
     const sd=e.rules.shortDuration;
-    const over=e.shortPct>sd.review*100, adv=e.shortPct>sd.advisory*100;
-    add(!over,'Short-duration share',
-        fmt(e.shortPct,1)+'% of winning profit from trades under '+sd.seconds+'s'
-        +' ($'+fmt(e.shortWins,2)+' of $'+fmt(e.allWins,2)+') — '
-        +(over?'over '+fmt(sd.review*100,0)+'%, manual review'
-             :(adv?'advisory only, no penalty':'clear')),
+    const over=e.shortPct!=null&&e.shortPct>sd.review*100;
+    const adv=e.shortPct!=null&&e.shortPct>sd.advisory*100;
+    const held=e.holdAvg!=null
+      ? (' · holding '+fmt(e.holdAvg,0)+'s on average, '+e.shortN+' of '+e.holdN
+         +' under '+sd.seconds+'s')
+      : ' · no hold times recorded on these trades';
+    add(!over,'Hold time — under '+sd.seconds+'s share',
+        (e.shortPct==null
+          ? 'no winning trades yet, so there is no share to judge'
+          : fmt(e.shortPct,1)+'% of winning profit came from trades under '+sd.seconds+'s'
+            +' ($'+fmt(e.shortWins,2)+' of $'+fmt(e.allWins,2)+') — '
+            +(over?'past the '+fmt(sd.review*100,0)+'% review line'
+                 :(adv?'past '+fmt(sd.advisory*100,0)+'%, advisory only — no penalty'
+                      :'clear, the line is '+fmt(sd.advisory*100,0)+'%')))
+        +held
+        +'. No minimum hold applies to any single trade.',
         adv&&!over);
   }
   add(e.maxQty<=e.maxContracts,'Contract limit',
@@ -14313,7 +14342,7 @@ function evalRender(){
         +'<span style="margin-left:auto;font-size:11px">'+chip+' ▾</span>'
       +'</div>'
       +'<div onclick="event.stopPropagation()" style="display:flex;gap:9px;align-items:center;padding:0 13px 9px;font-size:11px;color:var(--fg3)">'
-        +apexStatusSelect(e)+'</div>'
+        +apexFirmSelect(e)+apexStatusSelect(e)+'</div>'
       +'<div id="eval-d-'+i+'" hidden style="padding:9px 13px 12px">'
         +rows.map(function(r){
           return '<div style="display:flex;gap:10px;align-items:baseline;font-size:11px;padding:3px 0;border-top:1px solid var(--border)">'

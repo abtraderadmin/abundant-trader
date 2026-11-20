@@ -131,16 +131,98 @@ t('only winning trades count, and only the fast ones in the numerator',()=>{
   assert.strictEqual(g.shortPct,25);
 });
 t('under 30% is reported clear',()=>{
-  const row=w.evalRuleRows(e()).filter(r=>/Short-duration/.test(r.rule))[0];
+  const row=w.evalRuleRows(e()).filter(r=>/Hold time/.test(r.rule))[0];
   assert(row&&row.ok&&/clear/.test(row.detail),'25% should be clear: '+(row&&row.detail));
+});
+t('and the row answers how long the trades actually ran',()=>{
+  const row=w.evalRuleRows(e()).filter(r=>/Hold time/.test(r.rule))[0];
+  // The question this rule always prompts is "how long do I have to hold for",
+  // and the answer is that no single trade has a minimum. Saying so in the row
+  // is the difference between a rule that is understood and one that is feared.
+  assert(/No minimum hold applies to any single trade/.test(row.detail),row.detail);
+  assert(/holding \d+s on average/.test(row.detail),'hold times belong on the row: '+row.detail);
 });
 t('Apex accounts get no short-duration rule at all',()=>{
   const b=JSON.parse(w.localStorage.getItem(BLOB));
   b.settings.apexAccounts={'BVFE1E00IWNI':{size:50000,firm:'Apex'}};
   w.localStorage.setItem(BLOB,JSON.stringify(b)); w.loadState();
   const rules=w.evalRuleRows(e()).map(r=>r.rule).join('|');
-  assert(!/Short-duration/.test(rules),'Apex has no such rule');
+  assert(!/Hold time/.test(rules),'Apex has no such rule');
   assert(!/consistency/i.test(rules),'Apex evals have no consistency rule');
+});
+
+// The rules above are only reachable if the account can actually be SET to the
+// firm, and for a while it could not: Black Vault was missing from the firm
+// list and the eval card had no firm control at all. Every Black Vault eval
+// was silently judged on Apex's rulebook - $2,500 drawdown, capped floor, and
+// no consistency rule whatsoever, which is exactly the rule being tracked.
+console.log('\nthe firm can be set, which is what makes the rules reachable');
+const BLOB2='at_v2';
+// The real figures: 3,006.28 then 278.48, both settled.
+const REALD=[
+  {id:'r1',module:'futures',account:'BV-1',accountType:'eval',date:'2026-11-19',
+   entryTime:'09:30',symbol:'MES',direction:'LONG',qty:5,netPL:3006.28,grossPL:3006.28,
+   status:'CLOSED',exitPrice:1,holdSec:20},
+  {id:'r2',module:'futures',account:'BV-1',accountType:'eval',date:'2026-11-19',
+   entryTime:'18:45',symbol:'MES',direction:'LONG',qty:5,netPL:278.48,grossPL:278.48,
+   status:'CLOSED',exitPrice:1,holdSec:60}];
+function seedFirm(firm){
+  w.localStorage.setItem(BLOB2,JSON.stringify({
+    settings:{evalAccounts:['BV-1','','','','','','','','',''],paAccounts:['','','','',''],
+      accountGoals:{'BV-1':3000},ruleLog:{},
+      apexAccounts:{'BV-1':{size:50000,dd:2500,maxContracts:10,firm:firm}}},
+    trades:REALD}));
+  w.loadState();
+  return w.evalEval('BV-1');
+}
+t('Black Vault is one of the firms that can be chosen',()=>{
+  const sel=w.apexFirmSelect({acct:'BV-1',cfg:{firm:'Black Vault'}});
+  assert(/<option value="Black Vault" selected>/.test(sel),
+    'a firm the app has rules for must be selectable: '+sel);
+});
+t('an eval card carries a firm control, not just a status one',()=>{
+  seedFirm('Black Vault'); w.evalRender();
+  const html=w.document.getElementById('eval-panel').innerHTML;
+  assert(/'firm'/.test(html)||/&#39;firm&#39;/.test(html)||/>firm</.test(html),
+    'without this the firm cannot be set from the card at all');
+  assert(/Black Vault/.test(html));
+});
+t('left on Apex, the account reads $3,184.76 of room and no consistency rule',()=>{
+  const e=seedFirm('Apex');
+  // 53,284.76 high-water, Apex caps the floor at start + $100 = 50,100.
+  assert.strictEqual(e.dd,2500);
+  assert.strictEqual(e.floor,50100);
+  assert.strictEqual(e.headroom,3184.76);
+  assert.strictEqual(e.consistency,null,'this is the rule that went missing');
+  assert.strictEqual(w.evalRuleRows(e).filter(r=>/consistency/i.test(r.rule)).length,0);
+});
+t('switched to Black Vault, the floor is the real $2,000 and the rule appears',()=>{
+  const e=seedFirm('Black Vault');
+  assert.strictEqual(e.dd,2000);
+  assert.strictEqual(e.floor,51284.76,'53,284.76 − 2,000, and it keeps trailing');
+  assert.strictEqual(e.locked,false,'a trailing floor does not lock');
+  assert.strictEqual(e.headroom,2000);
+  assert.strictEqual(e.consistency,91.52);
+  assert.strictEqual(e.needTotal,6012.56);
+  assert.strictEqual(e.needMore,2727.80);
+  assert.strictEqual(e.maxContracts,5);
+});
+t('the two $2,000 figures are different things and must not be conflated',()=>{
+  const e=seedFirm('Black Vault');
+  // How far it can FALL, versus how much profit it still has to MAKE.
+  assert.strictEqual(e.headroom,2000);
+  assert.strictEqual(e.needMore,2727.80);
+  assert.notStrictEqual(e.headroom,e.needMore);
+});
+t('changing the firm repaints the ledger, so the gate shows up at once',()=>{
+  seedFirm('Apex');
+  w.atRuleRender();
+  assert.strictEqual(w.document.getElementById('rule-ledger-panel').innerHTML,'',
+    'Apex has no consistency rule to break');
+  w.apexSetCfg('BV-1','firm','Black Vault');
+  const html=w.document.getElementById('rule-ledger-panel').innerHTML;
+  assert(/50% consistency/.test(html),'the ledger must repaint on a firm change');
+  assert(/\$2,727\.80/.test(html));
 });
 
 console.log('\naccount matching for alphanumeric ids');
