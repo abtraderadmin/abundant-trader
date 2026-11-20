@@ -2457,6 +2457,9 @@ let state = {
     // sends the same orders everywhere, so the limits belong to the
     // platform rather than to any one account.
     futLockProfit:0, futLockLoss:0,
+    // Rule breaches, once seen, are remembered. Only what cannot be derived
+    // is kept here: when it was first seen and what was learnt.
+    ruleLog:{},
     maxLossPerTrade:200, capitalCeiling:1500,
     minRR:1.5, tradingDays:260,
     avApiKey:'', academyMode:false,
@@ -13319,6 +13322,7 @@ function atActiveFutAccts(){
 }
 function atRenderAcctPanels(){
   try{ if(typeof apexRender==='function')apexRender(); }catch(e){}
+  try{ if(typeof atRuleRender==='function')atRuleRender(); }catch(e){}
   try{ if(typeof evalRender==='function')evalRender(); }catch(e){}
   // Closing an account changes the goal cards and the futures total too.
   try{ if(typeof renderGoals==='function'){renderGoals();renderGoals('goalsRibbon2','statsRow2');} }catch(e){}
@@ -13570,6 +13574,201 @@ function apexToggleShut(){
 function apexToggle(i){
   const el=document.getElementById('apex-d-'+i);
   if(el)el.hidden=!el.hidden;
+}
+
+// ── Rule ledger ─────────────────────────────────────────────────────────
+// A rule can be broken without anyone noticing, and the compliance panels are
+// no help with that: they answer "where does this account stand right now",
+// they say nothing about how it got there, and they forget the whole thing the
+// moment the figures recover. This ledger is the memory. It records a breach
+// the first time it is seen, keeps the lesson attached to it, and goes on
+// showing the record after the numbers are clean.
+//
+// No money is stored. Every figure is recomputed from the engines on each
+// render, so a target cannot go stale: if a bigger winning day raises the bar,
+// the bar moves with it. What is stored is only what cannot be derived — the
+// date it was first seen, and what was learnt from it.
+//
+// Two kinds, and the difference matters. A 'hard' breach has already cost the
+// account and no amount of trading undoes it. A 'gate' is a rule the account
+// has not satisfied yet and can still satisfy by trading on. Showing them in
+// one list without that distinction would read as five disasters when it is
+// one disaster and four pieces of work.
+function atRuleLog(){
+  if(!state.settings.ruleLog)state.settings.ruleLog={};
+  return state.settings.ruleLog;
+}
+function atRuleKey(acct,rule){return acct+'|'+rule;}
+
+function atRuleFindings(){
+  const out=[];
+  const add=function(o){out.push(o);};
+  (state.settings.evalAccounts||[]).filter(function(n){return n&&String(n).trim();})
+   .forEach(function(nm){
+    var e; try{e=evalEval(nm);}catch(err){return;}
+    // Already lost. Listed as a breach whatever the account's status says,
+    // because closing an account must not erase the reason it closed.
+    add({acct:nm,firm:e.firm,rule:'Maximum loss',kind:'hard',open:e.headroom<=0,
+         detail:e.headroom<=0
+           ? 'balance $'+fmt(e.balance,2)+' reached the $'+fmt(e.floor,2)+' floor — a $'+fmt(e.dd,0)+' drawdown'
+           : '$'+fmt(e.headroom,2)+' of room left',
+         have:null,need:null,more:null});
+    if(e.rules.evalConsistency&&e.consistency!=null){
+      const lim=e.rules.evalConsistency*100, over=e.consistency>lim;
+      add({acct:nm,firm:e.firm,rule:fmt(lim,0)+'% consistency',kind:'gate',open:over,
+           detail:'best day $'+fmt(e.bestDay,2)+' is '+fmt(e.consistency,1)+'% of $'+fmt(e.profit,2)+' net'
+             +(over?'':' — inside the line'),
+           have:e.profit,need:over?e.needTotal:null,more:over?e.needMore:0});
+    }
+    if(e.rules.shortDuration&&e.shortPct!=null){
+      const rv=e.rules.shortDuration.review*100;
+      add({acct:nm,firm:e.firm,rule:'Short-duration share',kind:'gate',open:e.shortPct>rv,
+           detail:fmt(e.shortPct,1)+'% of winning profit came from trades under '
+             +e.rules.shortDuration.seconds+'s'+(e.shortPct>rv?', past the '+fmt(rv,0)+'% review line':''),
+           have:null,need:null,more:null});
+    }
+    // Over the contract cap is a hard breach: the trade that did it is done.
+    add({acct:nm,firm:e.firm,rule:'Contract limit',kind:'hard',open:e.maxQty>e.maxContracts,
+         detail:e.maxQty+' contracts taken against a limit of '+e.maxContracts,
+         have:null,need:null,more:null});
+  });
+  return out.filter(function(f){return f.open||atRuleLog()[atRuleKey(f.acct,f.rule)];});
+}
+
+// First sighting is written down; a finding that has gone away is stamped
+// cleared rather than deleted, and one that comes back reopens the same entry
+// instead of starting a second history for the same rule.
+function atRuleLogSync(findings){
+  const log=atRuleLog(); let changed=false;
+  findings.forEach(function(f){
+    const k=atRuleKey(f.acct,f.rule), had=log[k];
+    if(f.open&&!had){
+      log[k]={acct:f.acct,rule:f.rule,kind:f.kind,firm:f.firm||'',
+              firstSeen:atLiveSessionDate(),atDetail:f.detail,lesson:'',cleared:''};
+      changed=true;
+    }else if(f.open&&had&&had.cleared){
+      had.cleared=''; had.reopened=atLiveSessionDate(); changed=true;
+    }else if(!f.open&&had&&!had.cleared){
+      had.cleared=atLiveSessionDate(); changed=true;
+    }
+  });
+  if(changed)saveState();
+  return log;
+}
+
+function atRuleLessonSave(key,el){
+  const log=atRuleLog();
+  if(!log[key])return;
+  log[key].lesson=String(el.value||'').slice(0,400);
+  saveState();
+  const n=el.parentNode&&el.parentNode.querySelector('[data-saved]');
+  if(n){n.hidden=false;setTimeout(function(){n.hidden=true;},1600);}
+}
+function atRuleToggleCleared(){
+  state.settings.ruleClearedOpen=!(state.settings.ruleClearedOpen===true);
+  saveState(); atRuleRender();
+}
+
+function atRulePanelEl(){
+  let el=document.getElementById('rule-ledger-panel');
+  if(el)return el;
+  const anchor=document.getElementById('screen-futures');
+  if(!anchor)return null;
+  el=document.createElement('div');
+  el.id='rule-ledger-panel';
+  el.style.cssText='margin-bottom:18px';
+  // Above the compliance panels on purpose: a known breach outranks the
+  // current standing of an account that has not broken anything.
+  anchor.insertBefore(el,anchor.firstChild);
+  return el;
+}
+
+function atRuleBar(have,need){
+  if(!(need>0))return '';
+  const pct=Math.max(0,Math.min(100,(have/need)*100));
+  return '<div style="height:6px;border-radius:4px;background:var(--border);overflow:hidden;margin:7px 0 5px">'
+    +'<div style="height:100%;width:'+pct.toFixed(1)+'%;background:var(--gold)"></div></div>'
+    +'<div style="font-size:11px;color:var(--fg3);font-family:var(--mono)">$'+fmt(have,2)
+    +' of $'+fmt(need,2)+' · '+fmt(pct,0)+'%</div>';
+}
+
+function atRuleRender(){
+  const el=atRulePanelEl(); if(!el)return;
+  const findings=atRuleFindings();
+  const log=atRuleLogSync(findings);
+  const byKey={}; findings.forEach(function(f){byKey[atRuleKey(f.acct,f.rule)]=f;});
+  const keys=Object.keys(log).sort();
+  if(!keys.length){el.innerHTML='';return;}
+
+  const openKeys=keys.filter(function(k){return !log[k].cleared;});
+  const shutKeys=keys.filter(function(k){return log[k].cleared;});
+  const owed=openKeys.reduce(function(n,k){
+    const f=byKey[k]; return n+((f&&f.more>0)?f.more:0);
+  },0);
+  const hard=openKeys.filter(function(k){return log[k].kind==='hard';}).length;
+
+  const card=function(k,cleared){
+    const r=log[k], f=byKey[k]||{};
+    const col=cleared?'var(--green)':(r.kind==='hard'?'var(--red)':'var(--gold)');
+    const tag=cleared?'cleared '+r.cleared:(r.kind==='hard'?'breached':'not satisfied yet');
+    return '<div style="border:1px solid '+(cleared?'var(--border)':col)+';border-radius:9px;padding:10px 12px;margin-bottom:8px">'
+      +'<div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">'
+        +'<span style="font-weight:800;font-size:12px;color:var(--gold)">'+r.acct+'</span>'
+        +'<span style="font-size:12px;color:var(--fg2);font-weight:700">'+r.rule+'</span>'
+        +(r.firm?'<span style="font-size:11px;color:var(--fg3)">'+r.firm+'</span>':'')
+        +'<span style="margin-left:auto;font-size:11px;font-weight:700;color:'+col+'">'+tag+'</span>'
+      +'</div>'
+      +'<div style="font-size:11px;color:var(--fg3);margin-top:5px;line-height:1.6">'
+        +(f.detail||r.atDetail||'')
+        +' · first seen '+r.firstSeen
+        +(r.reopened?' · came back '+r.reopened:'')
+      +'</div>'
+      +(!cleared&&f.need>0
+        ? atRuleBar(f.have,f.need)
+          +'<div style="font-size:11px;color:var(--gold);margin-top:3px">$'+fmt(f.more,2)
+          +' more net profit clears it</div>'
+        : '')
+      +(!cleared&&r.kind==='hard'
+        ? '<div style="font-size:11px;color:var(--red);margin-top:5px">Trading cannot undo this one. It stays on the record.</div>'
+        : '')
+      +'<div style="margin-top:8px;display:flex;gap:7px;align-items:center;flex-wrap:wrap">'
+        +'<input value="'+String(r.lesson||'').replace(/"/g,'&quot;')+'" maxlength="400" placeholder="What you now know that you did not before" '
+          +'onchange="atRuleLessonSave(\''+k.replace(/'/g,"\\'")+'\',this)" '
+          +'style="flex:1;min-width:220px;padding:5px 8px;border-radius:6px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:11px">'
+        +'<span data-saved hidden style="font-size:11px;color:var(--green)">✓</span>'
+      +'</div>'
+    +'</div>';
+  };
+
+  var head='<div style="display:flex;gap:11px;align-items:baseline;flex-wrap:wrap;margin-bottom:9px">'
+    +'<span style="font-weight:800;font-size:13px;color:var(--gold)">⚖ Rule ledger</span>'
+    +'<span style="font-size:11px;color:var(--fg3)">what was broken, and what it takes to clear it</span>';
+  if(owed>0)head+='<span style="margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--gold);font-weight:700">$'
+    +fmt(owed,2)+' of profit owed</span>';
+  else if(hard)head+='<span style="margin-left:auto;font-size:11px;color:var(--red);font-weight:700">'
+    +hard+' breach'+(hard!==1?'es':'')+' on the record</span>';
+  else head+='<span style="margin-left:auto;font-size:11px;color:var(--green);font-weight:700">nothing open</span>';
+  head+='</div>';
+
+  var shutHtml='';
+  if(shutKeys.length){
+    var open=state.settings.ruleClearedOpen===true;
+    shutHtml='<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:9px">'
+      +'<div onclick="atRuleToggleCleared()" style="display:flex;align-items:center;gap:9px;cursor:pointer;font-size:11px;color:var(--fg3);padding:3px 0">'
+        +'<span style="font-weight:700;color:var(--fg2)">Cleared</span>'
+        +'<span style="padding:1px 7px;border-radius:9px;border:1px solid var(--border)">'+shutKeys.length+'</span>'
+        +'<span style="margin-left:auto">'+(open?'▴':'▾')+'</span>'
+      +'</div>'
+      +(open?('<div style="margin-top:7px">'+shutKeys.map(function(k){return card(k,true);}).join('')+'</div>'):'')
+    +'</div>';
+  }
+
+  el.innerHTML='<div style="border:1px solid var(--border);border-radius:11px;padding:12px 13px;background:var(--bg2)">'
+    +head
+    +(openKeys.length?openKeys.map(function(k){return card(k,false);}).join('')
+                     :'<div style="font-size:11px;color:var(--fg3)">No open rule breaches. Cleared ones are kept below.</div>')
+    +shutHtml
+  +'</div>';
 }
 
 function apexPanelEl(){
@@ -14187,6 +14386,8 @@ function evalRender(){
     const _q=(n,f)=>{ try{f();}catch(e){ try{console.error('[AT] '+n+' failed:',e);}catch(_){} } };
     _q('apexRender',apexRender);
     _q('evalRender',evalRender);
+    // After both engines, because the ledger reads what they compute.
+    _q('atRuleRender',atRuleRender);
     _q('paOrdRender',paOrdRender);
     _q('woRender',woRender);
     _q('bulkRender',function(){ if(!window._bulkPending)bulkRender(); });
