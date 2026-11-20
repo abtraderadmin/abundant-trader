@@ -7,6 +7,12 @@
 //
 //   node tests/futures-day-goal.test.js
 
+const PAGE_SRC_FOR_HELPERS = require('fs').readFileSync(__dirname + '/../index.html', 'utf8');
+const HELPERS = new Function(
+  PAGE_SRC_FOR_HELPERS.slice(PAGE_SRC_FOR_HELPERS.indexOf('const AT_SESSION_ROLL_HOUR='),
+                             PAGE_SRC_FOR_HELPERS.indexOf('// \u2500\u2500 Firm rules'))
+  + '\nreturn {atSessionDate, atTradeDay};')();
+const SESSION_DATE = HELPERS.atSessionDate, TRADE_DAY = HELPERS.atTradeDay;
 const fs = require('fs');
 const path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
@@ -44,10 +50,12 @@ function run({ goal, todayPL = null, priorDays = 14, priorPerDay = 210 }) {
                                  firm: 'Apex', bracketed: true, oneDir: true } },
     },
   };
-  const fn = new Function('state', 'fmt',
+  // apexEval buckets by SESSION day now, so the sandbox supplies the same
+  // helpers the page uses — taken from the page, never reimplemented here.
+  const fn = new Function('state', 'fmt', 'atSessionDate', 'atTradeDay',
     consts.join('\n') + '\n' + src.join('\n') +
     '\nvar e=apexEval("PA-12"); return {e:e, rows:apexRuleRows(e)};');
-  return fn(state, (v, d) => Number(v).toFixed(d));
+  return fn(state, (v, d) => Number(v).toFixed(d), SESSION_DATE, TRADE_DAY);
 }
 const goalRow = r => r.rows.find(x => x.rule === 'Daily target');
 

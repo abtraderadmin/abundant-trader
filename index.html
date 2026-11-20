@@ -13019,11 +13019,27 @@ function paOrdParse(text){
 // Match the file's account label to one already configured. The export writes
 // PA-APEX-4687-12 while the app holds "PA -APEX-4687-12", so compare on digits.
 function paOrdMatchAcct(raw){
-  const digits=String(raw||'').replace(/\D/g,'');
-  const tail=digits.slice(-6);
-  const pool=[].concat(state.settings.paAccounts||[],state.settings.evalAccounts||[]).filter(a=>a&&String(a).trim());
-  let hit=pool.filter(a=>String(a).replace(/\D/g,'')===digits)[0];
-  if(!hit&&tail)hit=pool.filter(a=>String(a).replace(/\D/g,'').slice(-6)===tail)[0];
+  // Digits alone are not an identity. Black Vault ids are alphanumeric --
+  // BVFE1E00IWNI, ...IWNJ and ...IWNK all reduce to "100", so a digit match
+  // would have filed three different accounts into whichever was found first.
+  // Compare the whole alphanumeric id, and only fall back to digits when
+  // there are enough of them to mean something.
+  const norm=x=>String(x||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const want=norm(raw);
+  const pool=[].concat(state.settings.paAccounts||[],state.settings.evalAccounts||[])
+               .filter(a=>a&&String(a).trim());
+  if(!want)return null;
+  let hit=pool.filter(a=>norm(a)===want)[0];
+  if(!hit)hit=pool.filter(a=>{const n=norm(a);return n&&(n.endsWith(want)||want.endsWith(n));})[0];
+  if(!hit){
+    const digits=String(raw||'').replace(/\D/g,'');
+    if(digits.length>=4){
+      hit=pool.filter(a=>String(a).replace(/\D/g,'')===digits)[0];
+      const tail=digits.slice(-6);
+      if(!hit&&tail.length>=4)
+        hit=pool.filter(a=>String(a).replace(/\D/g,'').slice(-6)===tail)[0];
+    }
+  }
   return hit||null;
 }
 
@@ -13132,7 +13148,7 @@ function paOrdRender(){
         const target=paOrdMatchAcct(a);
         const net=rows.reduce((s,t)=>s+(t.netPL||0),0);
         const fees=rows.reduce((s,t)=>s+(t.feesActual||0),0);
-        const days={};rows.forEach(t=>days[t.date]=(days[t.date]||0)+(t.netPL||0));
+        const days={};rows.forEach(t=>{const sd=atTradeDay(t);days[sd]=(days[sd]||0)+(t.netPL||0);});
         const dayKeys=Object.keys(days).sort();
         const longs=rows.filter(t=>t.direction==='LONG').length;
         const wins=rows.filter(t=>(t.netPL||0)>0).length;
@@ -13286,9 +13302,12 @@ function apexEval(acct){
   rs.forEach(t=>{
     const pl=parseFloat(t.netPL)||0, q=Math.abs(parseFloat(t.qty)||0);
     const d=String(t.direction||'').toUpperCase();
-    if(d==='LONG'||d==='SHORT'){(dirDays[t.date]=dirDays[t.date]||{})[d]=1;}
-    if(!days[t.date])days[t.date]=0;
-    days[t.date]+=pl;
+    // Session day, not calendar day: an evening fill belongs to the next
+    // trading day, which is how the firm counts days, consistency and goals.
+    const sd=atTradeDay(t);
+    if(d==='LONG'||d==='SHORT'){(dirDays[sd]=dirDays[sd]||{})[d]=1;}
+    if(!days[sd])days[sd]=0;
+    days[sd]+=pl;
     if(pl<worstTrade)worstTrade=pl;
     if(q>maxPos)maxPos=q;
     if(q)sizes[q]=1;
@@ -13640,19 +13659,81 @@ function apexRender(){
 // Only end-of-day balances are known here, so the floor is the end-of-day
 // one. A firm that trails intraday can stop an account before this does;
 // this figure is therefore the kindest reading, never the harshest.
+// Futures sessions roll in the evening, so a fill at 18:48 belongs to the
+// NEXT trading day -- which is how the broker counts it, and how the
+// consistency and trading-day rules are measured. Proved against the Black
+// Vault dashboards: 67 fills that all show Nov 19 on the export split into
+// $3,006.28 for the day session and $278.48 for the evening, matching the
+// provider's "today" figure and its best-day figure to the cent.
+//
+// Computed at read time rather than written into the trade, so history
+// imported before this is bucketed correctly too.
+const AT_SESSION_ROLL_HOUR=17;
+function atSessionDate(dateStr,timeStr){
+  const d=String(dateStr||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d))return d;
+  const hh=parseInt(String(timeStr||'').slice(0,2),10);
+  if(!(hh>=AT_SESSION_ROLL_HOUR))return d;
+  const n=new Date(d+'T12:00:00');
+  n.setDate(n.getDate()+1);
+  return n.toISOString().slice(0,10);
+}
+// The session currently in progress, in local time. toISOString() is UTC and
+// getHours() is local, so mixing them lands on the wrong day for half of
+// every evening -- both parts are taken locally here.
+function atLiveSessionDate(){
+  const n=new Date();
+  const local=new Date(n.getTime()-n.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  return atSessionDate(local,String(n.getHours()).padStart(2,'0')+':00');
+}
+// Stocks have no evening session, so only futures roll.
+function atTradeDay(t){
+  if(!t)return '';
+  const d=String(t.date||'').slice(0,10);
+  if(t.module!=='futures')return d;
+  return atSessionDate(d,t.entryTime||t.time||'');
+}
+
+// ── Firm rules ──────────────────────────────────────────────────────────
+// Every number here is read off the firm's own published rules. Where a firm
+// is not listed the Apex figures are used, because that is what the app was
+// built against; the account card names the firm so a wrong default is
+// visible rather than silent.
+const AT_FIRM_RULES={
+  // lockMode 'cap': the floor stops rising once it reaches start + the offset,
+  // after which the account cannot be lost to a drawdown from a higher peak.
+  // lockMode 'trail': the floor keeps following the high-water mark forever.
+  // "Locks at starting balance" on a trailing floor is a guarantee that it
+  // will not sit BELOW the starting balance once reached -- not a ceiling.
+  // Proved by the dashboard: high-water $53,006.28 with a $2,000 maximum loss
+  // shows a floor of $51,006.28, which a cap at $50,000 would contradict.
+  'Apex':{maxLoss:2500,lockMode:'cap',lockAtStartPlus:100,payouts:6,minDays:8,maxContracts:10,
+          evalConsistency:null,shortDuration:null},
+  'Black Vault':{maxLoss:2000,lockMode:'trail',lockAtStartPlus:0,payouts:5,minDays:2,maxContracts:5,
+          // No single profitable day may be more than half of total net profit.
+          evalConsistency:0.50,
+          // Winning profit from trades held 5s or less, over all winning profit.
+          shortDuration:{seconds:5,advisory:0.30,review:0.50}}
+};
+function atFirmRules(firm){
+  return AT_FIRM_RULES[String(firm||'').trim()]||AT_FIRM_RULES['Apex'];
+}
 const EVAL_LOCK_OVER_START=100;
 
 function evalEval(acct){
   const c=apexCfg(acct);
+  const fr=atFirmRules(c.firm);
   const start=c.size||50000;
-  const dd=c.dd||2500;
+  // The firm's published maximum loss wins over whatever the config was
+  // seeded with, so a Black Vault account is not judged on Apex's $2,500.
+  const dd=fr.maxLoss||c.dd||2500;
   const rs=(state.trades||[]).filter(function(t){
     return t.module==='futures'&&String(t.account||'').trim()===String(acct).trim();
   });
   // Daily buckets, in order, so the high-water mark is an end-of-day one.
   const byDay={};
   rs.forEach(function(t){
-    const d=String(t.date||'').slice(0,10); if(!d)return;
+    const d=atTradeDay(t); if(!d)return;
     if(!byDay[d])byDay[d]={pl:0,n:0,maxQty:0};
     byDay[d].pl+=parseFloat(t.netPL)||0;
     byDay[d].n++;
@@ -13660,18 +13741,28 @@ function evalEval(acct){
     if(q>byDay[d].maxQty)byDay[d].maxQty=q;
   });
   const days=Object.keys(byDay).sort();
+  // The floor moves on SETTLED closes only -- the provider calls it the
+  // "highest applicable settled close". The session now in progress can still
+  // go either way, so it does not raise the floor until it ends. Leaving it
+  // in would tighten the floor mid-session on a day that might give the
+  // profit back, which is the opposite of how the account is actually judged.
+  const liveDay=atLiveSessionDate();
   let run=start, highWater=start;
   const series=days.map(function(d){
     run=parseFloat((run+byDay[d].pl).toFixed(2));
-    if(run>highWater)highWater=run;
-    return {date:d,pl:byDay[d].pl,n:byDay[d].n,bal:run};
+    if(run>highWater&&d!==liveDay)highWater=run;
+    return {date:d,pl:byDay[d].pl,n:byDay[d].n,bal:run,settled:d!==liveDay};
   });
   const profit=parseFloat((run-start).toFixed(2));
   const balance=run;
-  const lockAt=start+EVAL_LOCK_OVER_START;
+  const lockAt=start+(fr.lockAtStartPlus||0);
   const rawFloor=parseFloat((highWater-dd).toFixed(2));
-  const locked=rawFloor>=lockAt;
+  const capped=(fr.lockMode!=='trail');
+  const locked=capped&&rawFloor>=lockAt;
   const floor=locked?lockAt:rawFloor;
+  // On a trailing floor, reaching the starting balance is the point past
+  // which the account can no longer be lost below where it started.
+  const protectedAtStart=!capped&&rawFloor>=start;
   const headroom=parseFloat((balance-floor).toFixed(2));
 
   const target=parseFloat((state.settings.accountGoals||{})[acct])||0;
@@ -13688,14 +13779,44 @@ function evalEval(acct){
   const todayN=today?today.n:0;
   const overtrading=!!(baseline&&todayN>=Math.max(baseline*2,baseline+5));
 
+  // 50% consistency: no single profitable day may be more than half of total
+  // net profit. Hitting the profit goal does not pass the account on its own.
+  let consistency=null,bestDay=0,needTotal=null,needMore=null;
+  if(fr.evalConsistency){
+    const winDaysPL=series.filter(function(x){return x.pl>0;}).map(function(x){return x.pl;});
+    bestDay=winDaysPL.length?Math.max.apply(null,winDaysPL):0;
+    if(bestDay>0&&profit>0){
+      consistency=parseFloat((bestDay/profit*100).toFixed(2));
+      needTotal=parseFloat((bestDay/fr.evalConsistency).toFixed(2));
+      needMore=parseFloat(Math.max(0,needTotal-profit).toFixed(2));
+    }
+  }
+  // Short-duration share: winning profit from trades held <= N seconds over
+  // all winning profit. Losing trades are excluded from both totals.
+  let shortPct=null,shortWins=0,allWins=0;
+  if(fr.shortDuration){
+    rs.forEach(function(t){
+      const pl=parseFloat(t.netPL)||0; if(pl<=0)return;
+      allWins+=pl;
+      const h=parseFloat(t.holdSec);
+      if(isFinite(h)&&h<=fr.shortDuration.seconds)shortWins+=pl;
+    });
+    if(allWins>0)shortPct=parseFloat((shortWins/allWins*100).toFixed(1));
+  }
+
   const maxQty=series.length?Math.max.apply(null,days.map(function(d){return byDay[d].maxQty;})):0;
   const avgDay=series.length?parseFloat((profit/series.length).toFixed(2)):0;
   const daysToTarget=(toTarget!=null&&avgDay>0)?Math.ceil(toTarget/avgDay):null;
 
   return{acct:acct,cfg:c,start:start,dd:dd,trades:rs.length,days:series.length,
     profit:profit,balance:balance,highWater:highWater,floor:floor,locked:locked,
-    headroom:headroom,target:target,toTarget:toTarget,pct:pct,
-    maxQty:maxQty,maxContracts:c.maxContracts||10,avgDay:avgDay,daysToTarget:daysToTarget,
+    headroom:headroom,target:target,toTarget:toTarget,pct:pct,liveDay:liveDay,
+    capped:capped,protectedAtStart:protectedAtStart,
+    firm:c.firm||'Apex',rules:fr,
+    consistency:consistency,bestDay:bestDay,needTotal:needTotal,needMore:needMore,
+    shortPct:shortPct,shortWins:shortWins,allWins:allWins,
+    minDays:fr.minDays,
+    maxQty:maxQty,maxContracts:fr.maxContracts||c.maxContracts||10,avgDay:avgDay,daysToTarget:daysToTarget,
     baseline:baseline,todayN:todayN,overtrading:overtrading,series:series};
 }
 
@@ -13705,8 +13826,11 @@ function evalRuleRows(e){
   add(e.headroom>0,'Trailing threshold',
       '$'+fmt(e.headroom,2)+' of room — balance $'+fmt(e.balance,2)
       +' against a floor of $'+fmt(e.floor,2)
-      +(e.locked?' (locked at start + $'+EVAL_LOCK_OVER_START+')'
-                :' (high-water $'+fmt(e.highWater,2)+' − $'+fmt(e.dd,0)+')'),
+      +(e.locked
+          ? ' (locked at start + $'+fmt(e.rules.lockAtStartPlus||0,0)+')'
+          : ' (settled high-water $'+fmt(e.highWater,2)+' − $'+fmt(e.dd,0)+')'
+            +(e.protectedAtStart?' · above your starting balance, so the account cannot be lost below it':'')
+            +(e.capped?'':' · this floor keeps trailing, it does not lock')),
       e.headroom>0&&e.headroom<e.dd*0.4);
   add(e.target>0&&e.profit>=e.target,'Profit target',
       e.target>0
@@ -13714,9 +13838,36 @@ function evalRuleRows(e){
            +(e.daysToTarget!=null?(', about '+e.daysToTarget+' more day'+(e.daysToTarget!==1?'s':'')+' at $'+fmt(e.avgDay,0)+'/day'):''))
         : 'no target set for this account',
       e.target>0&&e.profit<e.target);
+  // The profit goal alone does not pass a Black Vault account: one outsized
+  // day can leave it met and still blocked, so the gate is stated as its own
+  // rule with the figure needed to clear it.
+  if(e.rules.evalConsistency){
+    const lim=e.rules.evalConsistency*100;
+    add(e.consistency!=null&&e.consistency<=lim,
+        fmt(lim,0)+'% consistency rule',
+        e.consistency==null
+          ? 'no profitable day yet'
+          : ('best day $'+fmt(e.bestDay,2)+' is '+fmt(e.consistency,1)+'% of $'+fmt(e.profit,2)+' net'
+             +(e.consistency>lim
+                ? ' — needs $'+fmt(e.needTotal,2)+' total, $'+fmt(e.needMore,2)+' more'
+                : ' — clear')),
+        false);
+  }
+  if(e.rules.shortDuration&&e.shortPct!=null){
+    const sd=e.rules.shortDuration;
+    const over=e.shortPct>sd.review*100, adv=e.shortPct>sd.advisory*100;
+    add(!over,'Short-duration share',
+        fmt(e.shortPct,1)+'% of winning profit from trades under '+sd.seconds+'s'
+        +' ($'+fmt(e.shortWins,2)+' of $'+fmt(e.allWins,2)+') — '
+        +(over?'over '+fmt(sd.review*100,0)+'%, manual review'
+             :(adv?'advisory only, no penalty':'clear')),
+        adv&&!over);
+  }
   add(e.maxQty<=e.maxContracts,'Contract limit',
-      e.maxQty+' of '+e.maxContracts+' used at most');
-  add(true,'Days traded',e.days+' day'+(e.days!==1?'s':''),false);
+      e.maxQty+' of '+e.maxContracts+' used at most'
+      +(e.firm?' ('+e.firm+')':''));
+  add(e.days>=(e.minDays||0),'Trading days',
+      e.days+' of '+(e.minDays||0)+' required');
   if(e.baseline){
     add(!e.overtrading,'Trade count today',
         e.todayN+' today — a day that makes money usually takes '+e.baseline,
@@ -13761,8 +13912,12 @@ function evalRender(){
     const bad=rows.filter(function(r){return !r.ok&&!r.warn;}).length;
     combined+=e.profit;
     if(e.headroom<=0)atRisk++;
+    const blockedByConsistency=e.rules.evalConsistency&&e.consistency!=null
+      &&e.consistency>e.rules.evalConsistency*100&&e.target>0&&e.profit>=e.target;
     const chip=e.headroom<=0
       ? '<span style="color:var(--red);font-weight:700">below the floor</span>'
+      : blockedByConsistency
+      ? '<span style="color:var(--gold);font-weight:700">target met · consistency '+fmt(e.consistency,0)+'%</span>'
       : (e.overtrading
           ? '<span style="color:var(--red);font-weight:700">'+e.todayN+' trades today</span>'
           : (e.profit>=e.target&&e.target>0
@@ -13837,9 +13992,9 @@ function evalRender(){
     +'<div class="form-hd"><span class="form-title">Evaluation Rule Compliance</span>'+badge+'</div>'
     +'<div style="padding:11px 14px">'
       +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:9px">'
-        +'Simulated accounts — no consistency rule, and none of this counts as real money. '
-        +'The trailing threshold follows the highest end-of-day balance and locks at start + $'
-        +EVAL_LOCK_OVER_START+'. Combined '+(combined>=0?'+':'')+'$'+fmt(Math.abs(combined),2)+'.</div>'
+        +'Simulated accounts — none of this counts as real money. Each is judged by its own firm\'s rules. '
+        +'The trailing threshold follows the highest SETTLED end-of-day balance; the session in '
+        +'progress does not raise it. Each firm locks it differently — see the account. Combined '+(combined>=0?'+':'')+'$'+fmt(Math.abs(combined),2)+'.</div>'
       +(bodies||'<div style="font-size:11px;color:var(--fg3)">No active evaluations.</div>')
       +shutHtml
     +'</div></div>';

@@ -117,7 +117,10 @@ console.log('\nthe chosen expiry is checked against the model');
 t('too-near an expiry is flagged',()=>{
   const soon=new Date(Date.now()+10*86400000).toISOString().slice(0,10);
   const g=plan({type:'CALL',price:100,target:120,atr:3,expiry:soon});
-  assert(/only 10 days/.test(g.exp),g.exp);
+  // The exact figure moves with the clock; what matters is that a short
+  // expiry is called short and the shortfall is named.
+  assert(/only \d+ days/.test(g.exp),g.exp);
+  assert(/normal-regime read/.test(g.exp),g.exp);
 });
 t('enough time is confirmed',()=>{
   const far=new Date(Date.now()+200*86400000).toISOString().slice(0,10);

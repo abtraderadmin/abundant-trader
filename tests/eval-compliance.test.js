@@ -100,7 +100,7 @@ t('no consistency rule is applied to an eval',()=>{
 });
 t('the threshold, the target and the contract cap are all judged',()=>{
   const rules=w.evalRuleRows(w.evalEval('EV-A')).map(r=>r.rule);
-  ['Trailing threshold','Profit target','Contract limit','Days traded']
+  ['Trailing threshold','Profit target','Contract limit','Trading days']
     .forEach(r=>assert(rules.includes(r),'missing rule: '+r));
 });
 t('the contract cap compares the largest position taken',()=>{

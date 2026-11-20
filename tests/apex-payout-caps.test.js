@@ -8,6 +8,12 @@
 //
 //   node tests/apex-payout-caps.test.js
 
+const PAGE_SRC_FOR_HELPERS = require('fs').readFileSync(__dirname + '/../index.html', 'utf8');
+const HELPERS = new Function(
+  PAGE_SRC_FOR_HELPERS.slice(PAGE_SRC_FOR_HELPERS.indexOf('const AT_SESSION_ROLL_HOUR='),
+                             PAGE_SRC_FOR_HELPERS.indexOf('// \u2500\u2500 Firm rules'))
+  + '\nreturn {atSessionDate, atTradeDay};')();
+const SESSION_DATE = HELPERS.atSessionDate, TRADE_DAY = HELPERS.atTradeDay;
 const fs = require('fs');
 const path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
@@ -40,9 +46,11 @@ function evalWith({ profit, withdrawals = [], days = 10, size = 50000, dd = 2500
       apexAccounts: { 'PA-12': { size, dd, maxContracts: 10, firm: 'Apex', bracketed: true, oneDir: true } },
     },
   };
-  return new Function('state', 'fmt',
+  // apexEval buckets by SESSION day now, so the sandbox supplies the same
+  // helpers the page uses — taken from the page, never reimplemented here.
+  return new Function('state', 'fmt', 'atSessionDate', 'atTradeDay',
     consts.join('\n') + '\n' + src.join('\n') + '\nreturn apexEval("PA-12");'
-  )(state, (v, d) => Number(v).toFixed(d));
+  )(state, (v, d) => Number(v).toFixed(d), SESSION_DATE, TRADE_DAY);
 }
 const payout = (n, amt) => Array.from({ length: n }, (_, i) => ({ account: 'PA-12', amount: amt }));
 

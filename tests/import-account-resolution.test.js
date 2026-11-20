@@ -116,8 +116,14 @@ console.log('\nno path writes an unresolved account name');
 // through atAcctNameTarget(). Checked structurally so a new importer added
 // later cannot quietly skip it.
 {
-  const writes = [...html.matchAll(/\baccount:\s*([^,\n]+)/g)]
-    .map(m => ({ expr: m[1].trim(), line: html.slice(0, m.index).split('\n').length }))
+  // Prose in a comment can read like code: "...a Black Vault account: one
+  // outsized day..." matched this and was reported as an unresolved write.
+  // Comment lines are not code, so they are not scanned.
+  const codeOnly = html.split('\n')
+    .map(l => /^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l.replace(/\/\/.*$/, ''))
+    .join('\n');
+  const writes = [...codeOnly.matchAll(/\baccount:\s*([^,\n]+)/g)]
+    .map(m => ({ expr: m[1].trim(), line: codeOnly.slice(0, m.index).split('\n').length }))
     .filter(w =>
       // reads and comparisons, not writes into stored records
       !/^t\.account\b/.test(w.expr) &&
