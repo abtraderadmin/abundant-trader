@@ -2296,11 +2296,11 @@ body::before{
         <div style="display:flex;gap:5px;align-items:center"><div class="cfg-lbl" style="min-width:48px;margin-bottom:0">Acct 3</div><input class="fc" id="cfg-cash3" placeholder="Optional" maxlength="40" style="flex:1;min-width:0"></div>
         <div class="cfg-row" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
           <div class="cfg-lbl">Stock/Options Account Value <span style="font-size:10px;color:var(--fg3);font-weight:400">for % of capital calculations</span></div>
-          <div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-so-acct-value" type="number" step="1000" placeholder="e.g. 25000"></div>
+          <div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-so-acct-value" oninput="atRiskBudgetPaint()" type="number" step="1000" placeholder="e.g. 25000"></div>
         </div>
         <div class="cfg-row">
           <div class="cfg-lbl">Risk Per Trade (%)</div>
-          <input class="fc mono" id="cfg-trade-risk-pct" type="number" step="0.5" min="0.1" max="10" placeholder="2" style="max-width:80px">
+          <input class="fc mono" id="cfg-trade-risk-pct" oninput="atRiskBudgetPaint()" type="number" step="0.5" min="0.1" max="10" placeholder="2" style="max-width:80px">
         </div>
         <button class="cfg-btn" onclick="saveCashAccounts()">Save Accounts</button>
         <div class="cfg-saved" id="cash-saved" hidden>✓ Saved</div>
@@ -2337,9 +2337,10 @@ body::before{
     <div class="cfg-card">
       <div class="cfg-hd">Governor Parameters</div>
       <div class="cfg-body">
-        <div class="cfg-row"><div class="cfg-lbl">Max Planned Loss / Trade</div><div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-max-loss" type="number" step="25" placeholder="200"></div></div>
+        <div class="cfg-row"><div class="cfg-lbl">Max Planned Loss / Trade</div><div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-max-loss" oninput="atRiskBudgetPaint()" type="number" step="25" placeholder="200"></div></div>
         <div class="cfg-row"><div class="cfg-lbl">Capital Review Ceiling</div><div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-cap-ceiling" type="number" step="100" placeholder="1500"></div></div>
         <div class="cfg-row"><div class="cfg-lbl">Min R:R to Take Trade</div><input class="fc mono" id="cfg-min-rr" type="number" step="0.1" placeholder="1.5"></div>
+        <div class="cfg-sub" id="cfg-risk-budget-note" style="margin:2px 0 8px;padding:8px 10px;border-radius:6px;background:var(--s2);border:1px solid var(--border);line-height:1.6"></div>
         <div class="cfg-row"><div class="cfg-lbl">Trading Days / Year</div><input class="fc mono" id="cfg-trading-days" type="number" step="1" placeholder="252"></div>
         <div style="margin:8px 0 4px;padding:8px 10px;border-radius:6px;background:var(--blue-bg);border:1px solid rgba(96,165,250,0.2);font-size:11px;color:var(--fg2)">
           <span style="color:var(--blue);font-weight:600">📋 Trade Duration Rule —</span> Any trade held past the close of its entry day is classified as a <strong style="color:var(--blue)">Short Swing</strong>. Same-day open &amp; close = Day Trade. Multi-week+ = Position.
@@ -2519,6 +2520,79 @@ const fmt=(n,d=2)=>n.toLocaleString('en-US',{minimumFractionDigits:d,maximumFrac
 const $=(n)=>(n<0?'-$':'$')+fmt(Math.abs(n));
 const fmtDate=(d)=>{if(!d)return'—';const p=d.split('-');return p[1]+'/'+p[2]+'/'+p[0];};
 
+// ── ONE RISK BUDGET ──────────────────────────────────────────────────
+// There used to be three, and they disagreed. The opportunities queue sized
+// on account x percent, the stock plan sized on a flat maxLossPerTrade, and
+// the stock Governor inferred the account size BACKWARDS out of that flat
+// figure (maxLoss / 2%), so it reported every percentage against a $10,000
+// account that had long since stopped existing. One trade could come back
+// with three different share counts depending on which screen asked, which
+// is worse than any one of them being wrong.
+//
+// Now the account value is the account value. The percentage and the flat
+// cap are both limits on a single trade, and the SMALLER governs: capital
+// preservation obeys the tighter limit, it does not average two of them.
+//
+// The capital ceiling is deliberately kept separate. It limits position
+// SIZE, not risk, so a trade held back by it must not read as a trade held
+// back by risk -- those call for different responses, and conflating them
+// hid the fact that a wide-stop idea can be capital-throttled into risking
+// a third of what was allowed.
+// `over` lets settings preview a change before it is saved, using the figures
+// currently in the inputs. Without it the note would describe the saved state
+// while the user looked at different numbers on screen.
+function atRiskBudget(over){
+  const s=(typeof state!=='undefined'&&state.settings)||{};
+  const o=over||{};
+  const num=function(a,b){const n=parseFloat(a);return isFinite(n)?n:b;};
+  const acctValue=num(o.acctValue,parseFloat(s.stockOptionsAccountValue)||0)||0;
+  const pct=num(o.pct,parseFloat(s.tradeRiskPct)||2)||2;
+  const hardCap=num(o.hardCap,parseFloat(s.maxLossPerTrade)||0)||0;
+  const pctBudget=acctValue>0?parseFloat((acctValue*pct/100).toFixed(2)):0;
+  let budget=0,binding='none';
+  if(pctBudget>0&&hardCap>0){
+    budget=Math.min(pctBudget,hardCap);
+    binding=(hardCap<pctBudget)?'cap':(pctBudget<hardCap?'pct':'equal');
+  }else if(pctBudget>0){ budget=pctBudget; binding='pct'; }
+  else if(hardCap>0){ budget=hardCap; binding='cap'; }
+  return {acctValue:acctValue,pct:pct,pctBudget:pctBudget,hardCap:hardCap,
+          budget:budget,binding:binding,
+          ceiling:parseFloat(s.capitalCeiling)||0,
+          // True when the account value has never been set, so a caller can
+          // say "unknown" rather than quietly standing in a figure for it.
+          acctValueKnown:acctValue>0};
+}
+// Plain-English version of the above, for settings and for the Governor. The
+// point is that whichever setting is doing the limiting should be named, so
+// changing the wrong one is not the first thing anybody tries.
+// Painted in settings and refreshed as the inputs change, so which setting is
+// doing the limiting is visible while it is being chosen rather than inferred
+// later from a share count that looked too small.
+function atRiskBudgetPaint(){
+  const el=document.getElementById('cfg-risk-budget-note');
+  if(!el)return;
+  const v=function(id){const n=document.getElementById(id);return n?n.value:undefined;};
+  el.innerHTML=atRiskBudgetNote({acctValue:v('cfg-so-acct-value'),
+                                 pct:v('cfg-trade-risk-pct'),
+                                 hardCap:v('cfg-max-loss')});
+}
+function atRiskBudgetNote(over){
+  const b=atRiskBudget(over);
+  if(!b.acctValueKnown)
+    return 'Set your Stock &amp; Options account value above and this becomes a real figure. '
+      +'Until then only the $'+fmt(b.hardCap,0)+' max-loss cap applies.';
+  const acct='$'+fmt(b.acctValue,2);
+  if(b.binding==='cap')
+    return '<strong>$'+fmt(b.budget,2)+' of risk per trade.</strong> Your $'+fmt(b.hardCap,0)
+      +' max-loss cap is tighter than '+fmt(b.pct,1)+'% of '+acct+' ($'+fmt(b.pctBudget,2)
+      +'), so the cap governs. That is '+fmt(b.budget/b.acctValue*100,2)+'% of the account.';
+  if(b.binding==='pct')
+    return '<strong>$'+fmt(b.budget,2)+' of risk per trade.</strong> '+fmt(b.pct,1)+'% of '+acct
+      +' is tighter than your $'+fmt(b.hardCap,0)+' max-loss cap, so the percentage governs.';
+  return '<strong>$'+fmt(b.budget,2)+' of risk per trade</strong> — '+fmt(b.pct,1)+'% of '+acct
+    +' and your max-loss cap are the same figure.';
+}
+
 // ── 1/3 SCALING PLAN ────────────────────────────────────────
 function scaleThirds(total){
   if(!total||total<1)return{t1:0,t2:0,run:0};
@@ -2573,7 +2647,8 @@ function recalcF(){
   const exit=parseFloat(document.getElementById('f-exit').value)||0;
   const feesA=parseFloat(document.getElementById('f-fees-actual').value)||0;
   const dir=state.fDir==='LONG'?1:-1;
-  const maxAllowed=state.settings.maxLossPerTrade;
+  // The unified budget, so the blocker and the sizing hint agree.
+  const maxAllowed=atRiskBudget().budget||state.settings.maxLossPerTrade;
   const minRR=state.settings.minRR;
 
   let govOk=null,govMsg='Enter entry + stop + contracts to see Governor check.';
@@ -2636,7 +2711,8 @@ function recalcS(){
   const exit=parseFloat(document.getElementById('s-exit').value)||0;
   const feesA=parseFloat(document.getElementById('s-fees-actual').value)||0;
   const dir=state.sDir==='LONG'?1:-1;
-  const maxAllowed=state.settings.maxLossPerTrade;
+  // The unified budget, so the blocker and the sizing hint agree.
+  const maxAllowed=atRiskBudget().budget||state.settings.maxLossPerTrade;
   const minRR=state.settings.minRR;
 
   // ── Suggested shares hint ──
@@ -2655,9 +2731,16 @@ function recalcS(){
     const riskPer=Math.abs(entry-stop);
     const totalRisk=riskPer*shares;
     const posVal=entry*shares;
-    const accSize=state.settings.maxLossPerTrade?state.settings.maxLossPerTrade/0.02:10000;
+    // The real account value, not maxLoss/2% read backwards. That inference
+    // put "% Risk of $10K" on the panel for an account of nearly $60,000, so
+    // every percentage it showed was out by the ratio between the two.
+    const _rb=atRiskBudget();
+    const accSize=_rb.acctValue;
     const riskPct=accSize>0?(totalRisk/accSize*100):0;
-    const lbl=document.getElementById('sc-risk-pct-lbl');if(lbl)lbl.textContent='% Risk of $'+Math.round(accSize/1000)+'K';
+    const lbl=document.getElementById('sc-risk-pct-lbl');
+    if(lbl)lbl.textContent=accSize>0
+      ? ('% Risk of $'+fmt(accSize,0))
+      : '% Risk — set account value';
     let rr=0,maxP=0,t1P=0,grossPL=0,netPL=0;
 
     if(totalRisk>maxAllowed){govOk=false;govMsg=`⚠ BLOCK: Risk ${$(totalRisk)} exceeds max ${$(maxAllowed)}. Reduce shares or tighten stop.`;}
@@ -4189,6 +4272,7 @@ function renderCfg(){
   if(g('cfg-max-loss'))g('cfg-max-loss').value=s.maxLossPerTrade;
   if(g('cfg-cap-ceiling'))g('cfg-cap-ceiling').value=s.capitalCeiling;
   if(g('cfg-min-rr'))g('cfg-min-rr').value=s.minRR;
+  atRiskBudgetPaint();
   if(g('cfg-trading-days'))g('cfg-trading-days').value=s.tradingDays;
   if(g('trade-count'))g('trade-count').textContent=state.trades.length+' trades stored';
   const ca=s.cashAccounts||['','',''];
@@ -10296,11 +10380,9 @@ function oreParseAlerts(){
 //   Risk %              = Total Risk / Position Total
 //   Risk/Reward         = 1 : (Profit Per Share / Risk Per Share)
 
-function oreRiskBudget(){
-  var acct=parseFloat(state.settings&&state.settings.stockOptionsAccountValue)||10000;
-  var pct =parseFloat(state.settings&&state.settings.tradeRiskPct)||1;
-  return acct*pct/100;
-}
+// Was account x pct, which ignored the max-loss cap entirely and sized the
+// queue roughly six times larger than the stock plan sized the same trade.
+function oreRiskBudget(){ return atRiskBudget().budget; }
 
 function oreQueueMath(item){
   var dir   =item.direction;

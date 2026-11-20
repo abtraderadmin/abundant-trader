@@ -19,7 +19,9 @@ const pass = m => console.log('  ok   ' + m);
 const near = (a, b, tol = 0.01) => a != null && Math.abs(a - b) < tol;
 
 const grab = n => (html.match(new RegExp('function ' + n + '\\([\\s\\S]*?\\n\\}')) || [])[0];
-const src = ['oreRiskBudget', 'oreQueueMath', 'oreRRVerdict'].map(grab);
+// atRiskBudget is the single budget oreRiskBudget now defers to, so the
+// sandbox takes the real one from the page rather than standing in a figure.
+const src = ['atRiskBudget', 'oreRiskBudget', 'oreQueueMath', 'oreRRVerdict'].map(grab);
 if (src.some(x => !x)) { console.error('could not extract the math functions'); process.exit(1); }
 
 function math(item, settings) {
