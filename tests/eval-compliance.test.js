@@ -7,10 +7,13 @@ const w=dom.window; w.addEventListener('error',()=>{});
 let fail=0;
 const t=(m,fn)=>{try{fn();console.log('  ok   '+m);}catch(e){fail++;console.log('  FAIL '+m+'\n       '+e.message);}};
 const BLOB='at_v2';
-const today=new Date().toISOString().slice(0,10);
+// The session now in progress, taken from the page rather than recomputed:
+// a calendar date disagrees with it between the 17:00 roll and midnight,
+// which made these assertions pass or fail depending on the clock.
+const today=w.atLiveSessionDate();
 let n=0;
 const tr=(acct,date,pl,qty)=>({id:acct+date+(++n),module:'futures',account:acct,accountType:'eval',
-  date,symbol:'MES',direction:'LONG',qty:qty||2,netPL:pl,grossPL:pl,status:'CLOSED',exitPrice:1});
+  date,entryTime:'09:30',symbol:'MES',direction:'LONG',qty:qty||2,netPL:pl,grossPL:pl,status:'CLOSED',exitPrice:1});
 function seed(trades,extra){
   w.localStorage.setItem(BLOB,JSON.stringify({
     settings:Object.assign({evalAccounts:['EV-A','EV-B','','','','','','','',''],

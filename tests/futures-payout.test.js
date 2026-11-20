@@ -12,8 +12,9 @@ const PAGE_SRC_FOR_HELPERS = require('fs').readFileSync(__dirname + '/../index.h
 const HELPERS = new Function(
   PAGE_SRC_FOR_HELPERS.slice(PAGE_SRC_FOR_HELPERS.indexOf('const AT_SESSION_ROLL_HOUR='),
                              PAGE_SRC_FOR_HELPERS.indexOf('// \u2500\u2500 Firm rules'))
-  + '\nreturn {atSessionDate, atTradeDay};')();
+  + '\nreturn {atSessionDate, atTradeDay, atLiveSessionDate, atDayLockState};')();
 const SESSION_DATE = HELPERS.atSessionDate, TRADE_DAY = HELPERS.atTradeDay;
+const LIVE_DAY = HELPERS.atLiveSessionDate, LOCK_STATE = HELPERS.atDayLockState;
 const fs = require('fs');
 const path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
@@ -49,9 +50,9 @@ function evalWith({ profit, withdrawals = [], days = 10, size = 150000, dd = 500
   // apexEval now buckets by SESSION day, so the sandbox has to supply the
   // same helper the page does. Passed in rather than redefined, so the test
   // cannot drift from the real rule.
-  const run = new Function('state', 'fmt', 'atSessionDate', 'atTradeDay',
+  const run = new Function('state', 'fmt', 'atSessionDate', 'atTradeDay', 'atLiveSessionDate', 'atDayLockState',
     consts.join('\n') + '\n' + src.join('\n') + '\nreturn apexEval("PA-12");');
-  return run(state, (v, d) => Number(v).toFixed(d), SESSION_DATE, TRADE_DAY);
+  return run(state, (v, d) => Number(v).toFixed(d), SESSION_DATE, TRADE_DAY, LIVE_DAY, LOCK_STATE);
 }
 
 console.log('\nbalance reflects payouts');

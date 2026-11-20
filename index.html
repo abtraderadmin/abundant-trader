@@ -2313,6 +2313,14 @@ body::before{
         <div id="cfg-day-goals-rows"><div style="font-size:11px;color:var(--fg3)">Name your accounts in Stock &amp; Options Accounts above, then save those first.</div></div>
         <div class="cfg-sub" style="margin:14px 0 8px;padding-top:12px;border-top:1px solid var(--border)">Futures accounts &mdash; daily P&amp;L target per funded account. Shown as progress on the Futures panel; a day under the target is still a green day, not a miss.</div>
         <div id="cfg-day-goals-futures-rows"><div style="font-size:11px;color:var(--fg3)">Name your eval or PA accounts in Futures Accounts above, then save those first.</div></div>
+        <div class="cfg-sub" style="margin:14px 0 8px;padding-top:12px;border-top:1px solid var(--border)">Platform lockouts &mdash; the profit and loss limits set on your <em>trading platform</em>. One pair for every futures account, because the copier sends the same orders to all of them. The app does not enforce these; it shows where the session stands against them, and warns before you get there.</div>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <span style="color:var(--fg3);font-size:11px;white-space:nowrap">Profit lockout $</span>
+          <input class="fc mono" id="cfg-fut-lock-profit" type="number" step="25" min="0" placeholder="e.g. 250" style="width:90px" oninput="atLockNote()">
+          <span style="color:var(--fg3);font-size:11px;white-space:nowrap">Loss lockout $</span>
+          <input class="fc mono" id="cfg-fut-lock-loss" type="number" step="25" min="0" placeholder="e.g. 150" style="width:90px" oninput="atLockNote()">
+        </div>
+        <div class="cfg-sub" id="cfg-fut-lock-note" style="margin-top:7px"></div>
         <button class="cfg-btn" onclick="saveDayGoals()">Save Day Goals</button>
         <div class="cfg-saved" id="day-goals-saved" hidden>✓ Saved</div>
       </div>
@@ -2445,6 +2453,10 @@ let state = {
   logFilter:'all', cashFilter:false, withdrawals:[],
   settings:{
     personalGoal:6000, propGoal:3000, accountGoals:{}, accountDayGoals:{},
+    // Platform lockouts, one pair for every futures account: the copier
+    // sends the same orders everywhere, so the limits belong to the
+    // platform rather than to any one account.
+    futLockProfit:0, futLockLoss:0,
     maxLossPerTrade:200, capitalCeiling:1500,
     minRR:1.5, tradingDays:260,
     avApiKey:'', academyMode:false,
@@ -4189,6 +4201,11 @@ function renderCfg(){
   // filtered cashAccounts - so a funded account could not show one.
   const fAccts=[].concat(s.evalAccounts||[],s.paAccounts||[])
                  .filter(function(n){return n&&n.trim()&&!atAcctClosed(n);});
+  // Platform lockouts are one global pair, not a per-account row. atSet so a
+  // repaint cannot wipe a figure that has been typed but not saved yet.
+  atSet(g('cfg-fut-lock-profit'),s.futLockProfit||'');
+  atSet(g('cfg-fut-lock-loss'),s.futLockLoss||'');
+  atLockNote();
   const dgF=g('cfg-day-goals-futures-rows');
   if(dgF){
     dgF.innerHTML=fAccts.map(function(nm,i){
@@ -4331,6 +4348,29 @@ function saveCashAccounts(){
   if(tdCont){const named2=ca.filter(n=>n&&n.trim());tdCont.innerHTML=renderTaxDeferredRows(named2);}
   const el=document.getElementById('cash-saved');el.hidden=false;setTimeout(()=>el.hidden=true,2000);
 }
+// What the two lockout figures actually demand of you. A profit and a loss
+// limit are not independent settings: together they fix the win rate below
+// which the pair loses money however well each individual trade is picked.
+// Showing that here means the number is visible while it is being chosen,
+// rather than discovered a month later in the equity curve.
+function atLockNote(){
+  const el=document.getElementById('cfg-fut-lock-note'); if(!el)return;
+  const pe=document.getElementById('cfg-fut-lock-profit');
+  const le=document.getElementById('cfg-fut-lock-loss');
+  const p=Math.abs(parseFloat(pe&&pe.value)||0);
+  const l=Math.abs(parseFloat(le&&le.value)||0);
+  if(!p||!l){
+    el.textContent=(p||l)?'Set both to see what win rate the pair needs.':'';
+    return;
+  }
+  const be=l/(p+l);
+  el.innerHTML='Risking $'+fmt(l,0)+' to make $'+fmt(p,0)+' is '+fmt(p/l,2)+':1, so on days'
+    +' that end at one limit or the other this pair only makes money above a <strong>'
+    +fmt(be*100,1)+'% win rate</strong>'
+    +(be>=0.5
+        ? ' — more than half your days have to be green just to stay level.'
+        : '.');
+}
 function saveDayGoals(){
   const ca=state.settings.cashAccounts||['','',''];
   if(!state.settings.accountDayGoals)state.settings.accountDayGoals={};
@@ -4343,8 +4383,12 @@ function saveDayGoals(){
   });
   // Futures targets share accountDayGoals, keyed by the same account name, so
   // the rename registry already carries them.
+  // Exactly the filter renderCfg builds the rows with, closed accounts
+  // included. It used to keep them, so one closed account anywhere but the
+  // end shifted every row after it and saved each target onto the wrong
+  // account.
   const fa=[].concat(state.settings.evalAccounts||[],state.settings.paAccounts||[])
-             .filter(function(n){return n&&n.trim();});
+             .filter(function(n){return n&&n.trim()&&!atAcctClosed(n);});
   fa.forEach(function(nm,i){
     const el=document.getElementById('cfg-fday-goal-'+(i+1));
     if(!el)return;
@@ -4352,9 +4396,21 @@ function saveDayGoals(){
     if(!isNaN(v)&&v>0)dg[nm]=v;
     else if(!isNaN(v)&&v===0)delete dg[nm];
   });
+  // One global pair, read straight off the two inputs.
+  const lp=parseFloat((document.getElementById('cfg-fut-lock-profit')||{}).value);
+  const ll=parseFloat((document.getElementById('cfg-fut-lock-loss')||{}).value);
+  state.settings.futLockProfit=isNaN(lp)?0:Math.abs(lp);
+  state.settings.futLockLoss=isNaN(ll)?0:Math.abs(ll);
+  // Saved means no longer dirty: leaving the flag set would make the next
+  // repaint keep a stale value instead of the one now in state.
+  ['cfg-fut-lock-profit','cfg-fut-lock-loss'].forEach(function(id){
+    const el=document.getElementById(id); if(el)delete el.dataset.atDirty;
+  });
   saveState();
   try{if(typeof apexRender==='function')apexRender();}catch(e){}
+  try{if(typeof evalRender==='function')evalRender();}catch(e){}
   renderPortfolioHoldings();
+  atLockNote();
   const el=document.getElementById('day-goals-saved');el.hidden=false;setTimeout(()=>el.hidden=true,2000);
 }
 // IRS Uniform Lifetime Table (2022 updated) — distribution period by age
@@ -13361,7 +13417,11 @@ function apexEval(acct){
   // green day. Framing it as a floor is what turns "I'm done at $210" into
   // another trade, which is the behaviour this panel exists to discourage.
   const dayGoal=parseFloat((state.settings.accountDayGoals||{})[acct])||0;
-  const todayKey=new Date().toISOString().slice(0,10);
+  // The session day, not the calendar day. These buckets are keyed by
+  // atTradeDay, so a calendar key read an empty bucket every evening
+  // between the 17:00 roll and midnight -- the panel said "no trades
+  // today" during the session that was actually running.
+  const todayKey=atLiveSessionDate();
   const todayPL=parseFloat((days[todayKey]||0).toFixed(2));
   const tradedToday=Object.prototype.hasOwnProperty.call(days,todayKey);
   const goalPct=dayGoal>0?Math.max(0,Math.min(1,todayPL/dayGoal)):0;
@@ -13404,6 +13464,7 @@ function apexEval(acct){
   return{acct:acct,cfg:c,trades:rs.length,profit:profit,balance:balance,safety:safety,
     withdrawn:withdrawn,aboveNet:aboveNet,canWithdraw:canWithdraw,blockers:blockers,
     dayGoal:dayGoal,todayPL:todayPL,tradedToday:tradedToday,goalPct:goalPct,avgDay:avgDay,
+    lock:atDayLockState(todayPL,tradedToday,state.settings),
     payoutsTaken:payoutsTaken,payoutNo:payoutNo,payoutCap:payoutCap,
     maxPayouts:APEX_MAX_PAYOUTS,pastSchedule:pastSchedule,cappedByApex:cappedByApex,
     cleared:cleared,scalingCap:scalingCap,maxPos:maxPos,best:best,worstDay:worstDay,
@@ -13476,6 +13537,14 @@ function apexRuleRows(e){
           : ('no trades logged today · target '+"$"+fmt(e.dayGoal,0)))
         +(e.avgDay>0?(' · averaging '+"$"+fmt(e.avgDay,2)+' over '+e.days+' day'+(e.days!==1?'s':'')):''),
         false);
+  }
+  // Platform lockouts. Reported, never graded: hitting either one is the plan
+  // working, so this row is a NOTE at worst and never a FAIL. Only the losing
+  // side warns -- being close to the profit lockout needs no warning.
+  if(e.lock){
+    add(!(e.lock.hit==='loss'||e.lock.near==='loss'),'Platform lockouts',
+        atDayLockText(e.lock),
+        e.lock.hit==='loss'||e.lock.near==='loss');
   }
   // The cap schedule is per payout number and the account closes after the
   // last one, so where you are in the sequence decides the ceiling.
@@ -13569,6 +13638,7 @@ function apexRender(){
               +(e.tradedToday?("$"+fmt(e.todayPL,2)):'no trades yet')+' of '+"$"+fmt(e.dayGoal,0)+' today</span>'
             :'')
         +(e.withdrawn>0?'<span style="font-size:11px;color:var(--fg3)" title="already paid out, subtracted from the balance">-'+"$"+fmt(e.withdrawn,2)+' withdrawn</span>':'')
+        +atDayLockPill(e.lock)
         +(e.toPayout>0?'<span style="font-size:11px;color:var(--gold)">$'+fmt(e.toPayout,2)+' to payout</span>'
                       :(e.canWithdraw>0
                         ?'<span style="font-size:11px;color:var(--green);font-weight:700" title="above the safety net, capped by the Apex payout schedule">'+"$"+fmt(e.canWithdraw,2)+' available to withdraw'+(e.cappedByApex?' (cap)':'')+'</span>'
@@ -13710,6 +13780,84 @@ function atTradeDay(t){
   return atSessionDate(d,t.entryTime||t.time||'');
 }
 
+// ── Platform day lockouts ───────────────────────────────────────────────
+// The profit and loss limits set on the trading platform, not here: the app
+// does not enforce them, it reports where the day stands against them so the
+// lockout is never the first notice that the day is over.
+//
+// One pair across every futures account. The copier sends the same orders to
+// all of them, so a per-account figure would be a fiction -- and it would hide
+// the thing that actually matters, which is that a red day lands on every
+// account at once.
+//
+// The two warning thresholds are deliberately different. Nearing the profit
+// lockout is information: the day is nearly banked either way. Nearing the
+// loss lockout is a decision, and by the time it is 80% gone the decision is
+// mostly made, so that one warns earlier.
+const AT_LOCK_NEAR_PROFIT=0.80;
+const AT_LOCK_NEAR_LOSS=0.70;
+// Stored unsigned either way: a loss limit is a size, not a direction, and
+// accepting "-150" as readily as "150" avoids a sign typo silently disabling
+// the only warning on the losing side.
+function atDayLocksFrom(settings){
+  const s=settings||{};
+  return{profit:Math.abs(parseFloat(s.futLockProfit)||0),
+         loss:Math.abs(parseFloat(s.futLockLoss)||0)};
+}
+function atDayLocks(){return atDayLocksFrom(state.settings);}
+// Where today sits against the two limits. Returns null when neither is set,
+// so every caller renders nothing rather than an empty row.
+// Pure: everything it needs arrives as arguments, so it is testable in
+// isolation and cannot read a half-built global.
+function atDayLockState(todayPL,traded,settings){
+  const L=atDayLocksFrom(settings);
+  if(!L.profit&&!L.loss)return null;
+  const pl=parseFloat(todayPL)||0;
+  const down=Math.max(0,-pl);
+  const o={pl:pl,traded:!!traded,profit:L.profit,loss:L.loss,hit:null,near:null,
+           profitPct:L.profit>0?pl/L.profit:null,
+           lossPct:L.loss>0?down/L.loss:null};
+  // Loss is tested first and wins any tie. A day cannot be both, and if the
+  // numbers ever say it is, the one worth showing is the one that costs money.
+  if(L.loss>0&&down>=L.loss)o.hit='loss';
+  else if(L.profit>0&&pl>=L.profit)o.hit='profit';
+  else if(L.loss>0&&down>=L.loss*AT_LOCK_NEAR_LOSS)o.near='loss';
+  else if(L.profit>0&&pl>=L.profit*AT_LOCK_NEAR_PROFIT)o.near='profit';
+  return o;
+}
+// One line for a rule row or a card. Never phrased as a breach: stopping at
+// the profit lockout is the plan working, and stopping at the loss lockout is
+// the plan working too.
+function atDayLockText(k){
+  if(!k)return '';
+  if(!k.traded){
+    return 'no trades this session'
+      +(k.profit?' · profit lockout $'+fmt(k.profit,0):'')
+      +(k.loss?' · loss lockout $'+fmt(k.loss,0):'');
+  }
+  const where='$'+fmt(k.pl,2)+' this session';
+  if(k.hit==='loss')return where+' — at the $'+fmt(k.loss,0)+' loss lockout, the platform is done for the day';
+  if(k.hit==='profit')return where+' — at the $'+fmt(k.profit,0)+' profit lockout, banked';
+  if(k.near==='loss')return where+' — $'+fmt(k.loss-Math.max(0,-k.pl),2)+' from the $'+fmt(k.loss,0)+' loss lockout';
+  if(k.near==='profit')return where+' — $'+fmt(k.profit-k.pl,2)+' from the $'+fmt(k.profit,0)+' profit lockout';
+  if(k.profit&&k.pl>=0)return where+' · $'+fmt(k.profit-k.pl,2)+' to the profit lockout';
+  if(k.loss&&k.pl<0)return where+' · $'+fmt(k.loss-Math.max(0,-k.pl),2)+' of room to the loss lockout';
+  return where;
+}
+// Short pill for a collapsed card, so the state is readable without opening
+// it. Colour carries the urgency; the text still says which limit.
+function atDayLockPill(k){
+  if(!k||!k.traded)return '';
+  var col='var(--fg3)',txt=null;
+  if(k.hit==='loss'){col='var(--red)';txt='loss lockout hit';}
+  else if(k.hit==='profit'){col='var(--green)';txt='profit lockout hit';}
+  else if(k.near==='loss'){col='var(--red)';txt='$'+fmt(k.loss-Math.max(0,-k.pl),2)+' from loss lockout';}
+  else if(k.near==='profit'){col='var(--gold)';txt='$'+fmt(k.profit-k.pl,2)+' from profit lockout';}
+  if(!txt)return '';
+  return '<span style="font-size:11px;font-weight:700;color:'+col+'" '
+    +'title="Where this session sits against the lockouts set on your trading platform.">'
+    +txt+'</span>';
+}
 // ── Firm rules ──────────────────────────────────────────────────────────
 // Every number here is read off the firm's own published rules. Where a firm
 // is not listed the Apex figures are used, because that is what the app was
@@ -13790,10 +13938,14 @@ function evalEval(acct){
   // does, which is the whole point of surfacing it.
   const winDays=series.filter(function(x){return x.pl>0;}).map(function(x){return x.n;}).sort(function(a,b){return a-b;});
   const baseline=winDays.length?winDays[Math.floor(winDays.length/2)]:null;
-  const todayKey=new Date().toISOString().slice(0,10);
+  // liveDay is already the session now in progress; a second, calendar
+  // reading of "today" would disagree with it for part of every evening.
+  const todayKey=liveDay;
   const today=byDay[todayKey]||null;
   const todayN=today?today.n:0;
   const overtrading=!!(baseline&&todayN>=Math.max(baseline*2,baseline+5));
+  const todayPL=today?parseFloat(today.pl.toFixed(2)):0;
+  const lock=atDayLockState(todayPL,!!today,state.settings);
 
   // 50% consistency: no single profitable day may be more than half of total
   // net profit. Hitting the profit goal does not pass the account on its own.
@@ -13833,7 +13985,8 @@ function evalEval(acct){
     shortPct:shortPct,shortWins:shortWins,allWins:allWins,
     minDays:fr.minDays,
     maxQty:maxQty,maxContracts:fr.maxContracts||c.maxContracts||10,avgDay:avgDay,daysToTarget:daysToTarget,
-    baseline:baseline,todayN:todayN,overtrading:overtrading,series:series};
+    baseline:baseline,todayN:todayN,overtrading:overtrading,series:series,
+    todayPL:todayPL,tradedToday:!!today,lock:lock};
 }
 
 function evalRuleRows(e){
@@ -13884,6 +14037,14 @@ function evalRuleRows(e){
       +(e.firm?' ('+e.firm+')':''));
   add(e.days>=(e.minDays||0),'Trading days',
       e.days+' of '+(e.minDays||0)+' required');
+  // Platform lockouts. Reported, never graded: hitting either one is the plan
+  // working, so this row is a NOTE at worst and never a FAIL. Only the losing
+  // side warns -- being close to the profit lockout needs no warning.
+  if(e.lock){
+    add(!(e.lock.hit==='loss'||e.lock.near==='loss'),'Platform lockouts',
+        atDayLockText(e.lock),
+        e.lock.hit==='loss'||e.lock.near==='loss');
+  }
   if(e.baseline){
     add(!e.overtrading,'Trade count today',
         e.todayN+' today — a day that makes money usually takes '+e.baseline,
@@ -13949,6 +14110,7 @@ function evalRender(){
         +'<span style="font-size:11px;color:'+(e.headroom<e.dd*0.4?'var(--gold)':'var(--fg3)')+'" '
           +'title="How far the balance can fall before the account is lost.">$'
           +fmt(e.headroom,2)+' to the floor</span>'
+        +atDayLockPill(e.lock)
         +'<span style="margin-left:auto;font-size:11px">'+chip+' ▾</span>'
       +'</div>'
       +'<div onclick="event.stopPropagation()" style="display:flex;gap:9px;align-items:center;padding:0 13px 9px;font-size:11px;color:var(--fg3)">'

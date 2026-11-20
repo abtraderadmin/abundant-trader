@@ -11,8 +11,9 @@ const PAGE_SRC_FOR_HELPERS = require('fs').readFileSync(__dirname + '/../index.h
 const HELPERS = new Function(
   PAGE_SRC_FOR_HELPERS.slice(PAGE_SRC_FOR_HELPERS.indexOf('const AT_SESSION_ROLL_HOUR='),
                              PAGE_SRC_FOR_HELPERS.indexOf('// \u2500\u2500 Firm rules'))
-  + '\nreturn {atSessionDate, atTradeDay};')();
+  + '\nreturn {atSessionDate, atTradeDay, atLiveSessionDate, atDayLockState};')();
 const SESSION_DATE = HELPERS.atSessionDate, TRADE_DAY = HELPERS.atTradeDay;
+const LIVE_DAY = HELPERS.atLiveSessionDate, LOCK_STATE = HELPERS.atDayLockState;
 const fs = require('fs');
 const path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
@@ -29,7 +30,10 @@ if (src.some(x => !x) || consts.some(x => !x)) {
   console.error('could not extract the apex functions'); process.exit(1);
 }
 
-const TODAY = new Date().toISOString().slice(0, 10);
+// The session now in progress, from the page's own helper. A calendar date
+// disagrees with it from the 17:00 roll until midnight, so seeding by one
+// made these assertions depend on what time the suite ran.
+const TODAY = LIVE_DAY();
 
 function run({ goal, todayPL = null, priorDays = 14, priorPerDay = 210 }) {
   const trades = Array.from({ length: priorDays }, (_, i) => ({
@@ -38,7 +42,7 @@ function run({ goal, todayPL = null, priorDays = 14, priorPerDay = 210 }) {
     netPL: priorPerDay, qty: 2, direction: 'LONG', stop: 100,
   }));
   if (todayPL !== null) {
-    trades.push({ module: 'futures', account: 'PA-12', date: TODAY,
+    trades.push({ module: 'futures', account: 'PA-12', date: TODAY, entryTime: '09:30',
                   netPL: todayPL, qty: 2, direction: 'LONG', stop: 100 });
   }
   const state = {
@@ -52,10 +56,10 @@ function run({ goal, todayPL = null, priorDays = 14, priorPerDay = 210 }) {
   };
   // apexEval buckets by SESSION day now, so the sandbox supplies the same
   // helpers the page uses — taken from the page, never reimplemented here.
-  const fn = new Function('state', 'fmt', 'atSessionDate', 'atTradeDay',
+  const fn = new Function('state', 'fmt', 'atSessionDate', 'atTradeDay', 'atLiveSessionDate', 'atDayLockState',
     consts.join('\n') + '\n' + src.join('\n') +
     '\nvar e=apexEval("PA-12"); return {e:e, rows:apexRuleRows(e)};');
-  return fn(state, (v, d) => Number(v).toFixed(d), SESSION_DATE, TRADE_DAY);
+  return fn(state, (v, d) => Number(v).toFixed(d), SESSION_DATE, TRADE_DAY, LIVE_DAY, LOCK_STATE);
 }
 const goalRow = r => r.rows.find(x => x.rule === 'Daily target');
 
