@@ -2593,6 +2593,79 @@ function atRiskBudgetNote(over){
     +' and your max-loss cap are the same figure.';
 }
 
+// ── CAPITAL-CAPPED? CHECK OPTIONS ───────────────────────────────────
+// When the capital ceiling cuts a position below what the risk budget would
+// have allowed, the exposure that was given up might be reachable through
+// options for a fraction of the capital. Might. The honest version of that
+// check is arithmetic, not a recommendation, because the thing that decides
+// it -- what the contract actually costs -- is a quote, and a quote is not
+// something this can invent.
+//
+// So this computes the one figure that settles it without a chain: the most
+// you could pay per share of premium and still be inside the same risk
+// budget. Then the chain either has something at or under that price or it
+// does not, and either way the answer came from a real number.
+//
+// What the swap actually does, stated plainly on the card: it turns a
+// CAPITAL constraint into a TIME constraint. The stock position can sit
+// there indefinitely and loses at the stop. The option position needs the
+// move to happen before a date, and loses the entire premium if it does not
+// -- which is a different kind of risk, not a smaller one.
+function atOptionsAlternative(idea){
+  if(!idea||idea.sizedBy!=='capital')return null;
+  const b=atRiskBudget();
+  const budget=b.budget||0;
+  const entry=parseFloat(idea.entry), target=parseFloat(idea.target);
+  const want=parseInt(idea.byRisk,10)||0, have=parseInt(idea.byCap,10)||0;
+  if(!(budget>0&&entry>0&&want>have))return null;
+  // Contracts to carry the exposure the RISK budget allowed, not the exposure
+  // the ceiling left behind -- restoring what was given up is the whole point.
+  const contracts=Math.max(1,Math.ceil(want/100));
+  const controlled=contracts*100;
+  const maxPremShare=parseFloat((budget/controlled).toFixed(4));
+  const pctOfUnderlying=parseFloat((maxPremShare/entry*100).toFixed(2));
+  // The halfway strike, the same one the contract planner uses.
+  const half=(entry!=null&&target!=null)
+    ? parseFloat((entry+(target-entry)/2).toFixed(2)) : null;
+  return {
+    dir:idea.dir, kind:(idea.dir==='LONG'?'call':'put'),
+    want:want, have:have, shortfall:want-have,
+    contracts:contracts, controlled:controlled,
+    budget:budget,
+    maxPremShare:maxPremShare,
+    maxPremContract:parseFloat((maxPremShare*100).toFixed(2)),
+    pctOfUnderlying:pctOfUnderlying,
+    strike:half,
+    stockCapital:parseFloat((have*entry).toFixed(2)),
+    // Capital freed if the option route replaces the shares outright. The
+    // option's capital IS its max loss, so the two are the same figure.
+    capitalFreed:parseFloat((have*entry-budget).toFixed(2))
+  };
+}
+// One block of prose for the card. Deliberately does not render a verdict:
+// nothing here knows what the contract costs, and a verdict without that
+// would be a guess dressed as governance.
+function atOptionsAlternativeHtml(idea){
+  const a=atOptionsAlternative(idea);
+  if(!a)return '';
+  return '<div style="margin-top:9px;padding:9px 11px;border-radius:8px;border:1px solid var(--border);background:var(--s2);font-size:11px;line-height:1.6;color:var(--fg3)">'
+    +'<div style="font-weight:700;color:var(--gold);margin-bottom:4px">Capital-capped — would options carry it?</div>'
+    +'The ceiling left you '+a.have+' shares where risk allowed '+a.want+', so '
+    +a.shortfall+' shares of exposure went unused. '
+    +'<strong>'+a.contracts+' '+a.kind+(a.contracts!==1?'s':'')
+    +'</strong> near the $'+fmt(a.strike,2)+' halfway strike would control '
+    +a.controlled+' shares.'
+    +'<div style="margin-top:5px">To stay inside the same $'+fmt(a.budget,0)
+    +' of risk, the most you can pay is <strong style="color:var(--fg2)">$'
+    +fmt(a.maxPremShare,2)+' a share</strong> ($'+fmt(a.maxPremContract,0)
+    +' a contract) — '+fmt(a.pctOfUnderlying,1)+'% of the underlying. '
+    +'Check the chain: if nothing at that strike trades at or under it, options do not work here, and that is the answer.</div>'
+    +'<div style="margin-top:5px;color:var(--fg3)">This trades a capital limit for a deadline. '
+    +'The shares lose at your stop and can wait; the contract loses the whole premium and cannot. '
+    +'Max loss stops being stop-sized and becomes $'+fmt(a.budget,0)+', all of it, if the move misses the expiry.</div>'
+  +'</div>';
+}
+
 // ── 1/3 SCALING PLAN ────────────────────────────────────────
 function scaleThirds(total){
   if(!total||total<1)return{t1:0,t2:0,run:0};
@@ -7880,7 +7953,7 @@ function oreGenSwingIdeas(){
   const o=state.ore;if(!o)return;
   const p=o.price,fibs=o.fibs,pivots=o.pivots,atr=o.atr14||0;
   const al=o.emaAlignment;
-  const maxLoss=state.settings?.maxLossPerTrade||200;
+  const maxLoss=atRiskBudget().budget||200;
   const minRR=state.settings?.minRR||1.5;
   const ideas=[];
 
@@ -7900,7 +7973,7 @@ function oreGenSwingIdeas(){
     // $9,659 of capital on a 26c stop — inside the risk rule, far outside the
     // ≤$1,500 allocation ceiling in the swing checklist. The tighter of the two
     // wins, and the card says which one bound it.
-    const maxCap=parseFloat(state.settings.maxCapitalPerTrade)||1500;
+    const maxCap=atRiskBudget().ceiling||1500;
     const byRisk=Math.floor(maxLoss/rps);
     const byCap=entry>0?Math.floor(maxCap/entry):byRisk;
     const shares=Math.max(1,Math.min(byRisk,byCap));
@@ -8196,7 +8269,7 @@ function oreGenSwingIdeas(){
           </span>
           <span id="ore-idea-risk-${i}">$${fmt(id.plannedRisk,0)} risk</span>
           <span id="ore-idea-cap-${i}" style="color:var(--fg3)">$${fmt(id.shares*id.entry,0)} capital</span>
-          ${id.sizedBy==='capital'?`<span style="font-size:10px;color:var(--gold)" title="Held back by your capital ceiling, not by max loss — ${id.byRisk} shares would have fit the $${fmt(state.settings.maxLossPerTrade||200,0)} risk limit">capital-capped</span>`:''}
+          ${id.sizedBy==='capital'?`<span style="font-size:10px;color:var(--gold)" title="Held back by your capital ceiling, not by max loss — ${id.byRisk} shares would have fit the $${fmt(atRiskBudget().budget||200,0)} risk limit">capital-capped</span>`:''}
         </span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px 8px;margin-bottom:8px">
@@ -8214,7 +8287,8 @@ function oreGenSwingIdeas(){
         <span style="color:var(--fg3)">= <strong id="ore-idea-nx-${i}" style="font-family:var(--mono)">${id.plannedRisk>0?((id.profitScaled!=null?id.profitScaled:id.plannedProfit)/id.plannedRisk).toFixed(1)+'–'+((id.plannedProfit||0)/id.plannedRisk).toFixed(1):'0'}×</strong> risk</span>
       </div>
       <div style="font-size:11px;color:var(--fg3);line-height:1.5;margin-bottom:8px">${id.rationale}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${atOptionsAlternativeHtml(id)}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
         <button onclick="oreSwingToTrade(${i})" style="padding:5px 12px;border-radius:6px;border:1px solid ${colBorder};background:${colBg};color:${col};font-size:11px;font-weight:700;cursor:pointer">📋 Log as Trade</button>
         <button onclick="oreSwingToStock(${i})" style="padding:5px 12px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--fg2);font-size:11px;cursor:pointer">▶ Open Trade Form</button>
         <button onclick="oreAlertFromIdea(${i})" title="Tell me as price approaches this entry, and again if it gets there" style="padding:5px 12px;border-radius:6px;border:1px solid rgba(251,185,36,.35);background:var(--gold-bg);color:var(--gold);font-size:11px;cursor:pointer">🔔 Alert at entry</button>
@@ -8365,7 +8439,7 @@ function oreOptPremium(v){
   const el=document.getElementById('ore-opt-size');
   if(!el)return;
   const prem=parseFloat(v);
-  const maxLoss=state.settings.maxLossPerTrade||200;
+  const maxLoss=atRiskBudget().budget||200;
   if(!isFinite(prem)||prem<=0){el.textContent='Enter the ask to size it against your $'+fmt(maxLoss,0)+' cap.';el.style.color='var(--fg3)';return;}
   const per=prem*100;
   const n=Math.floor(maxLoss/per);
@@ -8382,7 +8456,7 @@ function oreRenderOptions(){
   const o=state.ore;
   if(!o){el.innerHTML='';return;}
   const atr=o.atr14||null;
-  const maxLoss=state.settings.maxLossPerTrade||200;
+  const maxLoss=atRiskBudget().budget||200;
   // Computed here rather than read from stockScenario, which is only built
   // when the stock panel is open — and on this route it never is.
   const support=parseFloat((document.getElementById('ore-support')||{}).value)||null;
@@ -8997,7 +9071,7 @@ function oreUpdateScenario(){
   if(document.getElementById('ore-stock-scenario-panel').hidden)return;
   const support=parseFloat(document.getElementById('ore-support').value)||null;
   const resistance=parseFloat(document.getElementById('ore-resistance').value)||null;
-  const maxLoss=state.settings.maxLossPerTrade||200;
+  const maxLoss=atRiskBudget().budget||200;
   // Entry = current price, stop = support - 1 ATR buffer (or support * 0.99 if no ATR)
   const entry=o.price;
   let stop=null,t1=null,t2=null,target=null,shares=null,rr=null;
@@ -12788,7 +12862,7 @@ function woRoute(rec,exp,plan){
   }
   const spread=(c.a!=null&&c.b!=null&&c.m)?parseFloat(((c.a-c.b)/c.m*100).toFixed(1)):null;
   const rr=(atExpiry>0&&lossAtStop&&lossAtStop>0)?parseFloat((atExpiry/lossAtStop).toFixed(2)):null;
-  const cap=parseFloat(state.settings.maxCapitalPerTrade)||1500;
+  const cap=atRiskBudget().ceiling||1500;
   return{exp:exp,days:woDaysOut(exp),strike:c.k,type:type,half:half,
     bid:c.b,ask:c.a,mark:c.m,delta:c.d,iv:c.iv,theta:c.th,oi:c.oi,vol:c.v,
     be:be,beShort:beShort,needsFast:needsFast,prem:prem,
@@ -12833,7 +12907,7 @@ function woLadder(rec,exp,plan){
     const intr=call?Math.max(0,plan.target-c.k):Math.max(0,c.k-plan.target);
     const atE=parseFloat((intr*100-cost).toFixed(2));
     const bE=parseFloat((call?(c.k+p):(c.k-p)).toFixed(2));
-    const cap=parseFloat(state.settings.maxCapitalPerTrade)||1500;
+    const cap=atRiskBudget().ceiling||1500;
     out.push({k:c.k,prem:p,cost:cost,atExpiry:atE,be:bE,oi:c.oi,delta:c.d,
       spread:(c.a!=null&&c.b!=null&&c.m)?parseFloat(((c.a-c.b)/c.m*100).toFixed(1)):null,
       isHalf:(halfStrike&&c.k===halfStrike.k),overCap:cost>cap});
