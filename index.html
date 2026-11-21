@@ -11504,7 +11504,10 @@ async function atReconcileBlob(){
 async function atReconcile(){
   await atReconcileBlob();
   // Each pull is independent: one failing must not stop the others.
-  var pulls=[['trades',atPullTrades],['withdrawals',atPullWithdrawals],
+  // Settings first. The blob adopted just above carries blob-era config, and
+  // everything after this reads account names and risk figures out of it.
+  var pulls=[['settings',atPullSettings],
+             ['trades',atPullTrades],['withdrawals',atPullWithdrawals],
              ['holdings',atPullHoldings],['transactions',atPullTransactions],
              ['opportunities',atPullOpportunities],['archer',atPullArcherSignals],
              ['class sessions',atPullClassSessions],['class analysis',atPullClassAnalysis]];
@@ -16367,6 +16370,66 @@ function atSettingsPublic(){
     if(AT_SECRET_KEYS.indexOf(k)===-1)out[k]=src[k];
   });
   return out;
+}
+
+// Settings were push-only. Eight collections pulled down on a new device and
+// settings was not one of them, so a fresh sign-in took its configuration
+// from the frozen JSON blob -- which stopped being written weeks ago. The
+// phone therefore showed blob-era accounts, blob-era risk figures and none of
+// the newer fields, while its trades were bang up to date. Worse, the next
+// edit on that device would have pushed those stale settings back up and
+// overwritten the desktop's.
+//
+// Adopting is conditional on purpose. A device whose settings match what it
+// last pushed has nothing of its own to lose, so the cloud copy is strictly
+// newer information and is taken. A device holding unpushed edits keeps them
+// and says so, because silently replacing somebody's unsaved configuration is
+// the same error in the other direction.
+//
+// Secrets never travel in settings (atSettingsPublic strips them), so the
+// local secret keys are carried across the adoption by hand.
+async function atPullSettings(){
+  var c=(typeof atSbReady==='function')?atSbReady():null;
+  if(!c||!atUser)return false;
+  var res=await c.from('user_settings').select('data,updated_at').eq('user_id',atUser.id).maybeSingle();
+  if(res.error){console.warn('[AT] settings pull failed',res.error);return false;}
+  var row=res.data;
+  if(!row||!row.data)return false;
+
+  var cloud=row.data;
+  var cloudHash=atHash(JSON.stringify(cloud));
+  var localPub=atSettingsPublic();
+  var localHash=atHash(JSON.stringify(localPub));
+  if(localHash===cloudHash){
+    try{localStorage.setItem('at_settings_sig',cloudHash);}catch(e){}
+    return true;
+  }
+
+  var pushedSig=null; try{pushedSig=localStorage.getItem('at_settings_sig');}catch(e){}
+  var deviceClean=(pushedSig===localHash);
+  if(!deviceClean){
+    console.warn('[AT] settings differ from the cloud and this device has unpushed changes — keeping local');
+    toast('☁ Settings on this device differ from the cloud and have unsaved changes — kept this device’s copy.','warn',9000);
+    return false;
+  }
+
+  // Keep the secrets this device holds; they are deliberately absent from the
+  // mirrored payload and must not be dropped by adopting it.
+  var keep={};
+  AT_SECRET_KEYS.forEach(function(k){
+    if(state.settings&&state.settings[k]!==undefined)keep[k]=state.settings[k];
+  });
+  state.settings=Object.assign({},cloud,keep);
+  // state.accounts[] is rebuilt from the name arrays in settings, so it comes
+  // right on its own once those are correct.
+  try{if(typeof atDeriveAccounts==="function")atDeriveAccounts();}catch(e){}
+  saveState();
+  try{localStorage.setItem('at_settings_sig',cloudHash);}catch(e){}
+  console.log('[AT] settings adopted from cloud ('+Object.keys(cloud).length+' keys)');
+  try{renderAll();}catch(e){}
+  try{renderCfg();}catch(e){}
+  toast('☁ Loaded your settings from the cloud.','ok',6000);
+  return true;
 }
 
 async function atPushSettings(){
