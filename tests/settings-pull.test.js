@@ -11,12 +11,14 @@
 //
 //   node tests/settings-pull.test.js
 
-const fs=require('fs'),assert=require('assert');
+const fs=require('fs'),assert=require('assert'),{JSDOM}=require('jsdom');
 const src=fs.readFileSync(__dirname+'/../index.html','utf8');
 let fail=0;
 const t=(m,fn)=>{try{fn();console.log('  ok   '+m);}catch(e){fail++;console.log('  FAIL '+m+'\n       '+e.message);}};
 // Comments describe the bug, so prose must not be mistaken for code.
 const code=src.split('\n').filter(l=>!/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+const W=new JSDOM(src,{runScripts:'dangerously',pretendToBeVisual:true,url:'https://localhost/'}).window;
+W.addEventListener('error',()=>{});
 
 console.log('\nthe pull exists and runs');
 t('there is a settings pull at all',()=>{
@@ -83,6 +85,53 @@ t('accounts are rebuilt from the adopted names',()=>{
   const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
   assert(/atDeriveAccounts/.test(m[1]),
     'state.accounts[] is derived from the name arrays and goes stale otherwise');
+});
+
+console.log('\nadoption must never delete an account');
+// This is the one that actually bit. A phone signed in fresh, took its
+// configuration from the retired blob, and pushed one eval account over the
+// six that were really there. Both directions are now guarded: a copy holding
+// fewer accounts is never adopted, and no device mirrors settings before it
+// has pulled once.
+t('a copy missing accounts this device holds is a regression, and is named',()=>{
+  const local={evalAccounts:['A','B','C'],paAccounts:['P1'],apexAccounts:{A:{},B:{}}};
+  const cloud={evalAccounts:['A'],paAccounts:['P1'],apexAccounts:{A:{}}};
+  const drop=W.atSettingsWouldDrop(local,cloud);
+  assert.strictEqual(Array.from(drop).sort().join(','),'B,C');
+});
+t('an equal or richer copy drops nothing',()=>{
+  const local={evalAccounts:['A']};
+  assert.strictEqual(W.atSettingsWouldDrop(local,{evalAccounts:['A']}).length,0);
+  assert.strictEqual(W.atSettingsWouldDrop(local,{evalAccounts:['A','B']}).length,0);
+});
+t('a rename is not a drop as far as the other slots are concerned',()=>{
+  const local={evalAccounts:['Old','Keep']};
+  const cloud={evalAccounts:['New','Keep']};
+  assert.strictEqual(Array.from(W.atSettingsWouldDrop(local,cloud)).join(','),'Old');
+});
+t('names are gathered from every account list, not just evals',()=>{
+  const n=Array.from(W.atSettingsAcctNames({evalAccounts:['E'],paAccounts:['P'],
+    cashAccounts:['C'],paperAccounts:['Pa'],apexAccounts:{X:{}}})).sort();
+  assert.strictEqual(n.join(','),'C,E,P,Pa,X');
+});
+t('blanks in the fixed-length slot arrays are not accounts',()=>{
+  assert.strictEqual(W.atSettingsAcctNames({evalAccounts:['A','','  ','']}).length,1);
+});
+
+console.log('\nand the push that caused it is held back');
+t('settings are not mirrored before a pull has run',()=>{
+  const m=code.match(/async function atPushSettings\(force\)\{([\s\S]*?)\n\}/);
+  assert(m,'atPushSettings not found');
+  assert(/if\(!atSettingsPulled&&!force\)/.test(m[1]),
+    'a device that has not pulled cannot know its settings are its own');
+  assert(m[1].indexOf('atSettingsPulled')<m[1].indexOf('upsert'),
+    'the guard has to come before the write');
+});
+t('the refusal path pushes the richer copy back up, forcing past that guard',()=>{
+  const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
+  const branch=m[1].slice(m[1].indexOf('if(dropped.length)'));
+  assert(/atPushSettings\(true\)/.test(branch.slice(0,600)),
+    'refusing without restoring leaves the bad copy in the cloud');
 });
 
 console.log(fail?'\n'+fail+' failure(s)':'\nall checks passed');

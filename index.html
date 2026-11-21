@@ -16388,13 +16388,38 @@ function atSettingsPublic(){
 //
 // Secrets never travel in settings (atSettingsPublic strips them), so the
 // local secret keys are carried across the adoption by hand.
+// Every account name a settings copy knows about. Adoption is allowed to
+// change names, goals and figures; it is not allowed to make accounts
+// disappear, and this is what that is measured against.
+function atSettingsAcctNames(obj){
+  var out={};
+  ['evalAccounts','paAccounts','cashAccounts','paperAccounts'].forEach(function(k){
+    ((obj||{})[k]||[]).forEach(function(n){
+      n=String(n||'').trim(); if(n)out[n]=true;
+    });
+  });
+  Object.keys(((obj||{}).apexAccounts)||{}).forEach(function(n){
+    n=String(n||'').trim(); if(n)out[n]=true;
+  });
+  return Object.keys(out);
+}
+// Accounts this device holds that the incoming copy has never heard of.
+// A non-empty answer means adopting would delete them.
+function atSettingsWouldDrop(localObj,cloudObj){
+  var have=atSettingsAcctNames(cloudObj),h={};
+  have.forEach(function(n){h[n]=true;});
+  return atSettingsAcctNames(localObj).filter(function(n){return !h[n];});
+}
+
 async function atPullSettings(){
   var c=(typeof atSbReady==='function')?atSbReady():null;
   if(!c||!atUser)return false;
   var res=await c.from('user_settings').select('data,updated_at').eq('user_id',atUser.id).maybeSingle();
   if(res.error){console.warn('[AT] settings pull failed',res.error);return false;}
   var row=res.data;
-  if(!row||!row.data)return false;
+  // No row yet means there is nothing that could be overwritten, so this
+  // device is free to push.
+  if(!row||!row.data){atSettingsPulled=true;return false;}
 
   var cloud=row.data;
   var cloudHash=atHash(JSON.stringify(cloud));
@@ -16402,6 +16427,7 @@ async function atPullSettings(){
   var localHash=atHash(JSON.stringify(localPub));
   if(localHash===cloudHash){
     try{localStorage.setItem('at_settings_sig',cloudHash);}catch(e){}
+    atSettingsPulled=true;
     return true;
   }
 
@@ -16410,6 +16436,25 @@ async function atPullSettings(){
   if(!deviceClean){
     console.warn('[AT] settings differ from the cloud and this device has unpushed changes — keeping local');
     toast('☁ Settings on this device differ from the cloud and have unsaved changes — kept this device’s copy.','warn',9000);
+    return false;
+  }
+
+  // A copy that knows about fewer accounts than this device is a regression,
+  // not an update. It happens when a device that never pulled settings pushes
+  // what it inferred from the retired blob -- which is exactly how six eval
+  // accounts became one. Clean or not, that copy is never adopted: the device
+  // that still holds the accounts is the one telling the truth.
+  var dropped=atSettingsWouldDrop(localPub,cloud);
+  if(dropped.length){
+    console.warn('[AT] refused a cloud settings copy that would drop: '+dropped.join(', '));
+    toast('\u2601 The cloud copy of your settings is missing '+dropped.length+' account'
+      +(dropped.length!==1?'s':'')+' this device has ('+dropped.slice(0,3).join(', ')
+      +(dropped.length>3?'\u2026':'')+') \u2014 kept this device\u2019s copy. '
+      +'Change any setting to push it back up.','warn',14000);
+    // The device holding more is authoritative, so put it back.
+    try{localStorage.removeItem('at_settings_sig');}catch(e){}
+    atSettingsPulled=true;
+    try{await atPushSettings(true);}catch(e){}
     return false;
   }
 
@@ -16425,6 +16470,7 @@ async function atPullSettings(){
   try{if(typeof atDeriveAccounts==="function")atDeriveAccounts();}catch(e){}
   saveState();
   try{localStorage.setItem('at_settings_sig',cloudHash);}catch(e){}
+  atSettingsPulled=true;
   console.log('[AT] settings adopted from cloud ('+Object.keys(cloud).length+' keys)');
   try{renderAll();}catch(e){}
   try{renderCfg();}catch(e){}
@@ -16432,9 +16478,18 @@ async function atPullSettings(){
   return true;
 }
 
-async function atPushSettings(){
+// Set once a settings pull has run. Until then this device cannot know
+// whether what it holds is its own configuration or whatever the retired blob
+// happened to contain, and pushing the latter overwrites a good copy with a
+// stale one. That is not a hypothetical: it is what happened.
+var atSettingsPulled=false;
+async function atPushSettings(force){
   var c=(typeof atSbReady==='function')?atSbReady():null;
   if(!c||!atUser)return false;
+  if(!atSettingsPulled&&!force){
+    console.log('[AT] settings push held — nothing pulled down yet this session');
+    return false;
+  }
   var pub=atSettingsPublic();
   var h=atHash(JSON.stringify(pub));
   var prev=null; try{prev=localStorage.getItem('at_settings_sig');}catch(e){}
