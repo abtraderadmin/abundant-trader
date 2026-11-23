@@ -1874,6 +1874,9 @@ body::before{
     <div class="form-hd" style="display:flex;align-items:center;gap:10px">
       <span class="form-title">Watchlist &amp; Opportunity Log</span>
       <span id="ore-wl-count" style="font-size:11px;color:var(--fg3);font-weight:400"></span>
+      <button id="ore-wl-refresh" class="btn-secondary" onclick="oreWatchlistPrices()"
+        style="margin-left:auto;font-size:10px;padding:3px 10px"
+        title="Re-quote every ticker listed, so a held idea can tell you when it is near its entry">&#8635; Refresh prices</button>
     </div>
     <div style="border-bottom:1px solid var(--border);display:flex;gap:0;padding:0 0 0 0">
       <button class="ftab active" data-wf="all" onclick="setWlFilter('all')">All</button>
@@ -9603,10 +9606,70 @@ function oreSetDiscoveryStatus(id,status){
   toast(d.ticker+' → '+lbl,'ok');
 }
 
+// A held idea is only worth holding if it can say, later, that it is near.
+// The levels never move; the price does, so the row carries the distance and
+// a date rather than a number with no age on it.
+function oreWatchGapLine(d){
+  if(!d)return '';
+  const entry=parseFloat(d.entry!=null?d.entry:(d.stockScenario&&d.stockScenario.entry));
+  const px=parseFloat(d.livePrice);
+  if(!(entry>0))return '';
+  if(!(px>0))
+    return '<div style="font-size:10px;color:var(--fg3);margin-top:2px">'
+      +'entry '+fmt(entry,2)+' · no price yet — press Refresh prices</div>';
+  const g=oreTriggerGap({direction:(d.direction||(d.stockScenario&&d.stockScenario.direction)||'LONG'),
+                         entry:entry},px);
+  if(!g)return '';
+  const col=g.armed?(g.pct<=3?'var(--green)':'var(--fg3)'):'var(--gold)';
+  return '<div style="font-size:10px;color:'+col+';margin-top:2px">'
+    +'$'+fmt(g.price,2)+(d.livePriceAt?(' as of '+d.livePriceAt):'')
+    +' · '+(g.armed
+        ? (fmt(g.distance,2)+' ('+fmt(g.pct,1)+'%) from '+fmt(g.entry,2))
+        : ('past the '+fmt(g.entry,2)+' trigger by '+fmt(g.distance,2)+' ('+fmt(g.pct,1)+'%)'))
+    +'</div>';
+}
+// Re-quote everything currently listed. Same one-symbol-per-call endpoint as
+// the import queue, so it is sequential and a failure is recorded rather
+// than papered over.
+async function oreWatchlistPrices(){
+  const btn=document.getElementById('ore-wl-refresh');
+  const list=(state.discoveries||[]).filter(function(d){return d&&d.ticker;});
+  const tickers=[];
+  list.forEach(function(d){ if(tickers.indexOf(d.ticker)===-1)tickers.push(d.ticker); });
+  if(!tickers.length){toast('Nothing on the watchlist to price.','warn');return;}
+  const say=function(t){ if(btn)btn.textContent=t; };
+  let ok=0;
+  for(var i=0;i<tickers.length;i++){
+    const t=tickers[i];
+    say('Quoting '+(i+1)+'/'+tickers.length+'…');
+    try{
+      const quote=await avGet({function:'GLOBAL_QUOTE',symbol:t});
+      const q=quote&&quote['Global Quote'];
+      const px=q&&parseFloat(q['05. price']);
+      if(px>0){
+        ok++;
+        list.forEach(function(d){
+          if(d.ticker!==t)return;
+          d.livePrice=px;
+          d.livePriceAt=(q['07. latest trading day']||'');
+        });
+      }
+      await avPace();
+    }catch(e){}
+  }
+  saveState();
+  say('↻ Refresh prices');
+  try{renderDiscoveries();}catch(e){}
+  toast(ok+' of '+tickers.length+' quoted.',ok?'ok':'warn',6000);
+}
+
 function oreDiscoveryToStock(id){
   const d=(state.discoveries||[]).find(x=>x.id===id);
   if(!d){toast('That entry is no longer in the watchlist.','warn');return;}
-  const sc=d.stockScenario||{};
+  // Two shapes reach here: the analyzer writes stockScenario, the Acorn
+  // import writes the fields flat. Either is a plan.
+  const sc=(d.stockScenario&&d.stockScenario.entry)?d.stockScenario
+    :{direction:d.direction,entry:d.entry,stop:d.stop,target:d.target,shares:d.shares};
   if(!sc.entry){toast('No saved plan on this entry — press Analyze to build one first.','warn',7000);return;}
   showScreen('stock');
   setTimeout(()=>{
@@ -9655,10 +9718,11 @@ function renderDiscoveries(){
         ${d.setup?`<div style="font-size:11px;color:var(--fg2);margin-bottom:2px">Setup: ${d.setup}</div>`:''}
         ${d.note?`<div style="font-size:11px;color:var(--fg3);font-style:italic">"${d.note}"</div>`:''}
         ${d.support||d.resistance?`<div style="font-size:10px;color:var(--fg3);margin-top:2px">${d.support?'S:'+d.support:''}${d.support&&d.resistance?' · ':''}${d.resistance?'R:'+d.resistance:''}</div>`:''}
+        ${oreWatchGapLine(d)}
       </div>
       <div style="display:flex;gap:4px;align-items:center;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;max-width:210px">
         <button class="btn-secondary" style="font-size:10px;padding:3px 8px" title="Load this ticker and run a fresh analysis" onclick="oreAnalyzeDiscovery(${d.id})">↻ Analyze</button>
-        ${d.stockScenario&&d.stockScenario.entry?`<button class="btn-secondary" style="font-size:10px;padding:3px 8px;color:var(--green);border-color:rgba(34,197,94,.3)" title="Open the stock form with this plan filled in" onclick="oreDiscoveryToStock(${d.id})">▶ Trade</button>`:''}
+        ${(d.stockScenario&&d.stockScenario.entry)||d.entry?`<button class="btn-secondary" style="font-size:10px;padding:3px 8px;color:var(--green);border-color:rgba(34,197,94,.3)" title="Open the stock form with this plan filled in" onclick="oreDiscoveryToStock(${d.id})">▶ Trade</button>`:''}
         ${d.status!=='watch'?`<button class="btn-secondary" style="font-size:10px;padding:3px 8px;color:var(--gold);border-color:rgba(245,166,35,.3)" title="Move back to the watchlist" onclick="oreSetDiscoveryStatus(${d.id},'watch')">⏳ Watch</button>`:''}
         ${d.status!=='rejected'?`<button class="btn-secondary" style="font-size:10px;padding:3px 8px;color:var(--fg3)" title="Reject — keeps the record, stops it counting as watched" onclick="oreSetDiscoveryStatus(${d.id},'rejected')">✕ Reject</button>`:''}
         <button onclick="deleteDiscovery(${d.id})" title="Delete permanently" style="width:22px;height:22px;border-radius:50%;border:1px solid var(--border);background:transparent;cursor:pointer;color:var(--red);font-size:12px;display:flex;align-items:center;justify-content:center;padding:0">×</button>
@@ -10800,7 +10864,10 @@ function oreQueueDecision(i,status){
   state.discoveries.unshift({
     id:Date.now(),
     ticker:item.ticker,
-    price:m.entry,
+    // The market price when known. This used to be the entry level under a
+    // name that reads as "what it trades at", which is the sort of thing you
+    // only notice after acting on it.
+    price:(item.livePrice!=null?item.livePrice:m.entry),
     analysisDate:new Date().toISOString().slice(0,10),
     condition:'', setup:item.pattern||'',
     support:m.stop, resistance:m.target,
@@ -10809,6 +10876,18 @@ function oreQueueDecision(i,status){
     entry:m.entry, stop:m.stop, target:m.target,
     shares:m.shares, rr:(m.rr!=null?+m.rr.toFixed(2):null),
     totalRisk:(m.totalRisk!=null?+m.totalRisk.toFixed(2):null),
+    // The shape the watchlist's Trade button reads. Without it a held idea
+    // was a dead end: reviewable, never enterable.
+    stockScenario:{direction:item.direction,entry:m.entry,stop:m.stop,
+                   target:m.target,shares:m.shares},
+    // Where price was when it was held, and the report's own view of it, so
+    // the row still means something a week later.
+    livePrice:(item.livePrice!=null?item.livePrice:null),
+    livePriceDay:item.livePriceDay||'',
+    gap:item.gap||null,
+    entryAggressive:(item.entryAggressive!=null?item.entryAggressive:null),
+    triggered:!!item.triggered, hitTarget:!!item.hitTarget,
+    statusDate:item.statusDate||'',
     note:(item.headerNote||'')+(item.dropped?' · dropped by Acorn':'')
   });
   state.importQueue.splice(i,1);
