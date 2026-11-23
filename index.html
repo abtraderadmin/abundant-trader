@@ -10806,6 +10806,37 @@ function oreQueueSorted(){
   });
 }
 
+// Earnings were parsed and printed, never counted. "December 01, 2026 (AMC)"
+// on a card tells you nothing you can act on; "8 days away, inside a normal
+// hold" does. A defined stop is no defence against a gap, so this is the one
+// risk on these cards that a stop cannot size.
+function oreEarningsDays(str,today){
+  if(!str)return null;
+  var m=/([A-Z][a-z]+)\s+(\d{1,2}),\s*(\d{4})/.exec(String(str));
+  if(!m)return null;
+  var MON={january:0,february:1,march:2,april:3,may:4,june:5,july:6,
+           august:7,september:8,october:9,november:10,december:11};
+  var mi=MON[m[1].toLowerCase()];
+  if(mi==null)return null;
+  var when=new Date(parseInt(m[3],10),mi,parseInt(m[2],10),12,0,0);
+  var now=today?new Date(today+'T12:00:00'):new Date();
+  now.setHours(12,0,0,0);
+  return Math.round((when-now)/86400000);
+}
+// Reported, not blocked. Whether an earnings date inside the hold is
+// acceptable is the trader's call; what the app owes them is the number.
+function oreEarningsFlag(item,today){
+  var d=oreEarningsDays(item&&item.earnings,today);
+  if(d==null||d<0)return '';
+  var col=d<=10?'var(--red)':(d<=30?'var(--gold)':null);
+  if(!col)return '';
+  return '<div style="font-size:11px;color:'+col+';margin-bottom:8px">'
+    +'⚡ Earnings in <strong>'+d+' day'+(d!==1?'s':'')+'</strong>'
+    +(d<=10?' — inside a normal hold, and a gap does not ask your stop’s permission.'
+           :' — likely inside the hold on a swing.')
+    +'</div>';
+}
+
 function oreQueueMath(item){
   var dir   =item.direction;
   var entry =(item.entryOverride!=null?item.entryOverride:item.entry);
@@ -10818,8 +10849,20 @@ function oreQueueMath(item){
   // number, so everything downstream stays null instead.
   var valid=(rps!=null&&rps>0);
   var budget=oreRiskBudget();
-  var shares=(item.sharesOverride!=null)?item.sharesOverride
-            :(valid?Math.max(1,Math.floor(budget/rps)):null);
+  // The capital ceiling applies here too. It did not, which meant the import
+  // queue and the setups card sized the same idea differently: ACCO came back
+  // as 285 shares and $1,615.95 of capital against a $1,500 limit that
+  // Settings says is enforced. One engine obeying a rule and another ignoring
+  // it is worse than either answer on its own.
+  var ceiling=(typeof atRiskBudget==='function')?(atRiskBudget().ceiling||0):0;
+  var byRisk=valid?Math.max(1,Math.floor(budget/rps)):null;
+  var byCap =(valid&&ceiling>0&&entry>0)?Math.max(1,Math.floor(ceiling/entry)):null;
+  var sized =(byRisk!=null&&byCap!=null)?Math.min(byRisk,byCap):byRisk;
+  var shares=(item.sharesOverride!=null)?item.sharesOverride:sized;
+  // Which limit did the sizing, so the card can say so and the options check
+  // knows there is exposure to recover.
+  var sizedBy=(item.sharesOverride!=null)?'manual'
+            :((byCap!=null&&byRisk!=null&&byCap<byRisk)?'capital':'risk');
   var posTotal=(entry!=null&&shares)?entry*shares:null;
   var consProfit=(pps!=null&&shares)?pps*shares:null;
   var totalRisk =(valid&&shares)?rps*shares:null;
@@ -10827,6 +10870,8 @@ function oreQueueMath(item){
     dir:dir, entry:entry, stop:stop, target:target, shares:shares,
     pps:pps, rps:rps, valid:valid, budget:budget,
     posTotal:posTotal, consProfit:consProfit,
+    byRisk:byRisk, byCap:byCap, sizedBy:sizedBy, ceiling:ceiling,
+    capital:posTotal,
     halfOut:(consProfit!=null?consProfit/2:null),
     totalRisk:totalRisk,
     profitPct:(consProfit!=null&&posTotal)?consProfit/posTotal:null,
@@ -11036,7 +11081,17 @@ function oreRenderQueue(){
         +'<span style="font-size:10px;color:var(--fg3);text-transform:uppercase">Risk / Reward</span>'
         +'<span style="font-family:var(--mono);font-size:15px;font-weight:800;color:'+v.cls+'">'+(m.rr!=null?('1 : '+m.rr.toFixed(2)):'—')+'</span>'
         +'<span style="font-size:11px;color:'+v.cls+'">'+v.txt+'</span>'
+        +(m.sizedBy==='capital'
+          ? ('<span style="font-size:10px;color:var(--gold)" title="Held back by your capital ceiling, not by max loss — '
+             +m.byRisk+' shares would have fit the risk limit">capital-capped</span>')
+          : '')
       +'</div>'
+      // Capital-capped here means exposure was given up, and options may
+      // carry it. The queue could never show this before: it sized on risk
+      // alone, so sizedBy was never 'capital' no matter how large the
+      // position got.
+      +oreEarningsFlag(item)
+      +((typeof atOptionsAlternativeHtml==='function')?atOptionsAlternativeHtml(m):'')
 
       +((item.indicators||item.special||item.earnings)
         ?'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:10px">'
