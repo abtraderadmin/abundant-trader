@@ -16426,33 +16426,46 @@ async function atPullSettings(){
   var localPub=atSettingsPublic();
   var localHash=atHash(JSON.stringify(localPub));
   if(localHash===cloudHash){
-    try{localStorage.setItem('at_settings_sig',cloudHash);}catch(e){}
+    try{localStorage.setItem('at_settings_sig',cloudHash);
+        localStorage.setItem('at_settings_seen',row.updated_at||'');}catch(e){}
     atSettingsPulled=true;
     return true;
   }
 
-  var pushedSig=null; try{pushedSig=localStorage.getItem('at_settings_sig');}catch(e){}
-  var deviceClean=(pushedSig===localHash);
-  if(!deviceClean){
-    console.warn('[AT] settings differ from the cloud and this device has unpushed changes — keeping local');
-    toast('☁ Settings on this device differ from the cloud and have unsaved changes — kept this device’s copy.','warn',9000);
-    return false;
-  }
-
-  // A copy that knows about fewer accounts than this device is a regression,
-  // not an update. It happens when a device that never pulled settings pushes
-  // what it inferred from the retired blob -- which is exactly how six eval
-  // accounts became one. Clean or not, that copy is never adopted: the device
-  // that still holds the accounts is the one telling the truth.
+  // Hard safety first. A copy that knows about fewer accounts than this
+  // device is a regression, not an update: it is what a device produces when
+  // it never pulled settings and inferred them from the retired blob, which
+  // is exactly how six eval accounts became one. Never adopted, whatever the
+  // timestamps say -- the device still holding the accounts is the one
+  // telling the truth, so it puts its copy back.
   var dropped=atSettingsWouldDrop(localPub,cloud);
   if(dropped.length){
     console.warn('[AT] refused a cloud settings copy that would drop: '+dropped.join(', '));
-    toast('\u2601 The cloud copy of your settings is missing '+dropped.length+' account'
+    toast('☁ The cloud copy of your settings is missing '+dropped.length+' account'
       +(dropped.length!==1?'s':'')+' this device has ('+dropped.slice(0,3).join(', ')
-      +(dropped.length>3?'\u2026':'')+') \u2014 kept this device\u2019s copy. '
-      +'Change any setting to push it back up.','warn',14000);
-    // The device holding more is authoritative, so put it back.
+      +(dropped.length>3?'…':'')+') — kept this device’s copy and pushed it back up.','warn',14000);
+    atSettingsPulled=true;
     try{localStorage.removeItem('at_settings_sig');}catch(e){}
+    try{await atPushSettings(true);}catch(e){}
+    return false;
+  }
+
+  // Then recency. This used to ask whether the device had unpushed changes,
+  // by comparing its settings against the hash of its last push -- and that
+  // deadlocked. loadState merges in defaults for any newly shipped key, so a
+  // device that simply loaded a newer build no longer matched its own last
+  // push, declared itself dirty, refused to adopt, and could never get clean
+  // again because it had nothing new to push. It sat on a stale copy for
+  // good, which is precisely what a sync is supposed to make impossible.
+  //
+  // Whoever wrote last wins instead, with the drop guard above as the floor.
+  // A device that has never reconciled has seen nothing, so the cloud is
+  // newer by definition -- which is the right answer for a fresh sign-in.
+  var seen=null; try{seen=localStorage.getItem('at_settings_seen');}catch(e){}
+  var stamp=row.updated_at||'';
+  if(seen&&stamp&&stamp<=seen){
+    // This device holds edits the cloud has not seen yet. Send them.
+    console.log('[AT] local settings are newer than the cloud copy — pushing');
     atSettingsPulled=true;
     try{await atPushSettings(true);}catch(e){}
     return false;
@@ -16469,7 +16482,8 @@ async function atPullSettings(){
   // right on its own once those are correct.
   try{if(typeof atDeriveAccounts==="function")atDeriveAccounts();}catch(e){}
   saveState();
-  try{localStorage.setItem('at_settings_sig',cloudHash);}catch(e){}
+  try{localStorage.setItem('at_settings_sig',cloudHash);
+      localStorage.setItem('at_settings_seen',row.updated_at||'');}catch(e){}
   atSettingsPulled=true;
   console.log('[AT] settings adopted from cloud ('+Object.keys(cloud).length+' keys)');
   try{renderAll();}catch(e){}
@@ -16494,6 +16508,25 @@ async function atPushSettings(force){
   var h=atHash(JSON.stringify(pub));
   var prev=null; try{prev=localStorage.getItem('at_settings_sig');}catch(e){}
   if(prev===h)return true;
+
+  // The guard that matters, and the one that was missing when a phone turned
+  // six eval accounts into one. Refusing to ADOPT a poorer copy protects this
+  // device; refusing to PUBLISH one protects every other device. Read what is
+  // up there and never replace it with something that knows about fewer
+  // accounts -- not even when forced, because force exists for restoring a
+  // richer copy and a richer copy drops nothing.
+  var cur=await c.from('user_settings').select('data').eq('user_id',atUser.id).maybeSingle();
+  if(!cur.error&&cur.data&&cur.data.data){
+    var lose=atSettingsWouldDrop(cur.data.data,pub);
+    if(lose.length){
+      console.warn('[AT] settings push refused — would drop: '+lose.join(', '));
+      toast('\u2601 Not saving settings to the cloud: this device is missing '+lose.length
+        +' account'+(lose.length!==1?'s':'')+' that the cloud has ('+lose.slice(0,3).join(', ')
+        +(lose.length>3?'\u2026':'')+'). Refresh to pull the full copy down first.','warn',14000);
+      return false;
+    }
+  }
+
   var res=await c.from('user_settings')
     .upsert({user_id:atUser.id,data:pub,updated_at:new Date().toISOString()},{onConflict:'user_id'});
   if(res.error){console.warn('[AT] settings mirror failed',res.error);return false;}

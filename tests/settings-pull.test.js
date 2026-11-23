@@ -44,16 +44,47 @@ t('it runs after the blob adopt, so it overrides blob-era config',()=>{
 });
 
 console.log('\nwhat it refuses to clobber');
-t('a device with unpushed settings keeps them',()=>{
+t('the newer copy wins, by timestamp',()=>{
   const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
-  assert(/deviceClean/.test(m[1]),'the clean/dirty test is the whole safety story');
-  assert(/if\(!deviceClean\)\{[\s\S]{0,400}?return false;/.test(m[1]),
-    'a dirty device must bail out before assigning state.settings');
+  assert(/at_settings_seen/.test(m[1]),'recency needs a mark of what was last reconciled');
+  assert(/stamp<=seen/.test(m[1]),'a cloud copy no newer than what we have seen is not an update');
 });
-t('and the user is told rather than left guessing',()=>{
+t('a device that has never reconciled treats the cloud as newer',()=>{
   const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
-  const bail=m[1].slice(m[1].indexOf('if(!deviceClean)'));
-  assert(/toast\(/.test(bail.slice(0,400)),'silence here looks like data loss');
+  // seen is unset on a fresh sign-in, so the guard must not fire.
+  assert(/if\(seen&&stamp&&stamp<=seen\)/.test(m[1]),
+    'without the seen check a fresh device would refuse the only copy there is');
+});
+t('being newer means pushing, not sitting on it',()=>{
+  const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
+  const branch=m[1].slice(m[1].indexOf('if(seen&&stamp'));
+  assert(/atPushSettings\(true\)/.test(branch.slice(0,400)),
+    'a device that keeps its copy must publish it or the two never converge');
+});
+t('no hash-versus-last-push test, which deadlocked',()=>{
+  const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
+  assert(!/deviceClean/.test(m[1]),
+    'loadState merges defaults for newly shipped keys, so a device stopped '+
+    'matching its own last push, called itself dirty and could never adopt or push again');
+});
+t('the drop guard is checked before any of that',()=>{
+  const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
+  assert(m[1].indexOf('atSettingsWouldDrop')<m[1].indexOf('var seen='),
+    'the hard safety cannot sit behind a soft test that can short-circuit it');
+});
+
+console.log('\npublishing a poorer copy is refused too');
+t('a push that would drop accounts the cloud has is blocked',()=>{
+  const m=code.match(/async function atPushSettings\(force\)\{([\s\S]*?)\n\}/);
+  assert(/atSettingsWouldDrop\(cur\.data\.data,pub\)/.test(m[1]),
+    'refusing to adopt protects this device; refusing to publish protects the others');
+  assert(m[1].indexOf('atSettingsWouldDrop')<m[1].indexOf('upsert'),
+    'the check has to happen before the write');
+});
+t('and force does not bypass it',()=>{
+  const m=code.match(/async function atPushSettings\(force\)\{([\s\S]*?)\n\}/);
+  const g=m[1].slice(m[1].indexOf('atSettingsWouldDrop'),m[1].indexOf('upsert'));
+  assert(!/force/.test(g),'force exists to restore a richer copy, and a richer copy drops nothing');
 });
 
 console.log('\nsecrets do not get dropped on the way');
@@ -77,9 +108,9 @@ t('adopting records the signature so the push does not bounce it back',()=>{
 });
 t('an identical copy is a no-op, not a rerender',()=>{
   const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
-  const eq=m[1].slice(m[1].indexOf('localHash===cloudHash'));
-  assert(/return true;/.test(eq.slice(0,200)));
-  assert(!/renderAll/.test(eq.slice(0,200)),'nothing changed, so nothing repaints');
+  const eq=m[1].slice(m[1].indexOf('localHash===cloudHash'),m[1].indexOf('atSettingsWouldDrop'));
+  assert(/return true;/.test(eq));
+  assert(!/renderAll/.test(eq),'nothing changed, so nothing repaints');
 });
 t('accounts are rebuilt from the adopted names',()=>{
   const m=code.match(/async function atPullSettings\(\)\{([\s\S]*?)\n\}/);
