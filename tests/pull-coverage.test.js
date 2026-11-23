@@ -23,6 +23,7 @@ const TABLES = {
   opportunities:     { pull: 'atPullOpportunities' },
   archer_signals:    { pull: 'atPullArcherSignals' },
   class_sessions:    { pull: 'atPullClassSessions' },
+  alert_snapshots:   { pull: 'atPullAlertSnapshots' },
   class_analysis:    { pull: 'atPullClassAnalysis' },
 
   // Documented exceptions. Each must stay true, or the blob cannot retire.

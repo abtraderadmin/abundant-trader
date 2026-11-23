@@ -42,6 +42,7 @@ const NO_TABLE = {
 
 // Which mirror covers which key.
 const MIRRORS = {
+  alertSnapshots:     'atPushAlertSnapshots',
   trades:             'atPushTrades',
   withdrawals:        'atPushWithdrawals',
   stockHoldings:      'atPushHoldings',

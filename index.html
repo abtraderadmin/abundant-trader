@@ -2508,7 +2508,7 @@ let state = {
 function loadState(){
   try{
     const raw=localStorage.getItem('at_v2');
-    if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];state.archerWatchlist=s.archerWatchlist||[];state.archerRejects=s.archerRejects||[];state.accounts=s.accounts||[];state.levels=s.levels||{};}
+    if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];state.archerWatchlist=s.archerWatchlist||[];state.archerRejects=s.archerRejects||[];state.accounts=s.accounts||[];state.levels=s.levels||{};state.alertSnapshots=s.alertSnapshots||[];}
   }catch(e){}
   // Seed known tax-deferred data for Jim account if not yet set
   _seedJimTaxData();
@@ -2528,7 +2528,7 @@ function _seedJimTaxData(){
   });
 }
 function saveState(){
-  try{localStorage.setItem('at_v2',JSON.stringify({settings:state.settings,trades:state.trades,discoveries:state.discoveries,importQueue:state.importQueue,ore:state.ore,classAnalysis:state.classAnalysis,classSessions:state.classSessions,stockHoldings:state.stockHoldings,portfolioOpen:state.portfolioOpen,transactionHistory:state.transactionHistory||{},withdrawals:state.withdrawals||[],archerWatchlist:state.archerWatchlist||[],archerRejects:state.archerRejects||[],accounts:state.accounts||[],levels:state.levels||{}}));}catch(e){}
+  try{localStorage.setItem('at_v2',JSON.stringify({settings:state.settings,trades:state.trades,discoveries:state.discoveries,importQueue:state.importQueue,ore:state.ore,classAnalysis:state.classAnalysis,classSessions:state.classSessions,stockHoldings:state.stockHoldings,portfolioOpen:state.portfolioOpen,transactionHistory:state.transactionHistory||{},withdrawals:state.withdrawals||[],archerWatchlist:state.archerWatchlist||[],archerRejects:state.archerRejects||[],accounts:state.accounts||[],levels:state.levels||{},alertSnapshots:state.alertSnapshots||[]}));}catch(e){}
   // localStorage stays the source of truth for the running app; the cloud copy
   // follows a couple of seconds behind. Never block a trade on the network.
   if(typeof atCloudQueue==='function')atCloudQueue();
@@ -10548,6 +10548,131 @@ function oreParseMarketOverview(text){
          bearHits:bear, bullHits:bull, dated:(dm?dm[1]:'')};
 }
 
+// ── ALERT TRACK RECORD ──────────────────────────────────────────────
+// The members list holds only CURRENTLY ACTIVE alerts. Closed ones are taken
+// down, so September shows two alerts and both are winners -- a hit rate read
+// off that list comes out near 100% and means nothing.
+//
+// The way round it is to snapshot the list on every pull and watch what
+// disappears. An alert that was there last time and is gone now, with no hit
+// date recorded when it was last seen, is a loser that was removed. That is
+// how the missing half of the population is recovered, and it only works
+// going forward, which is why the first snapshot is marked as a baseline and
+// never counted as evidence of anything.
+const AT_SNAP_KEEP=120;
+function atAlertKey(a){
+  return (a.source||'acorn_alerts')+'|'+String(a.ticker||'').toUpperCase()
+    +'|'+String(a.foundOn||a.found||'');
+}
+// One pull = one snapshot. Identical pulls on the same day are not stacked:
+// reviewing twice in an evening should not look like two weeks of evidence.
+function atAlertSnapshot(alerts,source){
+  if(!Array.isArray(alerts)||!alerts.length)return null;
+  if(!Array.isArray(state.alertSnapshots))state.alertSnapshots=[];
+  const day=atLiveSessionDate();
+  const src=source||'acorn_alerts';
+  const snap={
+    date:day, source:src, takenAt:new Date().toISOString(),
+    alerts:alerts.map(function(a){
+      return{ticker:String(a.ticker||'').toUpperCase(), foundOn:a.foundOn||'',
+             strategy:a.pattern||'', direction:a.direction||'',
+             entry:a.entry, stop:a.stop, target1:a.target1,
+             rr:(a.rr!=null?a.rr:null), hitDate:a.statusDate||'',
+             source:src};
+    })
+  };
+  const i=state.alertSnapshots.findIndex(function(x){return x.date===day&&x.source===src;});
+  if(i>=0)state.alertSnapshots[i]=snap; else state.alertSnapshots.push(snap);
+  state.alertSnapshots.sort(function(a,b){return a.date<b.date?-1:1;});
+  if(state.alertSnapshots.length>AT_SNAP_KEEP)
+    state.alertSnapshots=state.alertSnapshots.slice(-AT_SNAP_KEEP);
+  saveState();
+  return snap;
+}
+// Every alert ever seen, and what became of it.
+function atAlertLedger(source){
+  const snaps=(state.alertSnapshots||[]).filter(function(s){
+    return !source||s.source===source;});
+  if(!snaps.length)return{snapshots:0,records:[]};
+  const firstDay=snaps[0].date, lastDay=snaps[snaps.length-1].date;
+  const latest={};
+  snaps[snaps.length-1].alerts.forEach(function(a){latest[atAlertKey(a)]=true;});
+  const rec={};
+  snaps.forEach(function(sn){
+    sn.alerts.forEach(function(a){
+      const k=atAlertKey(a);
+      if(!rec[k]){
+        rec[k]={key:k,ticker:a.ticker,foundOn:a.foundOn,strategy:a.strategy||'(none)',
+                direction:a.direction,rr:a.rr,entry:a.entry,stop:a.stop,target1:a.target1,
+                source:a.source,firstSeen:sn.date,lastSeen:sn.date,hitDate:a.hitDate||''};
+      }
+      rec[k].lastSeen=sn.date;
+      if(a.hitDate&&!rec[k].hitDate)rec[k].hitDate=a.hitDate;
+      if(a.rr!=null)rec[k].rr=a.rr;
+    });
+  });
+  const out=Object.keys(rec).map(function(k){
+    const r=rec[k];
+    r.stillListed=!!latest[k];
+    // Present in the very first snapshot means it was alive before tracking
+    // began, so nothing is known about what Acorn removed before that.
+    r.baseline=(r.firstSeen===firstDay);
+    r.status=r.hitDate?'hit'
+            :(r.stillListed?'open':'removed');
+    r.daysTracked=Math.max(0,Math.round(
+      (new Date(r.lastSeen+'T12:00:00')-new Date(r.firstSeen+'T12:00:00'))/86400000));
+    return r;
+  });
+  return{snapshots:snaps.length,firstDay:firstDay,lastDay:lastDay,records:out};
+}
+// Grouped outcomes. Only records whose whole life was watched are scored;
+// baseline ones are reported separately rather than folded in, because
+// counting a survivor you inherited as a win is exactly the bias being
+// corrected for.
+function atAlertScore(by,source){
+  const led=atAlertLedger(source);
+  const groups={};
+  const band=function(rr){
+    if(rr==null)return 'no R:R';
+    if(rr<2)return 'under 2.0';
+    if(rr<2.5)return '2.0 – 2.49';
+    return '2.5 and up';
+  };
+  led.records.forEach(function(r){
+    const g=(by==='rr')?band(r.rr):(r.strategy||'(none)');
+    if(!groups[g])groups[g]={group:g,total:0,hit:0,removed:0,open:0,
+                             baseline:0,scored:0,rrSum:0,rrN:0};
+    const G=groups[g];
+    G.total++;
+    if(r.rr!=null){G.rrSum+=r.rr;G.rrN++;}
+    if(r.baseline){G.baseline++;}
+    else{
+      G.scored++;
+      if(r.status==='hit')G.hit++;
+      else if(r.status==='removed')G.removed++;
+      else G.open++;
+    }
+  });
+  const rows=Object.keys(groups).map(function(k){
+    const g=groups[k];
+    const settled=g.hit+g.removed;
+    g.settled=settled;
+    // Open ideas have not decided yet and are excluded from the rate rather
+    // than counted as either thing.
+    g.hitRate=settled>0?parseFloat((g.hit/settled*100).toFixed(1)):null;
+    g.avgRR=g.rrN?parseFloat((g.rrSum/g.rrN).toFixed(2)):null;
+    return g;
+  }).sort(function(a,b){
+    if(a.settled!==b.settled)return b.settled-a.settled;
+    return b.total-a.total;
+  });
+  return{by:(by==='rr'?'R:R band':'pattern'),snapshots:led.snapshots,
+         firstDay:led.firstDay,lastDay:led.lastDay,
+         totalRecords:led.records.length,
+         baselineCount:led.records.filter(function(r){return r.baseline;}).length,
+         rows:rows};
+}
+
 // ── ACORN MEMBER ALERTS TABLE ───────────────────────────────────────
 // The members site carries the same ideas as a structured table: levels,
 // status, the date a target was hit, and the full update history per alert.
@@ -10989,6 +11114,9 @@ function oreParseAlerts(){
   if(!parsed.length&&(service==='acorn_alerts'||/^\s*[\[{]/.test(rawText))){
     parsed=oreParseAcornAlerts(rawText);
     mode=parsed.length?'members table':'';
+    // Every pull is a snapshot. What disappears between two of them is the
+    // only record anyone keeps of the alerts that did not work.
+    if(parsed.length){try{atAlertSnapshot(parsed,'acorn_alerts');}catch(e){}}
   }
   if(!parsed.length&&(service==='acorn_setups'||/Stock Setups\s*for/i.test(rawText))){
     parsed=oreParseAcornSetups(rawText);
@@ -12033,6 +12161,7 @@ async function atCloudPush(force){
    ['transactions',atPushTransactions],
    ['opportunities',atPushOpportunities],['archer',atPushArcherSignals],
    ['class_sessions',atPushClassSessions],['class_analysis',atPushClassAnalysis],
+   ['alert_snapshots',atPushAlertSnapshots],
    ['settings',atPushSettings],['secrets',atPushSecrets]];
   var failed=[];
   await Promise.all(mirrors.map(function(pair){
@@ -12161,6 +12290,7 @@ async function atReconcile(){
   // Settings first. The blob adopted just above carries blob-era config, and
   // everything after this reads account names and risk figures out of it.
   var pulls=[['settings',atPullSettings],
+             ['alert snapshots',atPullAlertSnapshots],
              ['trades',atPullTrades],['withdrawals',atPullWithdrawals],
              ['holdings',atPullHoldings],['transactions',atPullTransactions],
              ['opportunities',atPullOpportunities],['archer',atPullArcherSignals],
@@ -16689,6 +16819,51 @@ async function atPushArcherSignals(){
     });
   });
   return atPushRows('archer_signals','at_archer_sig',rows,{data:{}});
+}
+
+// Alert snapshots are the one collection here that cannot be re-derived from
+// anywhere. The vendor list shows only live alerts, so the record of what was
+// removed exists solely in the gap between two of our own snapshots. Losing
+// these loses the track record, which is why they are mirrored rather than
+// listed as device-local.
+async function atPushAlertSnapshots(){
+  if(!atUser||!Array.isArray(state.alertSnapshots))return false;
+  var rows=state.alertSnapshots.map(function(s){
+    if(!s||!s.date)return null;
+    var src=s.source||'acorn_alerts';
+    return {
+      // Deterministic id, so the same day's snapshot updates in place instead
+      // of stacking — the unique index expects exactly that.
+      id:src+'|'+s.date,
+      user_id:atUser.id, source:src, snap_date:atDate(s.date),
+      taken_at:s.takenAt||new Date().toISOString(),
+      alert_count:(Array.isArray(s.alerts)?s.alerts.length:0),
+      alerts:(Array.isArray(s.alerts)?s.alerts:[]),
+      deleted:false, updated_at:new Date().toISOString()
+    };
+  }).filter(Boolean);
+  return atPushRows('alert_snapshots','at_alert_snapshots_sig',rows,{alerts:[]});
+}
+function atAlertSnapshotFromRow(r){
+  return{
+    date:(r.snap_date||'').slice(0,10),
+    source:r.source||'acorn_alerts',
+    takenAt:r.taken_at||'',
+    alerts:Array.isArray(r.alerts)?r.alerts:[]
+  };
+}
+async function atPullAlertSnapshots(){
+  return atPullArray({
+    table:'alert_snapshots', sigKey:'at_alert_snapshots_sig', label:'alert snapshots',
+    read:function(){return Array.isArray(state.alertSnapshots)?state.alertSnapshots:(state.alertSnapshots=[]);},
+    write:function(a){
+      // Kept in date order, because the ledger reads the last one as "now".
+      a.sort(function(x,y){return (x.date||'')<(y.date||'')?-1:1;});
+      state.alertSnapshots=a;
+    },
+    fromRow:atAlertSnapshotFromRow,
+    idOf:function(o){return (o.source||'acorn_alerts')+'|'+(o.date||'');}
+  });
 }
 
 async function atPushClassSessions(){
