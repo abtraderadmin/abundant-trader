@@ -1693,7 +1693,7 @@ body::before{
       <div id="txn-journal">
         <div style="text-align:center;color:var(--fg3);padding:30px 0;font-size:13px">
           No transaction history imported yet.<br>
-          <span style="font-size:11px">Click ⬆ Import CSV to load your E-Trade transaction history (Joint JTWROS-7264 or any account).</span>
+          <span style="font-size:11px">Click ⬆ Import CSV to load your E-Trade transaction history (any account).</span>
         </div>
       </div>
 
@@ -2643,7 +2643,7 @@ function loadState(){
     if(raw){const s=JSON.parse(raw);state.settings={...state.settings,...(s.settings||{})};state.trades=s.trades||[];state.discoveries=s.discoveries||[];state.importQueue=s.importQueue||[];if(s.ore)state.ore=s.ore;state.classAnalysis=s.classAnalysis||{};state.classSessions=s.classSessions||[];state.stockHoldings=s.stockHoldings||{};state.portfolioOpen=s.portfolioOpen||{};state.transactionHistory=s.transactionHistory||{};state.withdrawals=s.withdrawals||[];state.archerWatchlist=s.archerWatchlist||[];state.archerRejects=s.archerRejects||[];state.accounts=s.accounts||[];state.levels=s.levels||{};state.alertSnapshots=s.alertSnapshots||[];}
   }catch(e){}
   // Seed known tax-deferred data for Jim account if not yet set
-  _seedJimTaxData();
+  _ensureTaxMaps();
 }
 // Tax-deferred values — birth years, distributions, contributions — are USER DATA.
 // They belong in Settings → localStorage → your backup file, and must never be
@@ -2654,7 +2654,7 @@ function loadState(){
 //
 // This now only ensures the containers exist so nothing reads undefined.
 // Entering a value in Settings saves it; clearing it keeps it cleared.
-function _seedJimTaxData(){
+function _ensureTaxMaps(){
   ['accountTaxDeferred','accountBirthYear','accountAnnualDist','accountAnnualContrib'].forEach(k=>{
     if(!state.settings[k])state.settings[k]={};
   });
@@ -5197,8 +5197,8 @@ function saveTaxDeferredSettings(){
     if(!isNaN(cCur)&&cCur>=0)tco[nm][yr]=cCur;else delete tco[nm][yr];
   });
   saveState();
-  // Ensure the settings containers exist (no values are seeded — see _seedJimTaxData)
-  _seedJimTaxData();
+  // Ensure the settings containers exist (no values are seeded — see _ensureTaxMaps)
+  _ensureTaxMaps();
   renderPortfolioHoldings();
   // Refresh form inputs in-place from state so saved+seeded values appear immediately
   const yr2=new Date().getFullYear();const pyr2=yr2-1;
@@ -5803,7 +5803,7 @@ function importTransactionHistory(){
       const result=parseEtradeTransactions(e.target.result);
       if(!result){alert('Could not parse this CSV.\nMake sure it is an E-Trade "Download Transaction History" export.');return;}
       if(!state.transactionHistory)state.transactionHistory={};
-      // Broker files spell the account their own way ("Jim -2310"); resolve
+      // Broker files spell the account their own way ("Acct-1234"); resolve
       // to the canonical name so the import lands on the existing account.
       result.acctName=atResolveImportedAccount(result.acctName,'transactions');
       state.transactionHistory[result.acctName]=result;
@@ -12928,8 +12928,8 @@ function spyGLClassify(sym){
 }
 
 // Every account the app already knows about. Offering these as a list rather
-// than a text box is the real fix for the name-matching bug — 'Yaz -3036' and
-// 'Yaz-3036' are different accounts as far as the data is concerned, and no
+// than a text box is the real fix for the name-matching bug — 'Acct -1234' and
+// 'Acct -1234' are different accounts as far as the data is concerned, and no
 // amount of care while typing makes that safe.
 function spyKnownAccounts(){
   const out=[];
@@ -13187,7 +13187,7 @@ function spySessAcct(){
   }
   return '';
 }
-// The selector's label carries a tick — "Joint JTWROS-7264 ✓" — and the account
+// The selector's label carries a tick — "Joint-5678 ✓" — and the account
 // is written with and without a space before the dash in different places. An
 // exact string match fails on all of that, so compare on letters and digits only.
 function spySessNorm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
@@ -13269,7 +13269,7 @@ function atDiag(){
 // has shown a stale figure since Gains & Losses became the source — a wrong total
 // sitting above the right one is worse than no panel at all, so it is replaced.
 // The orders journal is NOT broken. Given only Gains & Losses sessions it renders
-// them correctly — Yaz-3036 shows all nine days, commissions included. The fault
+// them correctly — Acct -1234 shows all nine days, commissions included. The fault
 // appears only where an account ALSO holds an old fills import: the fills win, and
 // they stopped being updated when G&L became the source. So the stale rows are the
 // problem, not the panel, and the fix is to clear them for that account.
@@ -13292,7 +13292,7 @@ function spyFillsClear(acct){
   if(!n){ alert('No old fill rows found for '+acct+'.'); return; }
   if(!confirm('Remove '+n+' old fill row'+(n!==1?'s':'')+' for '+acct+'?\n\n'
     +'These came from the Import CSV path and are no longer updated. Your Gains & Losses '
-    +'sessions are kept and the journal will show those instead — the same way Yaz-3036 '
+    +'sessions are kept and the journal will show those instead — the same way a renamed account '
     +'already does.\n\nNo trades are deleted.'))return;
   const th=state.transactionHistory;
   const a=spySessNorm(acct);
@@ -13542,7 +13542,7 @@ function spyAcctMatch(a,b){
   if(!A||!B)return false;
   if(A===B)return true;
   const l4=s=>s.replace(/\D/g,'').slice(-4);
-  return !!l4(A)&&l4(A)===l4(B);          // 'Yaz-3036' vs 'Yaz -3036'
+  return !!l4(A)&&l4(A)===l4(B);          // 'Acct-1234' vs 'Acct -1234'
 }
 function spyTradesForAccount(acct){
   return (state.trades||[]).filter(t=>t.module==='spy_day'&&spyAcctMatch(t.account,acct));
@@ -16036,7 +16036,7 @@ function evalRender(){
   })();
   // ── Migration: re-key transactionHistory to match Settings account names ──
   // The broker CSV can spell the account slightly differently than Settings
-  // (e.g. 'Joint JTWROS -7264' vs 'Joint JTWROS-7264'). Because the Orders
+  // (e.g. 'Joint-5678' vs 'Joint-5678'). Because the Orders
   // dropdown lists the union of both sources, that made ONE account appear as
   // TWO entries — and selecting the Settings-spelled one showed no data.
   // Only whitespace/case-insensitive matches are re-keyed, and never over real data.
@@ -16429,7 +16429,7 @@ function atNameKeyedMaps(){
 // left alone and reported. Safe to call twice.
 // ── ACCOUNT NAME NORMALISATION ──────────────────────────────────────────
 // Broker exports and hand-typed settings disagreed about spacing around the
-// hyphen: holdings arrived as "Yaz -3036" while trades carried "Yaz-3036",
+// hyphen: holdings arrived as "Acct -1234" while trades carried "Acct -1234",
 // so the same account existed twice and never joined. Canonical form has no
 // whitespace touching a hyphen.
 function atCanonAcctName(n){
@@ -16448,7 +16448,7 @@ function atKnownAccountNames(){
 }
 
 // Resolve a name arriving from a broker file, and say so when it is one the
-// app has never seen. "Jim -2310" came in from an E-Trade export and sat
+// app has never seen. "Acct-1234" came in from an E-Trade export and sat
 // beside "ET-Jim" for weeks as a separate account; a notice at import time
 // is how that gets caught on day one instead.
 function atResolveImportedAccount(raw,whatFor){
