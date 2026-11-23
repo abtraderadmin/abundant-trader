@@ -292,5 +292,53 @@ t('options get a tile and a filter instead of vanishing from both',()=>{
   assert.match(html,/>Options</);
 });
 
+console.log('\nthe review page says what it is');
+t('the ticker input is on Review, not on the import tab',()=>{
+  seed();
+  const rv=pane('ore','review');
+  assert.ok(rv.querySelector('#ore-ticker'),
+    'the input that drives this page used to live on Add & Import');
+  assert.ok(!pane('ore','add').querySelector('#ore-ticker'));
+});
+t('an unanalysed page explains itself instead of being blank',()=>{
+  seed();
+  const e=d.getElementById('ore-empty'), r=d.getElementById('ore-results');
+  assert.strictEqual(e.hidden,false);
+  assert.strictEqual(r.hidden,true,'this was a blank tab');
+  assert.match(e.textContent,/Analyze/);
+});
+t('results and empty state swap, never both and never neither',()=>{
+  seed();
+  w.oreShowResults(true);
+  assert.strictEqual(d.getElementById('ore-empty').hidden,true);
+  assert.strictEqual(d.getElementById('ore-results').hidden,false);
+  w.oreShowResults(false);
+  assert.strictEqual(d.getElementById('ore-empty').hidden,false);
+  assert.strictEqual(d.getElementById('ore-results').hidden,true);
+});
+t('the results read as three numbered stages',()=>{
+  seed();
+  const st=[...d.querySelectorAll('#ore-results .ore-stage')]
+    .map(x=>x.querySelector('.ore-stage-n').textContent);
+  assert.deepStrictEqual(st,['1','2','3'],'eight panels used to stack flat');
+});
+t('the fields you fill in are not hidden behind a roll-up',()=>{
+  seed();
+  const read=d.querySelector('#ore-chart-read')||[...d.querySelectorAll('#ore-results .trade-form')]
+    .filter(x=>/Chart Read/.test(x.textContent))[0];
+  assert.ok(read,'Chart Read panel missing');
+  assert.strictEqual(read.closest('details.rollup'),null,
+    'stage 2 is work, not reference');
+});
+t('every panel survived the regroup',()=>{
+  seed();
+  ['ore-price-stats','ore-stock-scenario-panel','ore-pass-panel',
+   'ore-routing-suggestion','ore-progress'].forEach(id=>
+    assert.ok(d.getElementById(id),id+' lost'));
+  assert.ok(d.querySelector('#ore-results .ore-two-col'));
+  assert.ok(d.getElementById('ore-swing-ideas'),
+    'the price-alerts panel anchors to this');
+});
+
 console.log(fail?'\n'+fail+' failure(s)':'\nall checks passed');
 process.exit(fail?1:0);

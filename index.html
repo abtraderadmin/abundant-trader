@@ -563,6 +563,15 @@ body::before{
    ROLL-UPS are click-to-expand sections for detail that should be reachable
    without being in the way. Built on <details>/<summary>, so keyboard and
    screen-reader behaviour comes from the browser rather than from me. */
+.ore-stage{display:flex;align-items:baseline;gap:9px;margin:22px 0 10px;padding-bottom:7px;
+  border-bottom:1px solid var(--border)}
+.ore-stage:first-child{margin-top:4px}
+.ore-stage-n{flex:0 0 auto;width:20px;height:20px;border-radius:50%;background:var(--blue-bg);
+  color:var(--blue);font-size:11px;font-weight:800;display:flex;align-items:center;
+  justify-content:center;align-self:center}
+.ore-stage-t{font-size:12px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+.ore-stage-s{font-size:11px;color:var(--fg3);font-weight:400}
+@media (max-width:640px){.ore-stage{flex-wrap:wrap;gap:6px}.ore-stage-s{flex-basis:100%}}
 .goal-sep{display:flex;align-items:center;align-self:stretch;padding:0 4px;flex:0 0 auto}
 .goal-sep span{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
   color:var(--fg3);writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;
@@ -1711,12 +1720,43 @@ body::before{
   <div class="subtabs navgroup" data-group="ore"></div>
 
   <div class="subpane" data-group="ore" data-pane="review">
+  <!-- Search Panel -->
+  <div class="trade-form" style="margin-bottom:20px">
+    <div class="form-hd">
+      <span class="form-title">Opportunity Review Engine</span>
+      <span class="gov-badge" style="color:#A78BFA;background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.3)">⚙ ORE Active</span>
+    </div>
+    <div class="form-body" style="align-items:flex-end;grid-template-columns:1fr auto">
+      <div class="fg">
+        <label class="fl">Stock Ticker<span class="req">*</span></label>
+        <input class="fc mono" id="ore-ticker" type="text" placeholder="NVDA" oninput="this.value=this.value.toUpperCase()" style="font-size:20px;font-weight:700;letter-spacing:.08em">
+      </div>
+      <div class="fg" style="align-self:flex-end;flex:0 0 auto">
+        <button class="btn-primary" style="background:#7C3AED;min-width:0;padding:10px 28px;font-size:14px" onclick="oreAnalyze()">↓ Analyze</button>
+      </div>
+    </div>
+    <div class="gov-check" id="ore-progress" style="font-size:12px">Enter a ticker and click Analyze to pull live market data from Alpha Vantage.</div>
+  </div>
+  <div id="ore-empty" class="trade-form" style="margin-bottom:20px">
+    <div style="padding:18px 16px;text-align:center">
+      <div style="font-size:13px;font-weight:700;margin-bottom:6px">Nothing analysed yet</div>
+      <div style="font-size:12px;color:var(--fg3);line-height:1.6;max-width:440px;margin:0 auto">
+        Type a ticker above and press Analyze. That pulls live price, EMAs, pivots and levels,
+        then walks you through your chart read and a go / no-go decision.<br>
+        To work through tickers you have already saved, open <strong>Watchlist</strong>.
+      </div>
+    </div>
+  </div>
   <div id="ore-results" hidden>
 
     <!-- Price Stats -->
     <div class="stats-row" id="ore-price-stats" style="margin-bottom:20px"></div>
 
     <!-- Chart -->
+    <div class="ore-stage"><span class="ore-stage-n">1</span><span class="ore-stage-t">What the data says</span><span class="ore-stage-s">pulled from the market — nothing to fill in</span></div>
+    <details class="rollup" data-ru="ore-data" open ontoggle="atRollupToggle('ore-data',this)">
+      <summary><span class="ru-caret">&#9656;</span><span>Chart, levels and generated ideas</span><span class="ru-sub">EMAs &middot; pivots &middot; fib &middot; swing ideas</span></summary>
+      <div class="ru-body">
     <div class="trade-form" style="margin-bottom:20px">
       <div class="form-hd">
         <span class="form-title" id="ore-chart-title">Chart</span>
@@ -1772,6 +1812,9 @@ body::before{
     </div>
 
     <!-- Manual Chart Read -->
+      </div>
+    </details>
+    <div class="ore-stage"><span class="ore-stage-n">2</span><span class="ore-stage-t">Your chart read</span><span class="ore-stage-s">what you see — four fields, required</span></div>
     <div class="trade-form" style="margin-bottom:20px">
       <div class="form-hd">
         <span class="form-title">Chart Read</span>
@@ -1823,6 +1866,7 @@ body::before{
     </div>
 
     <!-- Route Decision -->
+    <div class="ore-stage"><span class="ore-stage-n">3</span><span class="ore-stage-t">Decision</span><span class="ore-stage-s">take it, size it, or log the pass</span></div>
     <div class="trade-form" style="margin-bottom:20px">
       <div class="form-hd"><span class="form-title">Opportunity Decision</span></div>
       <div id="ore-routing-suggestion" style="padding:10px 18px 4px;font-size:13px;line-height:1.7;color:var(--fg2)">
@@ -1938,23 +1982,6 @@ body::before{
     </div>
   </div>
 
-  <!-- Search Panel -->
-  <div class="trade-form" style="margin-bottom:20px">
-    <div class="form-hd">
-      <span class="form-title">Opportunity Review Engine</span>
-      <span class="gov-badge" style="color:#A78BFA;background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.3)">⚙ ORE Active</span>
-    </div>
-    <div class="form-body" style="align-items:flex-end;grid-template-columns:1fr auto">
-      <div class="fg">
-        <label class="fl">Stock Ticker<span class="req">*</span></label>
-        <input class="fc mono" id="ore-ticker" type="text" placeholder="NVDA" oninput="this.value=this.value.toUpperCase()" style="font-size:20px;font-weight:700;letter-spacing:.08em">
-      </div>
-      <div class="fg" style="align-self:flex-end;flex:0 0 auto">
-        <button class="btn-primary" style="background:#7C3AED;min-width:0;padding:10px 28px;font-size:14px" onclick="oreAnalyze()">↓ Analyze</button>
-      </div>
-    </div>
-    <div class="gov-check" id="ore-progress" style="font-size:12px">Enter a ticker and click Analyze to pull live market data from Alpha Vantage.</div>
-  </div>
 
   <!-- Results -->
   </div>
@@ -7777,6 +7804,12 @@ const oreSeriesMap={emas:{},pivots:{},fibs:{},bb:{},pdhl:{},contested:{}};
 
 // ─ Utility
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
+// The results block starts hidden, so the Review tab was a blank page until
+// something had been analysed. The two swap: one or the other is always there.
+function oreShowResults(on){
+  const r=document.getElementById('ore-results'); if(r)r.hidden=!on;
+  const e=document.getElementById('ore-empty');   if(e)e.hidden=!!on;
+}
 const oreProgress=msg=>{ const el=document.getElementById('ore-progress'); if(el)el.textContent=msg; };
 
 // ─ MCP-routed Alpha Vantage calls (artifact CSP blocks direct fetch to external APIs)
@@ -8141,7 +8174,7 @@ async function oreAnalyze(){
   const ticker=(document.getElementById('ore-ticker').value||'').trim().toUpperCase();
   if(!ticker){alert('Enter a ticker symbol.');return;}
   // Reset UI
-  document.getElementById('ore-results').hidden=true;
+  oreShowResults(false);
   document.getElementById('ore-routing-suggestion').textContent='Complete Chart Read fields above to see routing suggestion.';
   ['orb-stock','orb-options','orb-both','orb-wait','orb-reject'].forEach(id=>{
     const b=document.getElementById(id);if(b)b.className=b.className.replace(/ sel/g,'');
@@ -8450,7 +8483,7 @@ function oreBuildResults(){
   oreUpdateAssessment();
 
   // Show results
-  document.getElementById('ore-results').hidden=false;
+  oreShowResults(true);
 
   // Build chart AFTER results shown (container needs to be visible)
   setTimeout(oreBuildChart,100);
