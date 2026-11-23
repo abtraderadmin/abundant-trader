@@ -1705,87 +1705,12 @@ body::before{
 <section class="screen" id="screen-ore">
 
   <!-- ── Alert Import Engine ── -->
-  <div class="trade-form imp-panel" style="margin-bottom:20px">
-    <div class="form-hd" style="cursor:pointer" onclick="oreImportToggle()">
-      <div class="imp-toggle-label">
-        <span class="imp-toggle-icon">📥</span>
-        Alert Import Engine
-        <span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;background:var(--gold-bg);color:var(--gold);border:1px solid rgba(245,166,35,.3);letter-spacing:.05em">NEW</span>
-      </div>
-      <span class="imp-caret" id="imp-caret">▼</span>
-    </div>
-    <div id="imp-body" class="imp-body" hidden>
-      <div class="fg" style="margin-bottom:0">
-        <label class="fl" style="margin-bottom:6px">Paste alert text from your service below</label>
-        <select class="fc" id="imp-service" style="margin-bottom:8px;font-size:12px">
-          <option value="acorn_wealth">📊 Acorn Wealth — full levels</option>
-          <option value="trading_indicators">⚙ Trading Indicators / Option Professor</option>
-          <option value="askslim">📈 AskSlim</option>
-          <option value="motley_fool">🎭 Motley Fool</option>
-          <option value="wealthcharts">📉 WealthCharts</option>
-          <option value="mbg">🔷 MBG</option>
-          <option value="other">✎ Other / my own list</option>
-        </select>
-        <div style="font-size:11px;color:var(--fg3);margin:-4px 0 8px;line-height:1.6">The source is recorded on every ticker and on any trade you log from it — so you can tell later which service actually earns its keep. Acorn reports are read in full (entry, stop, targets). For the others, paste anything and the symbols are pulled out; uncheck anything it grabs by mistake.</div>
-        <div style="display:flex;align-items:center;gap:9px;margin:-2px 0 10px;flex-wrap:wrap">
-          <label for="ore-file" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:7px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:12px;font-weight:600">📎 Load a file…</label>
-          <input type="file" id="ore-file" accept=".csv,.tsv,.txt,.pdf,text/csv,text/plain,application/pdf" style="display:none" onchange="oreLoadFile(this)">
-          <span id="ore-file-status" style="font-size:11px;color:var(--fg3);flex:1;min-width:200px">CSV, TSV, TXT or a text-based PDF. Read on this machine — nothing is uploaded anywhere.</span>
-        </div>
-        <textarea class="imp-textarea" id="imp-text" placeholder="Paste the full Acorn Wealth stock report text here…&#10;&#10;The parser will find Long Ideas and Short Ideas sections,&#10;extract each ticker's entry/stop/target data, and&#10;check for duplicates before adding to the queue."></textarea>
-      </div>
-      <div class="imp-controls">
-        <button class="imp-btn" onclick="oreParseAlerts()">⚡ Parse &amp; Build Queue</button>
-        <button class="imp-clear-btn" onclick="oreImportClear()">Clear</button>
-        <span id="imp-status" class="imp-status"></span>
-      </div>
-      <div id="imp-queue-wrap" hidden>
-        <div class="imp-queue" id="imp-queue-table"></div>
-        <div class="imp-queue-actions">
-          <span class="imp-sel-info" id="imp-sel-info"></span>
-          <button class="imp-analyze-btn" id="imp-analyze-btn" onclick="oreAnalyzeQueue()">▶ Analyze Checked Tickers</button>
-        </div>
-      </div>
-    </div>
+  <div class="subtabs" data-group="ore">
+    <button class="subtab" data-tab="review" onclick="atSetSubTab('ore','review')">Review<span class="st-count"></span></button>
+    <button class="subtab" data-tab="add" onclick="atSetSubTab('ore','add')">Add &amp; Import<span class="st-count"></span></button>
   </div>
 
-  <!-- ── Class Trade Analysis (V56 — Dynamic Sessions) ── -->
-  <div class="trade-form" style="margin-bottom:20px">
-    <div class="form-hd" style="cursor:pointer" onclick="csPanelToggle()">
-      <div class="imp-toggle-label">
-        <span class="imp-toggle-icon">📚</span>
-        Class Trade Analysis
-        <span id="cs-panel-badge" style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;background:rgba(124,58,237,.12);color:#A78BFA;border:1px solid rgba(124,58,237,.3);letter-spacing:.05em"></span>
-      </div>
-      <span class="imp-caret" id="cs-panel-caret">▼</span>
-    </div>
-    <div id="cs-panel-body" hidden>
-      <div class="cs-add-row" style="padding:12px 18px 0;border-top:1px solid var(--border)">
-        <button class="btn-secondary" style="font-size:12px" onclick="csShowImport()">➕ Import New Session</button>
-      </div>
-      <div id="cs-container"></div>
-    </div>
-  </div>
-
-  <!-- Search Panel -->
-  <div class="trade-form" style="margin-bottom:20px">
-    <div class="form-hd">
-      <span class="form-title">Opportunity Review Engine</span>
-      <span class="gov-badge" style="color:#A78BFA;background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.3)">⚙ ORE Active</span>
-    </div>
-    <div class="form-body" style="align-items:flex-end;grid-template-columns:1fr auto">
-      <div class="fg">
-        <label class="fl">Stock Ticker<span class="req">*</span></label>
-        <input class="fc mono" id="ore-ticker" type="text" placeholder="NVDA" oninput="this.value=this.value.toUpperCase()" style="font-size:20px;font-weight:700;letter-spacing:.08em">
-      </div>
-      <div class="fg" style="align-self:flex-end;flex:0 0 auto">
-        <button class="btn-primary" style="background:#7C3AED;min-width:0;padding:10px 28px;font-size:14px" onclick="oreAnalyze()">↓ Analyze</button>
-      </div>
-    </div>
-    <div class="gov-check" id="ore-progress" style="font-size:12px">Enter a ticker and click Analyze to pull live market data from Alpha Vantage.</div>
-  </div>
-
-  <!-- Results -->
+  <div class="subpane" data-group="ore" data-pane="review">
   <div id="ore-results" hidden>
 
     <!-- Price Stats -->
@@ -1965,6 +1890,92 @@ body::before{
       <button class="ftab" data-wf="rejected" onclick="setWlFilter('rejected')">Rejected</button>
     </div>
     <div id="ore-wl-body"></div>
+  </div>
+
+  </div>
+
+  <div class="subpane" data-group="ore" data-pane="add" id="ore-add-pane">
+  <div class="trade-form imp-panel" style="margin-bottom:20px">
+    <div class="form-hd" style="cursor:pointer" onclick="oreImportToggle()">
+      <div class="imp-toggle-label">
+        <span class="imp-toggle-icon">📥</span>
+        Alert Import Engine
+        <span style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;background:var(--gold-bg);color:var(--gold);border:1px solid rgba(245,166,35,.3);letter-spacing:.05em">NEW</span>
+      </div>
+      <span class="imp-caret" id="imp-caret">▼</span>
+    </div>
+    <div id="imp-body" class="imp-body" hidden>
+      <div class="fg" style="margin-bottom:0">
+        <label class="fl" style="margin-bottom:6px">Paste alert text from your service below</label>
+        <select class="fc" id="imp-service" style="margin-bottom:8px;font-size:12px">
+          <option value="acorn_wealth">📊 Acorn Wealth — full levels</option>
+          <option value="trading_indicators">⚙ Trading Indicators / Option Professor</option>
+          <option value="askslim">📈 AskSlim</option>
+          <option value="motley_fool">🎭 Motley Fool</option>
+          <option value="wealthcharts">📉 WealthCharts</option>
+          <option value="mbg">🔷 MBG</option>
+          <option value="other">✎ Other / my own list</option>
+        </select>
+        <div style="font-size:11px;color:var(--fg3);margin:-4px 0 8px;line-height:1.6">The source is recorded on every ticker and on any trade you log from it — so you can tell later which service actually earns its keep. Acorn reports are read in full (entry, stop, targets). For the others, paste anything and the symbols are pulled out; uncheck anything it grabs by mistake.</div>
+        <div style="display:flex;align-items:center;gap:9px;margin:-2px 0 10px;flex-wrap:wrap">
+          <label for="ore-file" style="cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:7px;border:1px solid var(--border2);background:var(--s2);color:var(--fg);font-size:12px;font-weight:600">📎 Load a file…</label>
+          <input type="file" id="ore-file" accept=".csv,.tsv,.txt,.pdf,text/csv,text/plain,application/pdf" style="display:none" onchange="oreLoadFile(this)">
+          <span id="ore-file-status" style="font-size:11px;color:var(--fg3);flex:1;min-width:200px">CSV, TSV, TXT or a text-based PDF. Read on this machine — nothing is uploaded anywhere.</span>
+        </div>
+        <textarea class="imp-textarea" id="imp-text" placeholder="Paste the full Acorn Wealth stock report text here…&#10;&#10;The parser will find Long Ideas and Short Ideas sections,&#10;extract each ticker's entry/stop/target data, and&#10;check for duplicates before adding to the queue."></textarea>
+      </div>
+      <div class="imp-controls">
+        <button class="imp-btn" onclick="oreParseAlerts()">⚡ Parse &amp; Build Queue</button>
+        <button class="imp-clear-btn" onclick="oreImportClear()">Clear</button>
+        <span id="imp-status" class="imp-status"></span>
+      </div>
+      <div id="imp-queue-wrap" hidden>
+        <div class="imp-queue" id="imp-queue-table"></div>
+        <div class="imp-queue-actions">
+          <span class="imp-sel-info" id="imp-sel-info"></span>
+          <button class="imp-analyze-btn" id="imp-analyze-btn" onclick="oreAnalyzeQueue()">▶ Analyze Checked Tickers</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Class Trade Analysis (V56 — Dynamic Sessions) ── -->
+  <div class="trade-form" style="margin-bottom:20px">
+    <div class="form-hd" style="cursor:pointer" onclick="csPanelToggle()">
+      <div class="imp-toggle-label">
+        <span class="imp-toggle-icon">📚</span>
+        Class Trade Analysis
+        <span id="cs-panel-badge" style="font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;background:rgba(124,58,237,.12);color:#A78BFA;border:1px solid rgba(124,58,237,.3);letter-spacing:.05em"></span>
+      </div>
+      <span class="imp-caret" id="cs-panel-caret">▼</span>
+    </div>
+    <div id="cs-panel-body" hidden>
+      <div class="cs-add-row" style="padding:12px 18px 0;border-top:1px solid var(--border)">
+        <button class="btn-secondary" style="font-size:12px" onclick="csShowImport()">➕ Import New Session</button>
+      </div>
+      <div id="cs-container"></div>
+    </div>
+  </div>
+
+  <!-- Search Panel -->
+  <div class="trade-form" style="margin-bottom:20px">
+    <div class="form-hd">
+      <span class="form-title">Opportunity Review Engine</span>
+      <span class="gov-badge" style="color:#A78BFA;background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.3)">⚙ ORE Active</span>
+    </div>
+    <div class="form-body" style="align-items:flex-end;grid-template-columns:1fr auto">
+      <div class="fg">
+        <label class="fl">Stock Ticker<span class="req">*</span></label>
+        <input class="fc mono" id="ore-ticker" type="text" placeholder="NVDA" oninput="this.value=this.value.toUpperCase()" style="font-size:20px;font-weight:700;letter-spacing:.08em">
+      </div>
+      <div class="fg" style="align-self:flex-end;flex:0 0 auto">
+        <button class="btn-primary" style="background:#7C3AED;min-width:0;padding:10px 28px;font-size:14px" onclick="oreAnalyze()">↓ Analyze</button>
+      </div>
+    </div>
+    <div class="gov-check" id="ore-progress" style="font-size:12px">Enter a ticker and click Analyze to pull live market data from Alpha Vantage.</div>
+  </div>
+
+  <!-- Results -->
   </div>
 
 </section>
@@ -2305,36 +2316,18 @@ body::before{
 ===================================================== -->
 <section class="screen" id="screen-cfg">
   <div class="section-title" style="margin-bottom:16px">Goals &amp; Settings</div>
-  <div class="cfg-grid">
-    <div class="cfg-card">
-      <div class="cfg-hd">Futures Goals</div>
-      <div class="cfg-body">
-        <div class="cfg-row"><div class="cfg-lbl">Personal Futures Goal</div><div class="cfg-sub">P/L target before withdrawing from personal account</div><div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-personal-goal" type="number" step="100" placeholder="6000"></div></div>
-        <div class="cfg-sub" style="margin-top:-4px">Prop/Eval account goals are set per-account in Trading Account Names →</div>
-        <button class="cfg-btn" onclick="saveGoals()">Save Goals</button>
-        <div class="cfg-saved" id="goal-saved" hidden>✓ Saved</div>
-      </div>
-    </div>
-    <div class="cfg-card">
-      <div class="cfg-hd" style="color:var(--gold)">🎯 Goals by Module <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">a separate target per area</span></div>
-      <div class="cfg-body">
-        <div class="cfg-sub" style="margin-bottom:10px">Each trading area gets its own goal and its own ring on the dashboard, so a losing options week never reads as a losing futures week. Leave a field blank for no goal — an area still gets a ring once it has trades.</div>
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:var(--green)">Futures</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-futures" type="number" step="100" min="0" placeholder="6000" style="width:112px"></div>
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:var(--blue)">Stock</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-stock" type="number" step="100" min="0" placeholder="—" style="width:112px"></div>
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:#C084FC">Options</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-options" type="number" step="100" min="0" placeholder="—" style="width:112px"></div>
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:#a855f7">SPY Day</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-spy_day" type="number" step="100" min="0" placeholder="—" style="width:112px"></div>
-        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:var(--gold)">Swing</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-swing" type="number" step="100" min="0" placeholder="—" style="width:112px"></div>
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:10px 0 4px">
-          <input type="checkbox" id="cfg-goal-paper" style="width:16px;height:16px;accent-color:var(--gold)">
-          <span style="font-size:12px;color:var(--fg2)">Include paper / sim trades in these rings</span>
-        </label>
-        <button class="cfg-btn" onclick="saveModuleGoals()">Save Module Goals</button>
-        <div class="cfg-saved" id="module-goals-saved" hidden>✓ Saved</div>
-      </div>
-    </div>
-    <div class="cfg-card">
-      <div class="cfg-hd">Trading Account Names</div>
-      <div class="cfg-body">
+  <div class="subtabs" data-group="cfg">
+    <button class="subtab" data-tab="accounts" onclick="atSetSubTab('cfg','accounts')">Accounts</button>
+    <button class="subtab" data-tab="goals" onclick="atSetSubTab('cfg','goals')">Goals</button>
+    <button class="subtab" data-tab="rules" onclick="atSetSubTab('cfg','rules')">Rules</button>
+    <button class="subtab" data-tab="data" onclick="atSetSubTab('cfg','data')">Data</button>
+  </div>
+
+  <div class="subpane" data-group="cfg" data-pane="accounts">
+    <div class="cfg-grid">
+    <details class="rollup" data-ru="cfg-acctnames" ontoggle="atRollupToggle('cfg-acctnames',this)">
+      <summary><span class="ru-caret">&#9656;</span><span>Trading Account Names</span><span class="ru-sub">10 eval &middot; 5 PA slots, with a goal each</span></summary>
+      <div class="ru-body">
         <div class="cfg-sub" style="margin-bottom:10px">Name your accounts. Both groups appear in the Futures form dropdown, grouped by type.</div>
         <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--gold);margin-bottom:8px">Eval Accounts (up to 10)</div>
         <div style="display:flex;gap:5px;align-items:center"><div class="cfg-lbl" style="min-width:38px;margin-bottom:0">Ev 1</div><input class="fc" id="cfg-ev1" placeholder="Apex Eval #1" maxlength="40" style="flex:1;min-width:0"><span style="color:var(--fg3);font-size:11px;white-space:nowrap">Goal $</span><input class="fc mono" id="cfg-ev1-goal" type="number" step="100" placeholder="0" style="width:76px"></div>
@@ -2356,7 +2349,7 @@ body::before{
         <button class="cfg-btn" onclick="savePAAccounts()">Save Accounts</button>
         <div class="cfg-saved" id="pa-saved" hidden>✓ Saved</div>
       </div>
-    </div>
+    </details>
     <div class="cfg-card">
       <div class="cfg-hd" style="color:var(--fg2)">Paper / Sim Accounts <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">excluded from Cash totals</span></div>
       <div class="cfg-body">
@@ -2395,6 +2388,46 @@ body::before{
       </div>
     </div>
     <div class="cfg-card">
+      <div class="cfg-hd" style="color:var(--teal,#14b8a6)">🏛 Tax-Deferred Accounts <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">IRA · RMD tracking per account</span></div>
+      <div class="cfg-body">
+        <div class="cfg-sub" style="margin-bottom:10px">Mark any account as tax-deferred (IRA, Roth IRA, SEP-IRA, etc.). Enter the account holder's age so the system can flag Required Minimum Distributions (RMD required at age 73+). Track annual distributions and contributions per year. Account names are set above — save those first.</div>
+        <div id="cfg-tax-deferred-rows"><div style="font-size:11px;color:var(--fg3)">Name your accounts in Stock &amp; Options Accounts above, then save those first.</div></div>
+        <button class="cfg-btn" onclick="saveTaxDeferredSettings()">Save Tax-Deferred Info</button>
+        <div class="cfg-saved" id="tax-deferred-saved" hidden>✓ Saved</div>
+      </div>
+    </div>
+    </div>
+  </div>
+
+  <div class="subpane" data-group="cfg" data-pane="goals">
+    <div class="cfg-grid">
+    <div class="cfg-card">
+      <div class="cfg-hd">Futures Goals</div>
+      <div class="cfg-body">
+        <div class="cfg-row"><div class="cfg-lbl">Personal Futures Goal</div><div class="cfg-sub">P/L target before withdrawing from personal account</div><div class="cfg-irow"><span class="cfg-px">$</span><input class="fc mono" id="cfg-personal-goal" type="number" step="100" placeholder="6000"></div></div>
+        <div class="cfg-sub" style="margin-top:-4px">Prop/Eval account goals are set per-account in Trading Account Names →</div>
+        <button class="cfg-btn" onclick="saveGoals()">Save Goals</button>
+        <div class="cfg-saved" id="goal-saved" hidden>✓ Saved</div>
+      </div>
+    </div>
+    <div class="cfg-card">
+      <div class="cfg-hd" style="color:var(--gold)">🎯 Goals by Module <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">a separate target per area</span></div>
+      <div class="cfg-body">
+        <div class="cfg-sub" style="margin-bottom:10px">Each trading area gets its own goal and its own ring on the dashboard, so a losing options week never reads as a losing futures week. Leave a field blank for no goal — an area still gets a ring once it has trades.</div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:var(--green)">Futures</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-futures" type="number" step="100" min="0" placeholder="6000" style="width:112px"></div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:var(--blue)">Stock</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-stock" type="number" step="100" min="0" placeholder="—" style="width:112px"></div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:#C084FC">Options</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-options" type="number" step="100" min="0" placeholder="—" style="width:112px"></div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:#a855f7">SPY Day</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-spy_day" type="number" step="100" min="0" placeholder="—" style="width:112px"></div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:7px"><div class="cfg-lbl" style="min-width:86px;margin-bottom:0;color:var(--gold)">Swing</div><span class="cfg-px">$</span><input class="fc mono" id="cfg-goal-swing" type="number" step="100" min="0" placeholder="—" style="width:112px"></div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:10px 0 4px">
+          <input type="checkbox" id="cfg-goal-paper" style="width:16px;height:16px;accent-color:var(--gold)">
+          <span style="font-size:12px;color:var(--fg2)">Include paper / sim trades in these rings</span>
+        </label>
+        <button class="cfg-btn" onclick="saveModuleGoals()">Save Module Goals</button>
+        <div class="cfg-saved" id="module-goals-saved" hidden>✓ Saved</div>
+      </div>
+    </div>
+    <div class="cfg-card">
       <div class="cfg-hd" style="color:var(--teal,#14b8a6)">📊 Day Trade Goals <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">options P&amp;L target per account</span></div>
       <div class="cfg-body">
         <div class="cfg-sub" style="margin-bottom:10px">Set a daily options P&amp;L goal for each brokerage account. The portfolio ring cards show today's progress toward that goal. Account names are set above in Stock &amp; Options Accounts — save those first if they're not showing.</div>
@@ -2413,15 +2446,11 @@ body::before{
         <div class="cfg-saved" id="day-goals-saved" hidden>✓ Saved</div>
       </div>
     </div>
-    <div class="cfg-card">
-      <div class="cfg-hd" style="color:var(--teal,#14b8a6)">🏛 Tax-Deferred Accounts <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">IRA · RMD tracking per account</span></div>
-      <div class="cfg-body">
-        <div class="cfg-sub" style="margin-bottom:10px">Mark any account as tax-deferred (IRA, Roth IRA, SEP-IRA, etc.). Enter the account holder's age so the system can flag Required Minimum Distributions (RMD required at age 73+). Track annual distributions and contributions per year. Account names are set above — save those first.</div>
-        <div id="cfg-tax-deferred-rows"><div style="font-size:11px;color:var(--fg3)">Name your accounts in Stock &amp; Options Accounts above, then save those first.</div></div>
-        <button class="cfg-btn" onclick="saveTaxDeferredSettings()">Save Tax-Deferred Info</button>
-        <div class="cfg-saved" id="tax-deferred-saved" hidden>✓ Saved</div>
-      </div>
     </div>
+  </div>
+
+  <div class="subpane" data-group="cfg" data-pane="rules">
+    <div class="cfg-grid">
     <div class="cfg-card">
       <div class="cfg-hd">Governor Parameters</div>
       <div class="cfg-body">
@@ -2440,6 +2469,24 @@ body::before{
       </div>
     </div>
     <div class="cfg-card">
+      <div class="cfg-hd" style="color:var(--purple)">Academy Mode</div>
+      <div class="cfg-body">
+        <div class="cfg-row">
+          <div class="cfg-lbl">Show Lesson 6 Fields</div>
+          <div class="cfg-sub">Reveals EMA Interaction and Indicator-Off Test fields inside the Opportunity Review Engine — designed for students of the Abundant Trader course.</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-top:6px">
+          <input type="checkbox" id="cfg-academy-mode" onchange="saveAcademyMode()" style="width:18px;height:18px;accent-color:var(--purple)">
+          <span style="font-size:13px;color:var(--fg2)">Enable Academy Mode (Lesson 6 fields)</span>
+        </label>
+      </div>
+    </div>
+    </div>
+  </div>
+
+  <div class="subpane" data-group="cfg" data-pane="data">
+    <div class="cfg-grid">
+    <div class="cfg-card">
       <div class="cfg-hd" style="color:var(--purple)">Alpha Vantage API Key</div>
       <div class="cfg-body">
         <div class="cfg-row">
@@ -2452,19 +2499,6 @@ body::before{
           <div class="cfg-saved" id="av-key-saved" hidden>✓ Saved</div>
           <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener" style="font-size:11px;color:var(--purple);margin-left:auto">Get a free key ↗</a>
         </div>
-      </div>
-    </div>
-    <div class="cfg-card">
-      <div class="cfg-hd" style="color:var(--purple)">Academy Mode</div>
-      <div class="cfg-body">
-        <div class="cfg-row">
-          <div class="cfg-lbl">Show Lesson 6 Fields</div>
-          <div class="cfg-sub">Reveals EMA Interaction and Indicator-Off Test fields inside the Opportunity Review Engine — designed for students of the Abundant Trader course.</div>
-        </div>
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;margin-top:6px">
-          <input type="checkbox" id="cfg-academy-mode" onchange="saveAcademyMode()" style="width:18px;height:18px;accent-color:var(--purple)">
-          <span style="font-size:13px;color:var(--fg2)">Enable Academy Mode (Lesson 6 fields)</span>
-        </label>
       </div>
     </div>
     <div class="cfg-card">
@@ -2518,7 +2552,9 @@ body::before{
         <div style="font-size:11px;color:var(--fg3)">Downloads a full JSON backup first. Clears trades only — watchlist, class sessions and settings are kept. Cannot be undone.</div>
       </div>
     </div>
+    </div>
   </div>
+
 </section>
 
 </div><!-- /app -->
@@ -2946,6 +2982,35 @@ function atPaintSubTabs(group){
   if(!want||ids.indexOf(want)<0)want=ids[0];
   btns.forEach(b=>b.classList.toggle('active',b.dataset.tab===want));
   panes.forEach(p=>p.classList.toggle('active',p.dataset.pane===want));
+}
+// Roll-ups written straight into the HTML cannot ask for their own stored
+// state the way atRollup does, so apply it here on every paint.
+// Counts for the Opportunities tabs. Review shows live discoveries; Add shows
+// how many imports are still waiting to be triaged, which is the thing that
+// otherwise goes unnoticed behind a tab.
+function atOreTabCounts(){
+  try{
+    var live=(state.discoveries||[])
+      .filter(function(d){return d&&d.ticker&&String(d.status||'')!=='rejected';}).length;
+    atSubTabCount('ore','review',live||'');
+    var q=(state.importQueue||[]).length;
+    atSubTabCount('ore','add',q||'');
+  }catch(e){}
+}
+function atPaintRollups(){
+  try{
+    var m=(state.settings&&state.settings.uiRollups)||{};
+    [].forEach.call(document.querySelectorAll('details.rollup[data-ru]'),function(d){
+      var k=d.getAttribute('data-ru');
+      // Remember what the markup asked for before anything overrides it, so a
+      // settings change that drops the key returns this to its default rather
+      // than leaving whatever the DOM happened to be showing.
+      if(!d.hasAttribute('data-ru-dflt'))d.setAttribute('data-ru-dflt',d.open?'1':'0');
+      d.open=Object.prototype.hasOwnProperty.call(m,k)
+        ?!!m[k]
+        :(d.getAttribute('data-ru-dflt')==='1');
+    });
+  }catch(e){}
 }
 function atPaintAllSubTabs(){
   [...document.querySelectorAll('.subtabs[data-group]')]
@@ -7018,7 +7083,7 @@ function updateOptionsDeltaBadge(){
 function showScreen(name){
   // A screen may be shown without a full render, and a pane that was never
   // painted is a blank page.
-  setTimeout(function(){try{atPaintAllSubTabs();}catch(e){}},0);
+  setTimeout(function(){try{atPaintAllSubTabs();atPaintRollups();}catch(e){}},0);
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.tab[data-screen]').forEach(t=>t.classList.remove('active'));
   const s=document.getElementById('screen-'+name);if(s)s.classList.add('active');
@@ -13613,7 +13678,8 @@ function bulkConfirm(){
 function bulkPanelEl(){
   let el=document.getElementById('bulk-panel');
   if(el)return el;
-  const anchor=document.getElementById('screen-ore');
+  const anchor=document.getElementById('ore-add-pane')
+            || document.getElementById('screen-ore');
   if(!anchor)return null;
   el=document.createElement('div');
   el.id='bulk-panel';
@@ -15715,6 +15781,8 @@ function evalRender(){
     // Last: panes have to be painted after the renderers that fill them,
     // or a freshly rendered pane shows up regardless of which tab is on.
     _q('atFuturesTabCount',atFuturesTabCount);
+    _q('atOreTabCounts',atOreTabCounts);
+    _q('atPaintRollups',atPaintRollups);
     _q('atPaintAllSubTabs',atPaintAllSubTabs);
     _q('paOrdRender',paOrdRender);
     _q('woRender',woRender);

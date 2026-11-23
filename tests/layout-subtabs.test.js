@@ -126,5 +126,74 @@ t('a quote in a key cannot break out of the handler',()=>{
   assert(!/onto[g]gle="atRollupToggle\('a'b'/.test(w.atRollup("a'b",'T','','','x',false)));
 });
 
+console.log('\nsettings, grouped instead of scrolled');
+t('four panes, and the 15 cards are spread across them',()=>{
+  seed();
+  const g='cfg';
+  const names=[...d.querySelectorAll('.subpane[data-group="cfg"]')].map(p=>p.dataset.pane);
+  assert.deepStrictEqual(names,['accounts','goals','rules','data']);
+  const cards=d.querySelectorAll('#screen-cfg .cfg-card, #screen-cfg details.rollup').length;
+  assert.strictEqual(cards,15,'every card kept, none dropped in the regroup');
+});
+t('each pane has its own grid, so cards still lay out',()=>{
+  seed();
+  [...d.querySelectorAll('.subpane[data-group="cfg"]')].forEach(p=>{
+    assert.ok(p.querySelector(':scope > .cfg-grid'),p.dataset.pane+' lost its grid');
+  });
+});
+t('the account-names card is a roll-up and starts closed',()=>{
+  seed();
+  const ru=d.querySelector('details.rollup[data-ru="cfg-acctnames"]');
+  assert.ok(ru,'the 10,756-character card was the reason for all this');
+  assert.strictEqual(ru.open,false);
+  assert.match(ru.querySelector('summary').textContent,/10 eval/,'answers itself while shut');
+  assert.ok(ru.querySelector('#cfg-ev1'),'the inputs are still inside it');
+});
+t('a static roll-up remembers being opened',()=>{
+  seed({uiRollups:{'cfg-acctnames':true}});
+  assert.strictEqual(d.querySelector('[data-ru="cfg-acctnames"]').open,true,
+    'atRollup cannot do this one; atPaintRollups has to');
+});
+t('and an untouched static roll-up keeps its authored default',()=>{
+  seed({uiRollups:{'something-else':true}});
+  assert.strictEqual(d.querySelector('[data-ru="cfg-acctnames"]').open,false);
+});
+
+console.log('\nopportunities lands on the review, not on three paste boxes');
+t('Review is the default pane',()=>{
+  seed();
+  assert.strictEqual(active('ore').join(','),'review',
+    'the point of this screen is what is ready for entry');
+  assert.ok(pane('ore','review').querySelector('#ore-results'));
+});
+t('the import forms are behind Add',()=>{
+  seed();
+  const add=pane('ore','add');
+  assert.ok(add.querySelector('.imp-panel'),'the paste box');
+  assert.ok(!add.classList.contains('active'));
+});
+t('the bulk panel mounts inside Add, not above the tabs',()=>{
+  seed();
+  w.bulkRender();
+  const bp=d.getElementById('bulk-panel');
+  assert.ok(bp,'panel missing');
+  assert.strictEqual(bp.closest('.subpane').dataset.pane,'add',
+    'it used to insertBefore the screen firstChild, which is above the bar');
+});
+t('both tabs carry counts, so nothing hides behind them',()=>{
+  w.localStorage.setItem('at_v2',JSON.stringify({settings:{cashAccounts:['C1']},trades:[],
+    discoveries:[{ticker:'AAA'},{ticker:'BBB'},{ticker:'CCC',status:'rejected'}],
+    importQueue:[{},{},{},{}]}));
+  w.loadState(); w.renderAll();
+  const c=n=>d.querySelector('.subtabs[data-group="ore"] .subtab[data-tab="'+n+'"] .st-count').textContent;
+  assert.strictEqual(c('review'),'· 2','rejected ones are not opportunities');
+  assert.strictEqual(c('add'),'· 4','four imports still waiting to be triaged');
+});
+t('and an empty queue shows no badge rather than a zero',()=>{
+  seed();
+  const c=d.querySelector('.subtabs[data-group="ore"] .subtab[data-tab="add"] .st-count');
+  assert.strictEqual(c.textContent,'');
+});
+
 console.log(fail?'\n'+fail+' failure(s)':'\nall checks passed');
 process.exit(fail?1:0);
