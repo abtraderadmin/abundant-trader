@@ -10404,7 +10404,155 @@ function oreDupCheck(ticker, direction){
 }
 
 // Detect which service the pasted text is from
+// ── ACORN "STOCK SETUPS" (the daily note) ───────────────────────────
+// A third shape from the same service, and nothing like the other two: no
+// "Entry Criteria -" labels, no per-idea blocks. The levels sit inside a
+// numbered sentence -- "Breakdown below 189.43 on above-average volume, stop
+// at or above 196.03, target 174.67" -- so direction has to be read from the
+// verb rather than from a section heading.
+//
+// Three things this note carries that the full report does not, and all
+// three are worth keeping:
+//   - a market overview, which is the regime every trade is judged against
+//   - "approximately" on a target, which makes an R:R precise-looking but not
+//   - caution language on a setup the author is openly unsure about
+function oreParseAcornSetups(text){
+  const out=[];
+  if(!text)return out;
+  const body=String(text).replace(/\r/g,'');
+  // Only the Stock Setups section. "Previous Setup Updates" has tickers but no
+  // levels, and inventing queue entries with null entries from it would put
+  // unsizable rows in front of someone.
+  const secStart=body.search(/Stock Setups\s*:/i);
+  const secEnd=body.search(/Previous Setup Updates\s*:/i);
+  if(secStart<0)return out;
+  const sec=body.slice(secStart,secEnd>secStart?secEnd:undefined);
+
+  // Each numbered item runs until the next number or the end.
+  const items=sec.split(/\n\s*(?=\d+\.\s+[A-Z])/).filter(x=>/^\s*\d+\.\s+[A-Z]/.test(x));
+  items.forEach(function(raw){
+    const m=/^\s*\d+\.\s+([A-Z][A-Z.\-]{0,6})\s*(?:\(([^)]*)\))?\s*:\s*([\s\S]*)$/.exec(raw);
+    if(!m)return;
+    const ticker=m[1].toUpperCase(), company=(m[2]||'').trim(), rest=m[3].trim();
+
+    // The verb is the direction. No heading to fall back on.
+    let direction=null, entry=null;
+    let em=/Break\s*down\s+below\s*\$?([\d.]+)/i.exec(rest);
+    if(em){direction='SHORT';entry=parseFloat(em[1]);}
+    if(!em){
+      em=/Break\s*(?:out\s*)?above\s*\$?([\d.]+)/i.exec(rest);
+      if(em){direction='LONG';entry=parseFloat(em[1]);}
+    }
+    const sm=/stop\s+at\s+or\s+(?:above|below)\s*\$?([\d.]+)/i.exec(rest)
+          || /stop\s*(?:loss)?\s*(?:at|of)?\s*\$?([\d.]+)/i.exec(rest);
+    const stop=sm?parseFloat(sm[1]):null;
+    const tm=/target\s*(?:of\s*)?(approximately\s*|about\s*|around\s*|~\s*)?\$?([\d.]+)/i.exec(rest);
+    const target=tm?parseFloat(tm[2]):null;
+    const targetApprox=!!(tm&&tm[1]);
+
+    // Everything before the entry sentence describes the setup.
+    let pattern=rest.split(/Break\s*(?:down\s+below|out\s+above|above)/i)[0]
+      .replace(/\s+/g,' ').replace(/[.\s]+$/,'').trim();
+    if(pattern.length>120)pattern=pattern.slice(0,117)+'…';
+
+    // Same validity rule as everywhere else: a stop on the wrong side of the
+    // entry cannot size a position, so nothing downstream is computed.
+    const rps=(entry!=null&&stop!=null)
+      ?(direction==='LONG'?entry-stop:stop-entry):null;
+    const pps=(entry!=null&&target!=null)
+      ?(direction==='LONG'?target-entry:entry-target):null;
+    const valid=(rps!=null&&rps>0);
+    const aggressive=/aggressive/i.test(rest);
+    const caution=/higher risk|false break|consolidation or a false/i.test(rest);
+
+    out.push({
+      ticker:ticker, company:company, direction:direction,
+      entry:entry, stop:stop, target1:target, target2:null,
+      targetApprox:targetApprox,
+      pattern:pattern||'', indicators:'', special:
+        (aggressive?'Flagged aggressive by Acorn. ':'')
+        +(caution?'Acorn notes a higher risk of consolidation or a false break. ':'')
+        +(targetApprox?'Target given as approximate.':''),
+      earnings:'', headerNote:'',
+      triggered:false, hitTarget:false, statusDate:'', dropped:false,
+      entryAggressive:null, entryConservative:null,
+      stopValid:valid, stopUpdatedOn:'',
+      risk:(valid?rps:null), reward:(valid&&pps!=null?pps:null),
+      rr:(valid&&pps!=null&&pps>0)?parseFloat((pps/rps).toFixed(2)):null,
+      source:'acorn_setups', ruleset:null,
+      status:'queued', isDuplicate:false, existingDiscovery:null, addAnyway:false
+    });
+  });
+  return out;
+}
+// The status lines under "Previous Setup Updates". Tickers with no levels, so
+// they are never turned into queue rows; they update what is already held.
+function oreParseSetupUpdates(text){
+  const out=[];
+  if(!text)return out;
+  const i=String(text).search(/Previous Setup Updates\s*:/i);
+  if(i<0)return out;
+  String(text).slice(i).split('\n').forEach(function(l){
+    const m=/^\s*[*\-•]\s*([A-Z][A-Z.\-]{0,6})\s*:\s*(.+)$/.exec(l);
+    if(!m)return;
+    const note=m[2].trim();
+    // "has not yet triggered" contains "triggered", so the negative has to be
+    // tested first and win. Reading that line as a trigger would turn an idea
+    // still waiting at its level into one already in play.
+    const negated=/(?:has\s+not|not\s+yet|hasn['\u2019]t)\s+(?:yet\s+)?trigger/i.test(note);
+    out.push({ticker:m[1].toUpperCase(), note:note,
+      triggered:(!negated&&/trigger(?:ed|s)\b/i.test(note)),
+      notTriggered:negated,
+      partialProfit:/partial profit/i.test(note)});
+  });
+  return out;
+}
+// The market overview, kept because every trade on the page is judged against
+// it. The bias is counted from the author's own words rather than asserted.
+// The update lines name ideas already on the watchlist. Attaching them there
+// is the difference between a log that ages and one that is maintained: a
+// held idea learns it triggered without anyone retyping it.
+function oreApplySetupUpdates(updates){
+  if(!updates||!updates.length)return 0;
+  const list=state.discoveries||[];
+  const day=atLiveSessionDate();
+  let n=0;
+  updates.forEach(function(u){
+    list.forEach(function(d){
+      if((d.ticker||'').toUpperCase()!==u.ticker)return;
+      if(['watch','watching','active'].indexOf(d.status||'')<0)return;
+      d.sourceNote=u.note;
+      d.sourceNoteOn=day;
+      // Only ever set to true. A later note that simply does not mention the
+      // trigger must not quietly un-trigger an idea that did.
+      if(u.triggered)d.triggered=true;
+      if(u.partialProfit)d.partialProfit=true;
+      n++;
+    });
+  });
+  if(n)saveState();
+  return n;
+}
+
+function oreParseMarketOverview(text){
+  if(!text)return null;
+  const m=/Market Overview\s*:\s*([\s\S]*?)(?:\n\s*Key Technical Takeaways|\n\s*Stock Setups|$)/i
+    .exec(String(text));
+  if(!m)return null;
+  const body=m[1].replace(/\s+/g,' ').trim();
+  if(!body)return null;
+  const bear=(body.match(/bearish|declin|selling pressure|weak|oversold/gi)||[]).length;
+  const bull=(body.match(/bullish|rally|advanc|strength|improving/gi)||[]).length;
+  const dm=/Stock Setups for\s+([A-Za-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4})/i.exec(String(text));
+  return{text:body, bias:(bear>bull?'bearish':(bull>bear?'bullish':'mixed')),
+         bearHits:bear, bullHits:bull, dated:(dm?dm[1]:'')};
+}
+
 function oreDetectService(text){
+  // Checked first: the daily note mentions neither "Pattern/Why-" nor
+  // "Entry Criteria -", so the full-report test would never claim it, but
+  // being explicit keeps the order from mattering later.
+  if(/Stock Setups\s*for|Previous Setup Updates\s*:/i.test(text)) return 'acorn_setups';
   if(/Pattern\/Why-|Entry Criteria\s*-|Acorn Wealth/i.test(text)) return 'acorn_wealth';
   if(/Option Professor|Level \d+:|Strangle.*Expiration/i.test(text)) return 'trading_indicators';
   if(/Motley Fool|Rule Breakers|Stock Advisor/i.test(text)) return 'motley_fool';
@@ -10745,6 +10893,17 @@ function oreParseAlerts(){
   if(service==='acorn_wealth'){
     parsed=oreParseAcornWealth(rawText);
     mode=parsed.length?'full levels':'';
+  }
+  if(!parsed.length&&(service==='acorn_setups'||/Stock Setups\s*for/i.test(rawText))){
+    parsed=oreParseAcornSetups(rawText);
+    mode=parsed.length?'daily setups':'';
+    // Held for the renderer: the regime these were written against, and the
+    // status lines for ideas already being carried.
+    state.oreLastOverview=oreParseMarketOverview(rawText)||null;
+    state.oreLastUpdates=oreParseSetupUpdates(rawText)||[];
+    // These lines are about ideas already being carried, so they are applied
+    // to the watchlist rather than thrown away with the rest of the note.
+    try{ oreApplySetupUpdates(state.oreLastUpdates); }catch(e){}
   }
   // A spreadsheet export with a Symbol column is better than symbol-scraping:
   // it can carry entry, stop and targets straight across.
@@ -11104,7 +11263,18 @@ function oreRenderQueue(){
   // the two and therefore the one governing. atRiskBudgetNote names whichever
   // it actually is.
   var _rb=(typeof atRiskBudget==='function')?atRiskBudget():null;
-  var html='<div style="font-size:11px;color:var(--fg3);margin-bottom:10px;line-height:1.6">'
+  // The author's own market read, shown above their ideas. Four short setups
+  // mean something different in a tape the writer calls bearish than in one
+  // they call constructive, and that context used to be discarded on paste.
+  var ov=state.oreLastOverview;
+  var html=(ov?('<div style="margin-bottom:11px;padding:9px 11px;border-radius:8px;border:1px solid var(--border);background:var(--s2)">'
+      +'<div style="font-size:11px;font-weight:800;color:'
+        +(ov.bias==='bearish'?'var(--red)':(ov.bias==='bullish'?'var(--green)':'var(--gold)'))
+        +'">Market overview — '+ov.bias+(ov.dated?(' · '+ov.dated):'')+'</div>'
+      +'<div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-top:4px">'
+        +ov.text.slice(0,420)+(ov.text.length>420?'…':'')+'</div>'
+    +'</div>'):'')
+    +'<div style="font-size:11px;color:var(--fg3);margin-bottom:10px;line-height:1.6">'
     +((typeof atRiskBudgetNote==='function')?atRiskBudgetNote():'')
     +((_rb&&_rb.ceiling)?(' Capital ceiling '+money(_rb.ceiling,0)+' a position.'):'')
     +' Entry and share count are editable; everything else recomputes.</div>'
