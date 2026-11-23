@@ -10548,7 +10548,99 @@ function oreParseMarketOverview(text){
          bearHits:bear, bullHits:bull, dated:(dm?dm[1]:'')};
 }
 
+// ── ACORN MEMBER ALERTS TABLE ───────────────────────────────────────
+// The members site carries the same ideas as a structured table: levels,
+// status, the date a target was hit, and the full update history per alert.
+// A snippet on that page emits this JSON, which beats parsing prose in every
+// respect but one -- the table has errors the prose does not, so it is read
+// sceptically rather than trusted.
+//
+// Three known faults, all seen in a single pull:
+//   - Direction can contradict the levels (PM listed "long" with its target
+//     BELOW its entry and its stop above). The levels win.
+//   - Risk/Reward is wrong wherever the entry field holds prose, and goes
+//     negative where the stop sits past the entry. Ours is recomputed.
+//   - "Date Hit" renders as "Invalid date Nov-19-2026"; the date is salvaged
+//     and the broken prefix dropped.
+function oreParseAcornAlerts(text){
+  const out=[];
+  if(!text)return out;
+  let doc=null;
+  try{ doc=JSON.parse(text); }catch(e){ return out; }
+  const list=Array.isArray(doc)?doc:(doc&&Array.isArray(doc.alerts)?doc.alerts:null);
+  if(!list)return out;
+
+  const num=v=>{ const n=parseFloat(String(v==null?'':v).replace(/[$,\s]/g,'')); return isFinite(n)?n:null; };
+  list.forEach(function(a){
+    const ticker=String(a.symbol||a.SYMBOL||'').trim().toUpperCase();
+    if(!/^[A-Z][A-Z.\-]{0,6}$/.test(ticker))return;
+    const raw=String(a.entry!=null?a.entry:(a['Entry Signal']||''));
+    // "Aggresive: 3.07. Conservative: 3.33" — their spelling, and the
+    // conservative level is the plan, same as in the written reports.
+    const agM=/aggres+ive\s*:?\s*\$?([\d.]+)/i.exec(raw);
+    const coM=/conservative\s*:?\s*\$?([\d.]+)/i.exec(raw);
+    let entry=coM?parseFloat(coM[1]):num(raw);
+    const entryAggressive=agM?parseFloat(agM[1]):null;
+    const entryConservative=coM?parseFloat(coM[1]):null;
+
+    const stop=num(a.stop!=null?a.stop:a['Stop Loss Criteria']);
+    const t1=num(a.target1!=null?a.target1:a['Target 1']);
+    const t2=num(a.target2!=null?a.target2:a['Target 2']);
+
+    // The levels decide direction, not the Direction column.
+    let dir=String(a.direction||a.Direction||'').trim().toUpperCase();
+    dir=(dir==='SHORT')?'SHORT':(dir==='LONG'?'LONG':'');
+    let dirFromLevels='';
+    if(entry!=null&&t1!=null)dirFromLevels=(t1<entry)?'SHORT':'LONG';
+    else if(entry!=null&&stop!=null)dirFromLevels=(stop>entry)?'SHORT':'LONG';
+    const dirConflict=!!(dir&&dirFromLevels&&dir!==dirFromLevels);
+    const direction=dirFromLevels||dir||'LONG';
+
+    const rps=(entry!=null&&stop!=null)?(direction==='LONG'?entry-stop:stop-entry):null;
+    const pps=(entry!=null&&t1!=null)?(direction==='LONG'?t1-entry:entry-t1):null;
+    const valid=(rps!=null&&rps>0);
+
+    const hitRaw=String(a.dateHit||a['Date Hit']||'');
+    const hitM=/([A-Z][a-z]{2}-\d{1,2}-\d{4})/.exec(hitRaw);
+    const notes=String(a.notes||'');
+
+    out.push({
+      ticker:ticker, direction:direction,
+      entry:entry, stop:stop, target1:t1, target2:t2,
+      entryAggressive:entryAggressive, entryConservative:entryConservative,
+      pattern:String(a.strategy||a.Strategy||'').trim(),
+      indicators:'', earnings:'',
+      special:(dirConflict
+        ? ('Acorn lists this as '+dir.toLowerCase()+', but its target sits '
+           +(t1<entry?'below':'above')+' the entry — read as '+direction+' from the levels. ')
+        :'')
+        +(entryConservative!=null?'Planned on the conservative entry. ':'')
+        +(a.insider?('Insider activity: '+a.insider+'. '):''),
+      headerNote:String(a.status||a.Status||'').trim(),
+      // Their own record of when a target was reached.
+      hitTarget:!!hitM, statusDate:(hitM?hitM[1]:''),
+      triggered:!!hitM,
+      foundOn:String(a.found||a['Date Found']||'').trim(),
+      dropped:false, stopValid:valid, stopUpdatedOn:'',
+      risk:(valid?rps:null), reward:(valid&&pps!=null?pps:null),
+      rr:(valid&&pps!=null&&pps>0)?parseFloat((pps/rps).toFixed(2)):null,
+      // Their R:R is kept for comparison only; it is wrong often enough that
+      // it is never the one shown.
+      vendorRR:num(a.rr1!=null?a.rr1:a['Risk Reward 1']),
+      dirConflict:dirConflict,
+      notes:notes,
+      source:'acorn_alerts', ruleset:null,
+      status:'queued', isDuplicate:false, existingDiscovery:null, addAnyway:false
+    });
+  });
+  return out;
+}
+
 function oreDetectService(text){
+  // The members-table export is JSON and unmistakable, so it is tested before
+  // anything that sniffs prose.
+  if(/^\s*[\[{]/.test(text)&&/"(?:symbol|SYMBOL)"/.test(text)
+     &&/"(?:entry|Entry Signal)"/.test(text)) return 'acorn_alerts';
   // Checked first: the daily note mentions neither "Pattern/Why-" nor
   // "Entry Criteria -", so the full-report test would never claim it, but
   // being explicit keeps the order from mattering later.
@@ -10893,6 +10985,10 @@ function oreParseAlerts(){
   if(service==='acorn_wealth'){
     parsed=oreParseAcornWealth(rawText);
     mode=parsed.length?'full levels':'';
+  }
+  if(!parsed.length&&(service==='acorn_alerts'||/^\s*[\[{]/.test(rawText))){
+    parsed=oreParseAcornAlerts(rawText);
+    mode=parsed.length?'members table':'';
   }
   if(!parsed.length&&(service==='acorn_setups'||/Stock Setups\s*for/i.test(rawText))){
     parsed=oreParseAcornSetups(rawText);
