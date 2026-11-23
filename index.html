@@ -1874,8 +1874,11 @@ body::before{
     <div class="form-hd" style="display:flex;align-items:center;gap:10px">
       <span class="form-title">Watchlist &amp; Opportunity Log</span>
       <span id="ore-wl-count" style="font-size:11px;color:var(--fg3);font-weight:400"></span>
+      <select id="ore-wl-source" onchange="setWlSource(this.value)"
+        style="margin-left:auto;font-size:10px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--s2);color:var(--fg2)"
+        title="Filter by where the idea came from"></select>
       <button id="ore-wl-refresh" class="btn-secondary" onclick="oreWatchlistPrices()"
-        style="margin-left:auto;font-size:10px;padding:3px 10px"
+        style="font-size:10px;padding:3px 10px"
         title="Re-quote every ticker listed, so a held idea can tell you when it is near its entry">&#8635; Refresh prices</button>
     </div>
     <div style="border-bottom:1px solid var(--border);display:flex;gap:0;padding:0 0 0 0">
@@ -9533,6 +9536,8 @@ function oreSaveDiscovery(status,extra){
       routeDecision:o.routeDecision||status,
       stockScenario:o.stockScenario||null,
       note:note,status:status,
+      // The path that was saving without one.
+      source:(o.source||'analyzer'), ruleset:(o.ruleset||null),
     };
     if(extra&&typeof extra==='object')Object.assign(d,extra);
     state.discoveries.unshift(d);
@@ -9559,6 +9564,10 @@ function oreSaveDiscovery(status,extra){
 // ── WATCHLIST RENDER ─────────────────────────────────────────
 
 let wlFilter='all';
+// Independent of wlFilter on purpose: status is where an idea stands,
+// source is where it came from, and both are worth slicing by.
+let wlSource='all';
+function setWlSource(v){ wlSource=v; renderDiscoveries(); }
 function setWlFilter(f){
   // 'watch' | 'skipped' | 'rejected' | 'all' — must match both the data-wf tab
   // values and the status written by oreSaveDiscovery, or a saved entry lands
@@ -9695,7 +9704,26 @@ function renderDiscoveries(){
   if(!body)return;
   const all=state.discoveries||[];
   if(cnt)cnt.textContent=all.length?`(${all.length})`:'';
-  const list=wlFilter==='all'?all:all.filter(d=>d.status===wlFilter);
+  // Anything saved before sources existed gets tagged first, so the filter
+  // below is choosing between real values rather than hiding a blank.
+  try{atBackfillSources();}catch(e){}
+  let list=wlFilter==='all'?all:all.filter(d=>d.status===wlFilter);
+  if(wlSource!=='all')list=list.filter(d=>atSourceOf(d)===wlSource);
+  // Built from the sources actually present, not the whole registry: an
+  // option for a service you have never imported from is just noise.
+  const sel=document.getElementById('ore-wl-source');
+  if(sel){
+    const counts={};
+    all.forEach(function(d){const k=atSourceOf(d);counts[k]=(counts[k]||0)+1;});
+    const keys=Object.keys(counts).sort();
+    const opts=['<option value="all">All sources ('+all.length+')</option>']
+      .concat(keys.map(function(k){
+        return '<option value="'+k+'"'+(wlSource===k?' selected':'')+'>'
+          +atSourceLabel(k)+' ('+counts[k]+')</option>';}));
+    const html=opts.join('');
+    if(sel.innerHTML!==html)sel.innerHTML=html;
+    sel.value=wlSource;
+  }
   if(!list.length){
     const msg=all.length?'No '+wlFilter+' entries yet.':'No opportunities saved yet.<br>Analyze a ticker above and save it here.';
     body.innerHTML=`<div style="padding:24px 18px;text-align:center;color:var(--fg3);font-size:12px">${msg}</div>`;
@@ -9713,7 +9741,11 @@ function renderDiscoveries(){
         <div style="font-size:10px;color:var(--fg3);margin-top:1px">${dt}</div>
       </div>
       <div style="flex:1;min-width:0">
-        <div style="font-size:10px;font-weight:700;color:${col};letter-spacing:.04em;margin-bottom:2px">${lbl}</div>
+        <div style="font-size:10px;font-weight:700;color:${col};letter-spacing:.04em;margin-bottom:2px">${lbl}
+          <span style="font-weight:600;color:var(--fg3);letter-spacing:0"> · ${atSourceLabel(atSourceOf(d))}</span>
+          ${atRulesetOf(d)!=='stock'?`<span style="font-weight:700;color:var(--blue);letter-spacing:0"> · ${AT_RULESETS[atRulesetOf(d)].label} rules</span>`:''}
+          ${d.sourceBackfilled?`<span style="font-weight:400;color:var(--fg3);letter-spacing:0" title="Saved before sources were recorded; tagged on ${d.sourceBackfilled}"> (assumed)</span>`:''}
+        </div>
         ${d.condition?`<div style="font-size:11px;color:var(--fg2);margin-bottom:2px">📊 ${d.condition}</div>`:''}
         ${d.setup?`<div style="font-size:11px;color:var(--fg2);margin-bottom:2px">Setup: ${d.setup}</div>`:''}
         ${d.note?`<div style="font-size:11px;color:var(--fg3);font-style:italic">"${d.note}"</div>`:''}
@@ -10297,6 +10329,68 @@ function oreImportClear(){
 }
 
 // Duplicate check: same ticker + same direction + still watching/active
+// ── WHERE AN IDEA CAME FROM, AND WHICH RULES IT ANSWERS TO ──────────
+// Two different questions that look like one.
+//
+// SOURCE is provenance: which service or process produced the idea. It grows
+// over time -- Acorn today, Motley Fool and three options services later --
+// and it is what you filter and judge performance by. "Which of these
+// subscriptions is actually worth paying for" is a source question.
+//
+// RULESET is which parameters apply. It does NOT grow with the source list,
+// because the rules follow the instrument, not the seller: every options
+// service answers to the same options rules. SPY is the exception and has a
+// system of its own, which is why it is a ruleset rather than a source.
+//
+// Keeping them apart means a new subscription is one line here and needs no
+// rule changes at all.
+const AT_RULESETS={
+  stock  :{label:'Stock',   desc:'Entry/stop/target, risk budget, capital ceiling, R:R gate.'},
+  options:{label:'Options', desc:'Halfway strike, expiry from ATR, premium as max loss.'},
+  spy    :{label:'SPY',     desc:'Its own system — kept separate from the other stock rules.'},
+  futures:{label:'Futures', desc:'Prop-firm drawdown, contract cap, consistency, lockouts.'}
+};
+const AT_SOURCES={
+  analyzer     :{label:'My analysis',   ruleset:'stock'},
+  acorn_wealth :{label:'Acorn Wealth',  ruleset:'stock'},
+  spy_system   :{label:'SPY system',    ruleset:'spy'},
+  class_analysis:{label:'Class trade analysis', ruleset:'stock'},
+  motley_fool  :{label:'Motley Fool',   ruleset:'stock'},
+  options_sub_1:{label:'Options service 1', ruleset:'options'},
+  options_sub_2:{label:'Options service 2', ruleset:'options'},
+  options_sub_3:{label:'Options service 3', ruleset:'options'},
+  manual       :{label:'Entered by hand', ruleset:'stock'}
+};
+function atSourceLabel(id){
+  const s=AT_SOURCES[id];
+  return s?s.label:(id?String(id).replace(/_/g,' '):'Untagged');
+}
+// An explicit ruleset on the record wins, because an idea can legitimately
+// be handled under rules other than its source's default -- an Acorn name
+// traded as options, say. Otherwise the source decides, and an unknown
+// source falls back to stock rather than to nothing.
+function atRulesetOf(d){
+  if(!d)return 'stock';
+  if(d.ruleset&&AT_RULESETS[d.ruleset])return d.ruleset;
+  const src=AT_SOURCES[d.source];
+  return (src&&src.ruleset)||'stock';
+}
+function atSourceOf(d){ return (d&&d.source)||'analyzer'; }
+
+// Records written before sources existed carry none. They came from the
+// ticker analyzer, which is the only path that was saving without one, so
+// that is what they are tagged as -- and tagged visibly, with the date it
+// happened, rather than being quietly relabelled.
+function atBackfillSources(){
+  const list=state.discoveries||[];
+  let n=0;
+  list.forEach(function(d){
+    if(d&&!d.source){ d.source='analyzer'; d.sourceBackfilled=atLiveSessionDate(); n++; }
+  });
+  if(n){ saveState(); console.log('[AT] tagged '+n+' untagged opportunities as analyzer'); }
+  return n;
+}
+
 function oreDupCheck(ticker, direction){
   return state.discoveries.find(d=>{
     if((d.ticker||'').toUpperCase()!==(ticker||'').toUpperCase()) return false;
@@ -10917,7 +11011,8 @@ function oreQueueDecision(i,status){
     condition:'', setup:item.pattern||'',
     support:m.stop, resistance:m.target,
     routeDecision:status, status:status,
-    source:'acorn_wealth', direction:item.direction,
+    source:(item.source||'acorn_wealth'), ruleset:(item.ruleset||null),
+    direction:item.direction,
     entry:m.entry, stop:m.stop, target:m.target,
     shares:m.shares, rr:(m.rr!=null?+m.rr.toFixed(2):null),
     totalRisk:(m.totalRisk!=null?+m.totalRisk.toFixed(2):null),
