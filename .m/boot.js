@@ -29,9 +29,21 @@ setTimeout(()=>{
   for(const g of groups){
     const act=[...w.document.querySelectorAll('.subpane[data-group="'+g+'"].active')].map(p=>p.dataset.pane);
     if(act.length!==1)errs.push('group '+g+' has '+act.length+' active panes');
-    const bars=[...w.document.querySelectorAll('.subtabs[data-group="'+g+'"] .subtab.active')];
-    if(bars.length!==1)errs.push('group '+g+' has '+bars.length+' active buttons');
   }
+  // Visit each screen and demand exactly one lit entry on the bar you can see,
+  // and exactly one lit top tab.
+  for(const sc of screens){
+    w.showScreen(sc);
+    const el=w.document.getElementById('screen-'+sc);
+    const bar=el.querySelector('.subtabs[data-group]');
+    if(bar){
+      const on=bar.querySelectorAll('.subtab.active').length;
+      if(on!==1)errs.push(sc+': '+on+' lit entries on its bar');
+    }
+    const tabs=w.document.querySelectorAll('.tab[data-screen].active');
+    if(tabs.length!==1)errs.push(sc+': '+tabs.length+' lit top tabs');
+  }
+  console.log('top tabs       : '+w.document.querySelectorAll('.tab[data-screen]').length);
   const ru=w.document.querySelectorAll('details.rollup').length;
   console.log('roll-ups       : '+ru);
   console.log(errs.length?('\n'+errs.length+' PROBLEM(S):\n  '+errs.join('\n  ')):'\nno errors');

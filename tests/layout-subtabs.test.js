@@ -70,7 +70,7 @@ t('a remembered pane that no longer exists falls back to the first',()=>{
 console.log('\nthe tab says what is behind it');
 t('Portfolio carries its position count',()=>{
   seed();
-  const c=d.querySelector('.subtabs[data-group="stock"] .subtab[data-tab="portfolio"] .st-count');
+  const c=d.querySelector('.navgroup[data-group="stock"] [data-nav="portfolio"] .st-count');
   assert.strictEqual(c.textContent,'· 23');
 });
 t('Accounts carries its live-account count, closed ones excluded',()=>{
@@ -165,6 +165,8 @@ t('Review is the default pane',()=>{
   assert.strictEqual(active('ore').join(','),'review',
     'the point of this screen is what is ready for entry');
   assert.ok(pane('ore','review').querySelector('#ore-results'));
+  assert.ok(d.querySelector('#screen-watchlist #ore-watchlist-wrap'),
+    'the list of what you are watching belongs on Watchlist, not under the engine');
 });
 t('the import forms are behind Add',()=>{
   seed();
@@ -185,14 +187,109 @@ t('both tabs carry counts, so nothing hides behind them',()=>{
     discoveries:[{ticker:'AAA'},{ticker:'BBB'},{ticker:'CCC',status:'rejected'}],
     importQueue:[{},{},{},{}]}));
   w.loadState(); w.renderAll();
-  const c=n=>d.querySelector('.subtabs[data-group="ore"] .subtab[data-tab="'+n+'"] .st-count').textContent;
-  assert.strictEqual(c('review'),'· 2','rejected ones are not opportunities');
+  const c=n=>d.querySelector('.navgroup[data-group="ore"] [data-nav="'+n+'"] .st-count').textContent;
+  assert.strictEqual(c('watchlist'),'· 2','rejected ones are not opportunities');
   assert.strictEqual(c('add'),'· 4','four imports still waiting to be triaged');
 });
 t('and an empty queue shows no badge rather than a zero',()=>{
   seed();
-  const c=d.querySelector('.subtabs[data-group="ore"] .subtab[data-tab="add"] .st-count');
+  const c=d.querySelector('.navgroup[data-group="ore"] [data-nav="add"] .st-count');
   assert.strictEqual(c.textContent,'');
+});
+
+console.log('\nten top tabs folded into six');
+t('SPY, Options, Watchlist and Risk Plan are no longer top tabs',()=>{
+  seed();
+  const tabs=[...d.querySelectorAll('.tab[data-screen]')].map(b=>b.dataset.screen);
+  assert.strictEqual(tabs.length,6);
+  ['spy','options','watchlist','riskplan'].forEach(x=>
+    assert(tabs.indexOf(x)<0,x+' is still a top tab'));
+});
+t('but every screen is still reachable, and lights its group tab',()=>{
+  seed();
+  const reach={spy:'stock',options:'stock',watchlist:'ore',riskplan:'ore',
+               stock:'stock',ore:'ore'};
+  for(const scr in reach){
+    w.showScreen(scr);
+    assert.ok(d.getElementById('screen-'+scr).classList.contains('active'),scr+' not shown');
+    const lit=[...d.querySelectorAll('.tab[data-screen].active')].map(b=>b.dataset.screen);
+    assert.deepStrictEqual(lit,[reach[scr]],scr+' lit '+lit);
+  }
+});
+t('one entry lit on the bar, whichever screen of the group you are on',()=>{
+  seed();
+  ['stock','spy','options','ore','watchlist','riskplan'].forEach(scr=>{
+    w.showScreen(scr);
+    const bar=d.querySelector('#screen-'+scr+' .navgroup');
+    assert.strictEqual(bar.querySelectorAll('.subtab.active').length,1,scr);
+  });
+});
+t('the bar can switch screens, not just panes',()=>{
+  seed();
+  w.atNavGo('stock','spy');
+  assert.ok(d.getElementById('screen-spy').classList.contains('active'));
+  w.atNavGo('ore','riskplan');
+  assert.ok(d.getElementById('screen-riskplan').classList.contains('active'));
+});
+t('Stock still lands on Trade, not on whichever pane is authored first',()=>{
+  seed();
+  assert.strictEqual(active('stock').join(','),'trade',
+    '#stockPortfolioPanel sits above the trade form in the markup');
+});
+t('a badge survives the next paint of the bar',()=>{
+  w.localStorage.setItem('at_v2',JSON.stringify({settings:{cashAccounts:['C1']},trades:[],
+    discoveries:[{ticker:'A'},{ticker:'B'}],importQueue:[{}]}));
+  w.loadState(); w.renderAll();
+  const q=()=>d.querySelector('.navgroup[data-group="ore"] [data-nav="watchlist"] .st-count').textContent;
+  assert.strictEqual(q(),'\u00b7 2');
+  w.atPaintNav();
+  assert.strictEqual(q(),'\u00b7 2','rebuilding the bar used to wipe the badges');
+});
+
+console.log('\nportfolio tells the truth about itself');
+function pf(over){
+  const pos=(sym,extra)=>Object.assign({symbol:sym,qty:10,price:100,value:1000,
+    totalCost:800,totalGain:200,totalGainPct:25,daysGain:1,changePct:.5},extra||{});
+  w.localStorage.setItem('at_v2',JSON.stringify({settings:{cashAccounts:['C1']},trades:[],
+    stockHoldings:{C1:Object.assign({acctName:'C1',accountType:'cash',cash:0,
+      ts:'2026-11-06T23:58:00Z',positions:[pos('AAA'),pos('BBB')],
+      summary:{netValue:2000}},over||{})}}));
+  w.loadState(); w.renderAll();
+  return d.getElementById('stockPortfolioPanel').innerHTML;
+}
+t('stale prices are called stale, with the age',()=>{
+  const html=pf();
+  assert.match(html,/day[s]? old/,'an import does not reprice itself');
+  assert.match(html,/Nov 6, 2026/);
+});
+t('fresh prices are not nagged about',()=>{
+  const html=pf({ts:new Date().toISOString()});
+  assert(!/days old/.test(html));
+});
+t('long-term is flagged as an assumption when no purchase date came through',()=>{
+  const html=pf();
+  assert.match(html,/no purchase date/,
+    'posClass assumes long, which is a tax claim the import never made');
+  assert.match(html,/2 of 2 positions/);
+});
+t('and not flagged when the dates are there',()=>{
+  const html=pf({positions:[{symbol:'AAA',qty:10,price:100,value:1000,totalCost:800,
+    totalGain:200,totalGainPct:25,daysGain:1,changePct:.5,dateAcquired:'2020-01-01'}]});
+  assert(!/no purchase date/.test(html));
+});
+t('one class holding everything does not get a tile identical to the total',()=>{
+  const html=pf();
+  assert.strictEqual((html.match(/ALL ACCOUNTS/gi)||[]).length,1);
+  assert(!/>Long-Term</.test(html),'it would repeat the total to the cent');
+});
+t('options get a tile and a filter instead of vanishing from both',()=>{
+  const html=pf({positions:[
+    {symbol:'AAA',qty:10,price:100,value:1000,totalCost:800,totalGain:200,
+      totalGainPct:25,daysGain:1,changePct:.5,dateAcquired:'2020-01-01'},
+    {symbol:'SHOP241220C00100000',qty:1,price:500,value:500,totalCost:400,
+      totalGain:100,totalGainPct:25,daysGain:1,changePct:.5}]});
+  assert.match(html,/OPTIONS/,'there was no way to reach an option position');
+  assert.match(html,/>Options</);
 });
 
 console.log(fail?'\n'+fail+' failure(s)':'\nall checks passed');

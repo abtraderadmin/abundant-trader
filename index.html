@@ -563,6 +563,14 @@ body::before{
    ROLL-UPS are click-to-expand sections for detail that should be reachable
    without being in the way. Built on <details>/<summary>, so keyboard and
    screen-reader behaviour comes from the browser rather than from me. */
+.goal-sep{display:flex;align-items:center;align-self:stretch;padding:0 4px;flex:0 0 auto}
+.goal-sep span{font-size:9px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--fg3);writing-mode:vertical-rl;text-orientation:mixed;white-space:nowrap;
+  border-left:1px solid var(--border);padding-left:6px;max-height:84px;overflow:hidden}
+@media (max-width:640px){
+  .goal-sep{flex-basis:100%;padding:6px 0 2px}
+  .goal-sep span{writing-mode:horizontal-tb;border-left:0;padding-left:0;max-height:none}
+}
 .subtabs{display:flex;gap:2px;margin:0 0 14px;border-bottom:1px solid var(--border);
   overflow-x:auto;scrollbar-width:none}
 .subtabs::-webkit-scrollbar{display:none}
@@ -605,15 +613,11 @@ body::before{
   <div class="logo">AT<span> AI</span></div>
   <nav class="tabs">
     <button class="tab active" data-screen="futures" onclick="showScreen('futures')"><span class="dot"></span>Futures</button>
-    <button class="tab tab-stock" data-screen="stock" onclick="showScreen('stock')"><span class="dot"></span>Stock</button>
-    <button class="tab tab-options" data-screen="options" onclick="showScreen('options')"><span class="dot"></span>Options</button>
-    <button class="tab tab-spy" data-screen="spy" onclick="showScreen('spy')"><span class="dot"></span>SPY</button>
-    <button class="tab tab-ore" data-screen="ore" onclick="showScreen('ore')"><span class="dot"></span>Opportunities</button>
+    <button class="tab tab-stock" data-screen="stock" onclick="atNavGo('stock','trade')"><span class="dot"></span>Stock</button>
+    <button class="tab tab-ore" data-screen="ore" onclick="atNavGo('ore','watchlist')"><span class="dot"></span>Opportunities</button>
     <button class="tab" data-screen="log" onclick="showScreen('log')"><span class="dot"></span>Journal</button>
     <button class="tab" data-screen="perf" onclick="showScreen('perf')"><span class="dot"></span>Performance</button>
     <button class="tab" data-screen="cfg" onclick="showScreen('cfg')"><span class="dot"></span>Settings</button>
-    <button class="tab" data-screen="watchlist" onclick="showScreen('watchlist')"><span class="dot"></span>Watchlist</button>
-    <button class="tab" data-screen="riskplan" onclick="showScreen('riskplan')"><span class="dot"></span>Risk Plan</button>
   </nav>
   <div class="hdr-right">
     <button class="icon-btn" title="Toggle theme" onclick="toggleTheme()">
@@ -813,10 +817,7 @@ body::before{
   <div class="goals-ribbon" id="goalsRibbon2"></div>
   <div class="stats-row" id="statsRow2"></div>
 
-  <div class="subtabs" data-group="stock">
-    <button class="subtab" data-tab="trade" onclick="atSetSubTab('stock','trade')">Trade</button>
-    <button class="subtab" data-tab="portfolio" onclick="atSetSubTab('stock','portfolio')">Portfolio<span class="st-count"></span></button>
-  </div>
+  <div class="subtabs navgroup" data-group="stock"></div>
 
   <div class="subpane" data-group="stock" data-pane="portfolio">
     <div id="stockPortfolioPanel" style="margin-bottom:4px"></div>
@@ -985,6 +986,7 @@ body::before{
      OPTIONS TRADE MODULE
 ===================================================== -->
 <section class="screen" id="screen-options">
+  <div class="subtabs navgroup" data-group="stock"></div>
   <div class="goals-ribbon" id="goalsRibbon3"></div>
   <div class="stats-row" id="statsRow3"></div>
 
@@ -1204,6 +1206,7 @@ body::before{
      SPY MODULE — SPY Day Trade + Swing Trade
 ===================================================== -->
 <section class="screen" id="screen-spy">
+  <div class="subtabs navgroup" data-group="stock"></div>
   <div class="section-hd">
     <div class="section-title" style="color:#FBB924">SPY Options Trading</div>
   </div>
@@ -1705,10 +1708,7 @@ body::before{
 <section class="screen" id="screen-ore">
 
   <!-- ── Alert Import Engine ── -->
-  <div class="subtabs" data-group="ore">
-    <button class="subtab" data-tab="review" onclick="atSetSubTab('ore','review')">Review<span class="st-count"></span></button>
-    <button class="subtab" data-tab="add" onclick="atSetSubTab('ore','add')">Add &amp; Import<span class="st-count"></span></button>
-  </div>
+  <div class="subtabs navgroup" data-group="ore"></div>
 
   <div class="subpane" data-group="ore" data-pane="review">
   <div id="ore-results" hidden>
@@ -1872,25 +1872,6 @@ body::before{
   </div><!-- /ore-results -->
 
   <!-- ── Watchlist / Opportunity Log ── -->
-  <div class="trade-form" id="ore-watchlist-wrap" style="margin-top:20px">
-    <div class="form-hd" style="display:flex;align-items:center;gap:10px">
-      <span class="form-title">Watchlist &amp; Opportunity Log</span>
-      <span id="ore-wl-count" style="font-size:11px;color:var(--fg3);font-weight:400"></span>
-      <select id="ore-wl-source" onchange="setWlSource(this.value)"
-        style="margin-left:auto;font-size:10px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--s2);color:var(--fg2)"
-        title="Filter by where the idea came from"></select>
-      <button id="ore-wl-refresh" class="btn-secondary" onclick="oreWatchlistPrices()"
-        style="font-size:10px;padding:3px 10px"
-        title="Re-quote every ticker listed, so a held idea can tell you when it is near its entry">&#8635; Refresh prices</button>
-    </div>
-    <div style="border-bottom:1px solid var(--border);display:flex;gap:0;padding:0 0 0 0">
-      <button class="ftab active" data-wf="all" onclick="setWlFilter('all')">All</button>
-      <button class="ftab" data-wf="watch" onclick="setWlFilter('watch')">Watching</button>
-      <button class="ftab" data-wf="skipped" onclick="setWlFilter('skipped')">Skipped</button>
-      <button class="ftab" data-wf="rejected" onclick="setWlFilter('rejected')">Rejected</button>
-    </div>
-    <div id="ore-wl-body"></div>
-  </div>
 
   </div>
 
@@ -1984,14 +1965,39 @@ body::before{
      WATCHLIST SCREEN
 ===================================================== -->
 <section class="screen" id="screen-watchlist">
-  <div class="section-title" style="margin-bottom:16px">Decision History</div>
-  <div id="watchlist-content"></div>
+  <div class="subtabs navgroup" data-group="ore"></div>
+  <div class="trade-form" id="ore-watchlist-wrap" style="margin-top:20px">
+    <div class="form-hd" style="display:flex;align-items:center;gap:10px">
+      <span class="form-title">Watchlist &amp; Opportunity Log</span>
+      <span id="ore-wl-count" style="font-size:11px;color:var(--fg3);font-weight:400"></span>
+      <select id="ore-wl-source" onchange="setWlSource(this.value)"
+        style="margin-left:auto;font-size:10px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:var(--s2);color:var(--fg2)"
+        title="Filter by where the idea came from"></select>
+      <button id="ore-wl-refresh" class="btn-secondary" onclick="oreWatchlistPrices()"
+        style="font-size:10px;padding:3px 10px"
+        title="Re-quote every ticker listed, so a held idea can tell you when it is near its entry">&#8635; Refresh prices</button>
+    </div>
+    <div style="border-bottom:1px solid var(--border);display:flex;gap:0;padding:0 0 0 0">
+      <button class="ftab active" data-wf="all" onclick="setWlFilter('all')">All</button>
+      <button class="ftab" data-wf="watch" onclick="setWlFilter('watch')">Watching</button>
+      <button class="ftab" data-wf="skipped" onclick="setWlFilter('skipped')">Skipped</button>
+      <button class="ftab" data-wf="rejected" onclick="setWlFilter('rejected')">Rejected</button>
+    </div>
+    <div id="ore-wl-body"></div>
+  </div>
+  <div id="wo-host"></div>
+  <details class="rollup" data-ru="wl-decisions" ontoggle="atRollupToggle('wl-decisions',this)">
+    <summary><span class="ru-caret">&#9656;</span><span>Decision History</span>
+    <span class="ru-sub">what you passed on, and why</span></summary>
+    <div class="ru-body"><div id="watchlist-content"></div></div>
+  </details>
 </section>
 
 <!-- ====================================================
      RISK PLAN SCREEN
 ===================================================== -->
 <section class="screen" id="screen-riskplan">
+  <div class="subtabs navgroup" data-group="ore"></div>
   <style>
     #screen-riskplan .rp-tabs{display:flex;gap:18px;border-bottom:1px solid var(--border);margin-bottom:16px}
     #screen-riskplan .rp-tab{background:none;border:0;padding:9px 2px;font:inherit;font-size:12px;font-weight:600;letter-spacing:.04em;color:var(--fg3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
@@ -2957,6 +2963,68 @@ function atOptionsAlternativeHtml(idea){
 //
 // The chosen view is remembered per group: coming back to Stock should land
 // where you left it, not reset to the first pane every time.
+// Ten tabs across the top, four of them screens that belong inside another.
+// A group's bar can point at a pane of the screen it is on OR at a different
+// screen, so SPY and Options sit under Stock, and Watchlist and Risk Plan
+// under Opportunities, without any of those screens having to move.
+const AT_NAV_GROUPS={
+  stock:{tab:'stock',items:[
+    {id:'trade',    label:'Trade',        screen:'stock',    pane:'trade'},
+    {id:'portfolio',label:'Portfolio',    screen:'stock',    pane:'portfolio'},
+    {id:'spy',      label:'SPY',          screen:'spy'},
+    {id:'options',  label:'Options',      screen:'options'}]},
+  ore:{tab:'ore',items:[
+    {id:'watchlist',label:'Watchlist',    screen:'watchlist'},
+    {id:'review',   label:'Review',       screen:'ore',      pane:'review'},
+    {id:'add',      label:'Add & Import', screen:'ore',      pane:'add'},
+    {id:'riskplan', label:'Risk Plan',    screen:'riskplan'}]}
+};
+function atNavGroupOf(screen){
+  for(const g in AT_NAV_GROUPS)
+    if(AT_NAV_GROUPS[g].items.some(i=>i.screen===screen))return g;
+  return null;
+}
+function atNavGo(group,id){
+  const G=AT_NAV_GROUPS[group]; if(!G)return;
+  const it=G.items.filter(i=>i.id===id)[0]||G.items[0];
+  if(it.pane)atSetSubTab(group,it.pane);
+  showScreen(it.screen);
+}
+function atNavCount(group,id,n){
+  const b=document.querySelector('.navgroup[data-group="'+group+'"] [data-nav="'+id+'"] .st-count');
+  if(b)b.textContent=(n===''||n==null)?'':('\u00b7 '+n);
+}
+function atPaintNav(){
+  for(const g in AT_NAV_GROUPS){
+    const G=AT_NAV_GROUPS[g];
+    const bars=[].slice.call(document.querySelectorAll('.navgroup[data-group="'+g+'"]'));
+    if(!bars.length)continue;
+    const html=G.items.map(i=>'<button class="subtab" data-nav="'+i.id+'" onclick="atNavGo(\''+g+'\',\''+i.id+'\')">'
+      +i.label+'<span class="st-count"></span></button>').join('');
+    // Rebuild only when the entries themselves change. Comparing innerHTML
+    // would compare against empty count spans, so every paint rebuilt the bar
+    // and wiped the badges that had just been written onto it.
+    const sig=G.items.map(i=>i.id+':'+i.label).join('|');
+    bars.forEach(b=>{if(b.getAttribute('data-sig')!==sig){b.innerHTML=html;b.setAttribute('data-sig',sig);}});
+    // Which entry is current: the screen that is showing, and within a screen
+    // that has panes, the pane that is showing.
+    // Read the pane that is actually showing, not the stored preference:
+    // nothing is stored until the user picks one, but a pane is active from
+    // the first paint, and the bar has to agree with the screen.
+    const live=document.querySelector('.subpane[data-group="'+g+'"].active');
+    const onPane=live?live.dataset.pane:atSubTab(g);
+    let cur=null;
+    for(const i of G.items){
+      const sc=document.getElementById('screen-'+i.screen);
+      if(!sc||!sc.classList.contains('active'))continue;
+      if(i.pane){ if(i.pane===onPane)cur=i.id; }
+      else cur=i.id;
+      if(cur)break;
+    }
+    bars.forEach(b=>[].forEach.call(b.querySelectorAll('[data-nav]'),
+      x=>x.classList.toggle('active',x.dataset.nav===cur)));
+  }
+}
 function atSubTab(group){
   const m=(state.settings&&state.settings.uiSubTabs)||{};
   return m[group]||null;
@@ -2972,16 +3040,30 @@ function atSetSubTab(group,id){
 // here knows what Stock or Futures contain, so the next screen to be split
 // needs no new code.
 function atPaintSubTabs(group){
-  const bar=document.querySelector('.subtabs[data-group="'+group+'"]');
-  if(!bar)return;
   const panes=[...document.querySelectorAll('.subpane[data-group="'+group+'"]')];
-  const btns=[...bar.querySelectorAll('.subtab')];
-  const ids=btns.map(b=>b.dataset.tab);
+  if(!panes.length)return;
+  // The panes are the source of truth for which ids exist. A group bar may be
+  // a plain sub-tab bar, whose buttons carry data-tab, or a nav-group bar,
+  // whose buttons carry data-nav and may point at other screens entirely --
+  // reading ids off the buttons broke the moment the second kind appeared.
+  const ids=panes.map(p=>p.dataset.pane);
+  // Which pane to land on is a decision, not an accident of markup order --
+  // #stockPortfolioPanel happens to be authored above the trade form, and
+  // taking panes[0] silently made Portfolio the landing view. The bar says.
+  let dflt=null;
+  const btn=document.querySelector('.subtabs[data-group="'+group+'"] .subtab[data-tab]');
+  if(btn)dflt=btn.dataset.tab;
+  if(!dflt&&AT_NAV_GROUPS[group]){
+    const first=AT_NAV_GROUPS[group].items.filter(i=>i.pane)[0];
+    if(first)dflt=first.pane;
+  }
+  if(!dflt||ids.indexOf(dflt)<0)dflt=ids[0];
   let want=atSubTab(group);
   // A remembered pane that no longer exists must not blank the screen.
-  if(!want||ids.indexOf(want)<0)want=ids[0];
-  btns.forEach(b=>b.classList.toggle('active',b.dataset.tab===want));
+  if(!want||ids.indexOf(want)<0)want=dflt;
   panes.forEach(p=>p.classList.toggle('active',p.dataset.pane===want));
+  [...document.querySelectorAll('.subtabs[data-group="'+group+'"] .subtab[data-tab]')]
+    .forEach(b=>b.classList.toggle('active',b.dataset.tab===want));
 }
 // Roll-ups written straight into the HTML cannot ask for their own stored
 // state the way atRollup does, so apply it here on every paint.
@@ -2992,9 +3074,8 @@ function atOreTabCounts(){
   try{
     var live=(state.discoveries||[])
       .filter(function(d){return d&&d.ticker&&String(d.status||'')!=='rejected';}).length;
-    atSubTabCount('ore','review',live||'');
-    var q=(state.importQueue||[]).length;
-    atSubTabCount('ore','add',q||'');
+    atNavCount('ore','watchlist',live||'');
+    atNavCount('ore','add',(state.importQueue||[]).length||'');
   }catch(e){}
 }
 function atPaintRollups(){
@@ -7083,17 +7164,21 @@ function updateOptionsDeltaBadge(){
 function showScreen(name){
   // A screen may be shown without a full render, and a pane that was never
   // painted is a blank page.
-  setTimeout(function(){try{atPaintAllSubTabs();atPaintRollups();}catch(e){}},0);
+  setTimeout(function(){try{atPaintAllSubTabs();atPaintNav();atPaintRollups();
+    atStockTabCount();atFuturesTabCount();atOreTabCounts();}catch(e){}},0);
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.tab[data-screen]').forEach(t=>t.classList.remove('active'));
   const s=document.getElementById('screen-'+name);if(s)s.classList.add('active');
-  const t=document.querySelector(`.tab[data-screen="${name}"]`);if(t)t.classList.add('active');
+  const owner=atNavGroupOf(name);
+  const tabFor=owner?AT_NAV_GROUPS[owner].tab:name;
+  const t=document.querySelector(`.tab[data-screen="${tabFor}"]`);if(t)t.classList.add('active');
+  try{atPaintNav();}catch(e){}
   if(name==='log')renderLog();
   if(name==='perf')renderPerf();
   if(name==='cfg')renderCfg();
   if(name==='ore')renderDiscoveries();
   if(name==='stock'){renderGoals('goalsRibbon2','statsRow2');renderPortfolioHoldings();}
-  if(name==='watchlist')watchlistRender();
+  if(name==='watchlist'){watchlistRender();renderDiscoveries();try{woRender();}catch(e){}}
   if(name==='spy'){renderSpyRings('day');}
   try{history.replaceState(null,'','#'+name);}catch(e){}
 }
@@ -7199,11 +7284,6 @@ function togglePortfolio(acctName){
 
 function renderPortfolioHoldings(){
   const el=document.getElementById('stockPortfolioPanel');if(!el)return;
-  try{
-    var _n=0;Object.keys(state.stockHoldings||{}).forEach(function(k){
-      _n+=(((state.stockHoldings[k]||{}).positions)||[]).length;});
-    atSubTabCount('stock','portfolio',_n||'');
-  }catch(e){}
   const h=state.stockHoldings||{};
   const accts=Object.keys(h);
   // Ring cards — collapsible, hidden by default on Stock tab
@@ -7221,7 +7301,11 @@ function renderPortfolioHoldings(){
   window._pHoldings={};
   const pfFilter=window._pfFilter||'all';
   // ── PORTFOLIO SUMMARY BANNER ──────────────────────────────
-  let sumLong={val:0,gain:0,dayG:0,cnt:0},sumShort={val:0,gain:0,dayG:0,cnt:0},sumSpy={val:0,gain:0,dayG:0,cnt:0},sumPaper={val:0,gain:0,dayG:0,cnt:0},sumAll={val:0,gain:0,dayG:0};
+  let sumLong={val:0,gain:0,dayG:0,cnt:0},sumShort={val:0,gain:0,dayG:0,cnt:0},sumSpy={val:0,gain:0,dayG:0,cnt:0},sumPaper={val:0,gain:0,dayG:0,cnt:0},sumOpt={val:0,gain:0,dayG:0,cnt:0},sumAll={val:0,gain:0,dayG:0};
+  // Long vs short term is a tax distinction. posClass assumes 'long' when a
+  // position carries no purchase date, which is most of an E-Trade import, so
+  // count those and say so rather than letting an assumption read as a fact.
+  let unknownAcq=0, posTotal=0;
   accts.forEach(an=>{
     const dd=h[an];const isPaper=(dd.accountType==='paper');
     (dd.positions||[]).forEach(p=>{
@@ -7229,12 +7313,18 @@ function renderPortfolioHoldings(){
       // Coerced, because one undefined field used to turn every total on the
       // screen into NaN: a missing figure contributes nothing, it does not
       // poison the sum it lands in.
+      posTotal++;
       const pv=parseFloat(p.value)||0, pg=parseFloat(p.totalGain)||0, pd=parseFloat(p.daysGain)||0;
       sumAll.val+=pv;sumAll.gain+=pg;sumAll.dayG+=pd;
       if(isPaper){sumPaper.val+=pv;sumPaper.gain+=pg;sumPaper.dayG+=pd;sumPaper.cnt++;}
       else if(cls==='long'){sumLong.val+=pv;sumLong.gain+=pg;sumLong.dayG+=pd;sumLong.cnt++;}
       else if(cls==='short'){sumShort.val+=pv;sumShort.gain+=pg;sumShort.dayG+=pd;sumShort.cnt++;}
       else if(cls==='spy'){sumSpy.val+=pv;sumSpy.gain+=pg;sumSpy.dayG+=pd;sumSpy.cnt++;}
+      // Options used to land in sumAll and nowhere else: no tile counted them
+      // and no filter tab could reach them, so the total exceeded the sum of
+      // its parts with nothing on screen to explain the gap.
+      else if(cls==='option'){sumOpt.val+=pv;sumOpt.gain+=pg;sumOpt.dayG+=pd;sumOpt.cnt++;}
+      if(!p.dateAcquired)unknownAcq++;
     });
   });
   const sumTile=(label,s,color)=>`<div style="flex:1;min-width:140px;padding:10px 14px;background:var(--bg2);border-radius:8px;border:1px solid var(--border)">
@@ -7243,21 +7333,50 @@ function renderPortfolioHoldings(){
     <div style="font-size:11px;color:${s.gain>=0?'var(--green)':'var(--red)'};font-weight:600">${s.gain>=0?'+':''}${$(s.gain)} <span style="font-size:9px;color:var(--fg3)">gain</span></div>
     <div style="font-size:10px;color:${s.dayG>=0?'var(--green)':'var(--red)'}">Day: ${$(s.dayG)} ${s.cnt!=null?`<span style="color:var(--fg3)">${s.cnt} pos</span>`:''}</div>
   </div>`;
+  // How old is this? An imported portfolio does not reprice itself, so every
+  // figure below is whatever the broker said at import time. Shown as of when,
+  // and flagged once it is old enough to make a sizing decision on bad prices.
+  let oldest=null;
+  accts.forEach(an=>{const t=h[an]&&h[an].ts?new Date(h[an].ts):null;
+    if(t&&!isNaN(t)&&(!oldest||t<oldest))oldest=t;});
+  const ageDays=oldest?Math.floor((Date.now()-oldest.getTime())/86400000):null;
+  const stale=ageDays!=null&&ageDays>=1;
+  const staleBar=oldest?`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:8px 12px;border-radius:8px;font-size:11px;
+      background:${stale?'rgba(239,68,68,0.08)':'var(--bg2)'};border:1px solid ${stale?'var(--red)':'var(--border)'};
+      color:${stale?'var(--red)':'var(--fg3)'}">
+      <span>${stale?'⚠':'✓'}</span>
+      <span>Prices as of <strong>${oldest.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</strong>${
+        stale?` — <strong>${ageDays} day${ageDays===1?'':'s'} old</strong>. Values and day gains below are not live; re-import before sizing anything off them.`:'.'}</span>
+    </div>`:'';
+
+  // When one class holds everything, its tile repeats the All Accounts tile
+  // to the cent. Two identical numbers side by side invite the reading that
+  // they are different things.
+  const classCnt=[sumLong,sumShort,sumSpy,sumOpt,sumPaper].filter(x=>x.cnt).length;
+  const onlyClass=classCnt<=1;
+  const acqNote=unknownAcq?`<div style="font-size:10px;color:var(--gold);margin-bottom:10px;line-height:1.5">
+      ⓘ ${unknownAcq} of ${posTotal} position${posTotal===1?'':'s'} carry no purchase date in the import, so ${unknownAcq===posTotal?'all of them are':'those are'} counted as long-term by assumption. Confirm before relying on this for tax.
+    </div>`:'';
+
   let html='';
   html+=ringsHtml;
+  html+=staleBar;
   html+=`<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-    ${sumTile('All Accounts',sumAll,'var(--fg)')}
-    ${sumLong.cnt?sumTile('Long-Term',sumLong,'var(--blue)'):''}
-    ${sumShort.cnt?sumTile('Short-Term',sumShort,'var(--accent)'):''}
-    ${sumSpy.cnt?sumTile('SPY',sumSpy,'var(--purple)'):''}
-    ${sumPaper.cnt?sumTile('Paper',sumPaper,'var(--fg3)'):''}
+    ${sumTile('All Accounts · positions',sumAll,'var(--fg)')}
+    ${(!onlyClass&&sumLong.cnt)?sumTile('Long-Term',sumLong,'var(--blue)'):''}
+    ${(!onlyClass&&sumShort.cnt)?sumTile('Short-Term',sumShort,'var(--accent)'):''}
+    ${(!onlyClass&&sumSpy.cnt)?sumTile('SPY',sumSpy,'var(--purple)'):''}
+    ${(!onlyClass&&sumOpt.cnt)?sumTile('Options',sumOpt,'var(--purple)'):''}
+    ${(!onlyClass&&sumPaper.cnt)?sumTile('Paper',sumPaper,'var(--fg3)'):''}
   </div>`;
+  html+=acqNote;
   // ── FILTER TABS ───────────────────────────────────────────
   const tabs=[
     {f:'all',lbl:'ALL'},
     {f:'long',lbl:'LONG-TERM'},
     {f:'short',lbl:'SHORT-TERM'},
     {f:'spy',lbl:'SPY'},
+    {f:'option',lbl:'OPTIONS'},
     {f:'paper',lbl:'PAPER'},
   ];
   html+=`<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
@@ -7275,6 +7394,7 @@ function renderPortfolioHoldings(){
     if(pfFilter==='long') pos=pos.filter(p=>!isPaper&&posClass(p)==='long');
     else if(pfFilter==='short') pos=pos.filter(p=>!isPaper&&posClass(p)==='short');
     else if(pfFilter==='spy') pos=pos.filter(p=>!isPaper&&posClass(p)==='spy');
+    else if(pfFilter==='option') pos=pos.filter(p=>!isPaper&&posClass(p)==='option');
     else if(pfFilter==='paper') pos=isPaper?pos:[];
     // 'all' shows everything
     window._pHoldings[acctName]=pos;
@@ -14202,12 +14322,13 @@ function woExpLabel(r){
 function woPanelEl(){
   let el=document.getElementById('wo-panel');
   if(el)return el;
-  const anchor=document.getElementById('screen-watchlist');
+  const host=document.getElementById('wo-host');
+  const anchor=host||document.getElementById('screen-watchlist');
   if(!anchor)return null;
   el=document.createElement('div');
   el.id='wo-panel';
   el.style.cssText='margin-bottom:18px';
-  anchor.insertBefore(el,anchor.firstChild);
+  if(host)host.appendChild(el); else anchor.insertBefore(el,anchor.firstChild);
   return el;
 }
 
@@ -14666,6 +14787,13 @@ function atActiveFutAccts(){
 }
 // Live futures accounts, for the tab badge. Counted in one place so the
 // badge and the panels cannot disagree about what counts as live.
+function atStockTabCount(){
+  try{
+    var n=0;Object.keys(state.stockHoldings||{}).forEach(function(k){
+      n+=(((state.stockHoldings[k]||{}).positions)||[]).length;});
+    atNavCount('stock','portfolio',n||'');
+  }catch(e){}
+}
 function atFuturesTabCount(){
   try{
     var n=[].concat(state.settings.evalAccounts||[],state.settings.paAccounts||[])
@@ -15780,10 +15908,15 @@ function evalRender(){
     _q('atRuleRender',atRuleRender);
     // Last: panes have to be painted after the renderers that fill them,
     // or a freshly rendered pane shows up regardless of which tab is on.
+    // Order matters: the bars are built before anything writes a badge onto
+    // them, or the count lands on an element that does not exist yet and is
+    // quietly dropped.
+    _q('atPaintAllSubTabs',atPaintAllSubTabs);
+    _q('atPaintNav',atPaintNav);
+    _q('atPaintRollups',atPaintRollups);
+    _q('atStockTabCount',atStockTabCount);
     _q('atFuturesTabCount',atFuturesTabCount);
     _q('atOreTabCounts',atOreTabCounts);
-    _q('atPaintRollups',atPaintRollups);
-    _q('atPaintAllSubTabs',atPaintAllSubTabs);
     _q('paOrdRender',paOrdRender);
     _q('woRender',woRender);
     _q('bulkRender',function(){ if(!window._bulkPending)bulkRender(); });
