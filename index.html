@@ -549,6 +549,53 @@ body::before{
 .cs-global{padding:6px 18px 0}
 .cs-no-sessions{text-align:center;color:var(--fg3);padding:40px 0;font-size:14px}
 .cs-add-row{display:flex;justify-content:flex-end;padding:12px 0 4px;gap:8px}
+
+/* ── SUB-TABS AND ROLL-UPS ──────────────────────────────────────────────
+   Two patterns, because the screens had outgrown a single scroll. Measured
+   before changing anything: the Stock screen rendered 44,428 characters and
+   31,618 of them — 71% — were the holdings panel, always open, sitting
+   between the top of the page and the trade form people come here to use.
+
+   SUB-TABS split a screen into views so only one is in the document at a
+   time. They go INSIDE a screen, under the existing top tabs, because the
+   answer to a crowded page is not an eleventh tab across the top.
+
+   ROLL-UPS are click-to-expand sections for detail that should be reachable
+   without being in the way. Built on <details>/<summary>, so keyboard and
+   screen-reader behaviour comes from the browser rather than from me. */
+.subtabs{display:flex;gap:2px;margin:0 0 14px;border-bottom:1px solid var(--border);
+  overflow-x:auto;scrollbar-width:none}
+.subtabs::-webkit-scrollbar{display:none}
+.subtab{appearance:none;border:none;background:transparent;cursor:pointer;
+  font:inherit;font-size:12px;font-weight:700;letter-spacing:.02em;
+  color:var(--fg3);padding:8px 14px;white-space:nowrap;
+  border-bottom:2px solid transparent;margin-bottom:-1px;border-radius:6px 6px 0 0}
+.subtab:hover{color:var(--fg2);background:var(--s2)}
+.subtab.active{color:var(--blue);border-bottom-color:var(--blue)}
+.subtab .st-count{font-weight:600;color:var(--fg3);font-size:11px;margin-left:5px}
+.subtab.active .st-count{color:var(--blue)}
+.subpane{display:none}
+.subpane.active{display:block}
+
+.rollup{border:1px solid var(--border);border-radius:9px;background:var(--bg2);
+  margin-bottom:10px;overflow:hidden}
+.rollup>summary{cursor:pointer;list-style:none;padding:10px 13px;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  font-size:12px;font-weight:700;color:var(--fg2);user-select:none}
+.rollup>summary::-webkit-details-marker{display:none}
+.rollup>summary:hover{background:var(--s2)}
+.rollup>summary .ru-sub{font-weight:500;color:var(--fg3);font-size:11px}
+.rollup>summary .ru-right{margin-left:auto;display:flex;align-items:center;gap:9px}
+/* The caret is the affordance: it has to say "there is more behind this". */
+.rollup>summary .ru-caret{color:var(--fg3);font-size:11px;transition:transform .15s}
+.rollup[open]>summary .ru-caret{transform:rotate(90deg)}
+.rollup[open]>summary{border-bottom:1px solid var(--border)}
+.rollup .ru-body{padding:11px 13px}
+@media (max-width:640px){
+  .subtab{padding:8px 11px;font-size:11px}
+  .rollup>summary{padding:9px 11px}
+  .rollup .ru-body{padding:9px 10px}
+}
 </style>
 
 <div class="toast-wrap" id="toastWrap"></div>
@@ -581,9 +628,24 @@ body::before{
      FUTURES SCREEN
 ===================================================== -->
 <section class="screen active" id="screen-futures">
+  <!-- Same split as Stock, same reason: the two compliance panels rendered
+       at 36,267 characters against this screen's 54,413, and because they
+       insert themselves they sat ABOVE the goals ribbon. The strip stays
+       put; everything else is a view. -->
   <div class="goals-ribbon" id="goalsRibbon"></div>
   <div class="stats-row" id="statsRow"></div>
 
+  <div class="subtabs" data-group="futures">
+    <button class="subtab" data-tab="trade" onclick="atSetSubTab('futures','trade')">Trade</button>
+    <button class="subtab" data-tab="accounts" onclick="atSetSubTab('futures','accounts')">Accounts<span class="st-count"></span></button>
+  </div>
+
+  <!-- The panels mount here rather than at the top of the screen. -->
+  <div class="subpane" data-group="futures" data-pane="accounts">
+    <div id="fut-accounts-pane"></div>
+  </div>
+
+  <div class="subpane" data-group="futures" data-pane="trade">
   <div class="section-hd">
     <div class="section-title">New Futures Trade</div>
     <div style="display:flex;gap:8px;align-items:center">
@@ -743,10 +805,24 @@ body::before{
      STOCK SCREEN
 ===================================================== -->
 <section class="screen" id="screen-stock">
+  <!-- The summary strip stays put across both views: goals and today's
+       figures are context for whatever you are doing, not a view of their
+       own. Everything below is split, because the portfolio panel rendered
+       at 31,618 characters against the whole screen's 44,428 and sat
+       between the top of the page and the trade form. -->
   <div class="goals-ribbon" id="goalsRibbon2"></div>
   <div class="stats-row" id="statsRow2"></div>
-  <div id="stockPortfolioPanel" style="margin-bottom:4px"></div>
 
+  <div class="subtabs" data-group="stock">
+    <button class="subtab" data-tab="trade" onclick="atSetSubTab('stock','trade')">Trade</button>
+    <button class="subtab" data-tab="portfolio" onclick="atSetSubTab('stock','portfolio')">Portfolio<span class="st-count"></span></button>
+  </div>
+
+  <div class="subpane" data-group="stock" data-pane="portfolio">
+    <div id="stockPortfolioPanel" style="margin-bottom:4px"></div>
+  </div>
+
+  <div class="subpane" data-group="stock" data-pane="trade">
   <div class="section-hd">
     <div class="section-title blue">New Stock Trade</div>
     <span class="gov-badge" style="color:var(--blue);background:var(--blue-bg);border-color:var(--blue)">⚙ Governor Active</span>
@@ -902,6 +978,7 @@ body::before{
       <button class="btn-secondary" onclick="clearSForm()">Clear</button>
     </div>
   </div>
+  </div><!-- /subpane trade -->
 </section>
 
 <!-- ====================================================
@@ -2834,6 +2911,86 @@ function atOptionsAlternativeHtml(idea){
     +'The shares lose at your stop and can wait; the contract loses the whole premium and cannot. '
     +'Max loss stops being stop-sized and becomes $'+fmt(a.budget,0)+', all of it, if the move misses the expiry.</div>'
   +'</div>';
+}
+
+// ── SUB-TABS ────────────────────────────────────────────────────────
+// A screen split into views, so only one is in the document at a time rather
+// than all of them stacked down a single scroll. These live inside a screen,
+// under the existing top tabs, because the cure for a crowded page is not an
+// eleventh tab across the top.
+//
+// The chosen view is remembered per group: coming back to Stock should land
+// where you left it, not reset to the first pane every time.
+function atSubTab(group){
+  const m=(state.settings&&state.settings.uiSubTabs)||{};
+  return m[group]||null;
+}
+function atSetSubTab(group,id){
+  if(!state.settings.uiSubTabs)state.settings.uiSubTabs={};
+  state.settings.uiSubTabs[group]=id;
+  saveState();
+  atPaintSubTabs(group);
+}
+// Driven entirely by markup: a .subtabs bar with data-group, buttons with
+// data-tab, and sibling .subpane elements with matching data-pane. Nothing
+// here knows what Stock or Futures contain, so the next screen to be split
+// needs no new code.
+function atPaintSubTabs(group){
+  const bar=document.querySelector('.subtabs[data-group="'+group+'"]');
+  if(!bar)return;
+  const panes=[...document.querySelectorAll('.subpane[data-group="'+group+'"]')];
+  const btns=[...bar.querySelectorAll('.subtab')];
+  const ids=btns.map(b=>b.dataset.tab);
+  let want=atSubTab(group);
+  // A remembered pane that no longer exists must not blank the screen.
+  if(!want||ids.indexOf(want)<0)want=ids[0];
+  btns.forEach(b=>b.classList.toggle('active',b.dataset.tab===want));
+  panes.forEach(p=>p.classList.toggle('active',p.dataset.pane===want));
+}
+function atPaintAllSubTabs(){
+  [...document.querySelectorAll('.subtabs[data-group]')]
+    .forEach(b=>atPaintSubTabs(b.dataset.group));
+}
+// A count beside a tab label, so you can see there is something in a pane
+// without opening it.
+function atSubTabCount(group,tab,n){
+  const el=document.querySelector('.subtabs[data-group="'+group+'"] '
+    +'.subtab[data-tab="'+tab+'"] .st-count');
+  if(el)el.textContent=(n==null||n==='')?'':('· '+n);
+}
+
+// ── ROLL-UPS ────────────────────────────────────────────────────────
+// Click-to-expand sections, so detail is reachable without being in the way.
+// Built on <details>/<summary>: the keyboard handling, the ARIA state and the
+// find-in-page behaviour all come from the browser, which is a better deal
+// than reimplementing them on a div.
+//
+// Open/closed is remembered by key, because a section you deliberately opened
+// should still be open after the next render.
+function atRollupOpen(key,dflt){
+  const m=(state.settings&&state.settings.uiRollups)||{};
+  return (m[key]==null)?!!dflt:!!m[key];
+}
+function atRollupToggle(key,el){
+  if(!state.settings.uiRollups)state.settings.uiRollups={};
+  state.settings.uiRollups[key]=!!(el&&el.open);
+  saveState();
+}
+// title: always visible. sub: a one-line summary of what is inside, so the
+// closed state still answers the obvious question. right: a figure to keep on
+// screen regardless. body: the HTML revealed on open.
+function atRollup(key,title,sub,right,body,dflt){
+  const open=atRollupOpen(key,dflt);
+  return '<details class="rollup"'+(open?' open':'')
+    +' ontoggle="atRollupToggle(\''+String(key).replace(/'/g,"\\'")+'\',this)">'
+    +'<summary>'
+      +'<span class="ru-caret">\u25b8</span>'
+      +'<span>'+title+'</span>'
+      +(sub?('<span class="ru-sub">'+sub+'</span>'):'')
+      +(right?('<span class="ru-right">'+right+'</span>'):'')
+    +'</summary>'
+    +'<div class="ru-body">'+(body||'')+'</div>'
+  +'</details>';
 }
 
 // ── 1/3 SCALING PLAN ────────────────────────────────────────
@@ -6859,6 +7016,9 @@ function updateOptionsDeltaBadge(){
 }
 
 function showScreen(name){
+  // A screen may be shown without a full render, and a pane that was never
+  // painted is a blank page.
+  setTimeout(function(){try{atPaintAllSubTabs();}catch(e){}},0);
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.tab[data-screen]').forEach(t=>t.classList.remove('active'));
   const s=document.getElementById('screen-'+name);if(s)s.classList.add('active');
@@ -6974,6 +7134,11 @@ function togglePortfolio(acctName){
 
 function renderPortfolioHoldings(){
   const el=document.getElementById('stockPortfolioPanel');if(!el)return;
+  try{
+    var _n=0;Object.keys(state.stockHoldings||{}).forEach(function(k){
+      _n+=(((state.stockHoldings[k]||{}).positions)||[]).length;});
+    atSubTabCount('stock','portfolio',_n||'');
+  }catch(e){}
   const h=state.stockHoldings||{};
   const accts=Object.keys(h);
   // Ring cards — collapsible, hidden by default on Stock tab
@@ -14298,7 +14463,7 @@ function paOrdDismiss(){ window._paOrdPending=null; paOrdRender(); }
 function paOrdPanelEl(){
   let el=document.getElementById('paord-panel');
   if(el)return el;
-  const anchor=document.getElementById('screen-futures');
+  const anchor=atFuturesPanelHost();
   if(!anchor)return null;
   el=document.createElement('div');
   el.id='paord-panel';
@@ -14433,7 +14598,17 @@ function atActiveFutAccts(){
   return [].concat(state.settings.evalAccounts||[],state.settings.paAccounts||[])
            .filter(function(n){return n&&String(n).trim()&&!atAcctClosed(n);});
 }
+// Live futures accounts, for the tab badge. Counted in one place so the
+// badge and the panels cannot disagree about what counts as live.
+function atFuturesTabCount(){
+  try{
+    var n=[].concat(state.settings.evalAccounts||[],state.settings.paAccounts||[])
+      .filter(function(x){return x&&String(x).trim()&&!atAcctClosed(x);}).length;
+    atSubTabCount('futures','accounts',n||'');
+  }catch(e){}
+}
 function atRenderAcctPanels(){
+  atFuturesTabCount();
   try{ if(typeof apexRender==='function')apexRender(); }catch(e){}
   try{ if(typeof atRuleRender==='function')atRuleRender(); }catch(e){}
   try{ if(typeof evalRender==='function')evalRender(); }catch(e){}
@@ -14785,10 +14960,17 @@ function atRuleToggleCleared(){
   saveState(); atRuleRender();
 }
 
+// All the futures panels mount into the Accounts pane. They used to insert
+// themselves at the top of the screen, which is why the goals ribbon ended up
+// BELOW two compliance panels totalling 36,267 characters.
+function atFuturesPanelHost(){
+  return document.getElementById('fut-accounts-pane')
+      || document.getElementById('screen-futures');
+}
 function atRulePanelEl(){
   let el=document.getElementById('rule-ledger-panel');
   if(el)return el;
-  const anchor=document.getElementById('screen-futures');
+  const anchor=atFuturesPanelHost();
   if(!anchor)return null;
   el=document.createElement('div');
   el.id='rule-ledger-panel';
@@ -14890,7 +15072,7 @@ function atRuleRender(){
 function apexPanelEl(){
   let el=document.getElementById('apex-panel');
   if(el)return el;
-  const anchor=document.getElementById('screen-futures');
+  const anchor=atFuturesPanelHost();
   if(!anchor)return null;
   el=document.createElement('div');
   el.id='apex-panel';
@@ -15405,7 +15587,7 @@ function evalToggle(i){
 function evalPanelEl(){
   let el=document.getElementById('eval-panel');
   if(el)return el;
-  const anchor=document.getElementById('screen-futures');
+  const anchor=atFuturesPanelHost();
   if(!anchor)return null;
   el=document.createElement('div');
   el.id='eval-panel';
@@ -15530,6 +15712,10 @@ function evalRender(){
     _q('evalRender',evalRender);
     // After both engines, because the ledger reads what they compute.
     _q('atRuleRender',atRuleRender);
+    // Last: panes have to be painted after the renderers that fill them,
+    // or a freshly rendered pane shows up regardless of which tab is on.
+    _q('atFuturesTabCount',atFuturesTabCount);
+    _q('atPaintAllSubTabs',atPaintAllSubTabs);
     _q('paOrdRender',paOrdRender);
     _q('woRender',woRender);
     _q('bulkRender',function(){ if(!window._bulkPending)bulkRender(); });
