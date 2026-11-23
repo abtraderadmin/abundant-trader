@@ -83,7 +83,7 @@ if (fns.some(x => !x)) {
     stockHoldings: {}, portfolioOpen: {}, transactionHistory: {},
     trades: [
       { id: 't1', account: 'PA -APEX-4687-12', netPL: 120 },
-      { id: 't2', account: 'Yaz-3036',          netPL: 80  },
+      { id: 't2', account: 'Alpha-0001',          netPL: 80  },
     ],
     withdrawals: [{ id: 'w1', account: 'PA -APEX-4687-12', amount: 500 }],
   };
@@ -110,7 +110,7 @@ if (fns.some(x => !x)) {
   if (state.trades[0].account === 'PA-12') pass('trade name rewritten (import dedup stays joinable)');
   else fail('trade name not rewritten — broker imports would re-add every row as new');
 
-  if (state.trades[1].account === 'Yaz-3036') pass('other accounts untouched');
+  if (state.trades[1].account === 'Alpha-0001') pass('other accounts untouched');
   else fail('an unrelated account was modified');
 
   if (state.withdrawals[0].account === 'PA-12') pass('withdrawal followed');

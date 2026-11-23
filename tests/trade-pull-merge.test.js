@@ -57,7 +57,7 @@ function harness({ localTrades = [], remoteRows = [], sig = {}, store = {} } = {
   return sandbox;
 }
 const row = (o) => Object.assign({
-  id:'t1', user_id:'u1', account_id:null, account_name:'Yaz-3036', module:'spy_day',
+  id:'t1', user_id:'u1', account_id:null, account_name:'Alpha-0001', module:'spy_day',
   trade_date:'2026-11-10', symbol:'SPY', direction:'LONG', opt_type:null, setup:null,
   regime:null, entry:600, stop:598, t1:null, target:605, qty:1, exit_price:603,
   gross_pl:300, fees:1.3, net_pl:298.7, rr:2.5, grade:'A', status:'closed',
@@ -65,7 +65,7 @@ const row = (o) => Object.assign({
   data:{}, deleted:false, updated_at:'2026-11-17T10:00:00Z',
 }, o);
 const trade = (o) => Object.assign({
-  id:'t1', account:'Yaz-3036', module:'spy_day', date:'2026-11-10', symbol:'SPY', ticker:'SPY',
+  id:'t1', account:'Alpha-0001', module:'spy_day', date:'2026-11-10', symbol:'SPY', ticker:'SPY',
   direction:'LONG', entry:600, stop:598, target:605, qty:1, exitPrice:603,
   grossPL:300, feesActual:1.3, netPL:298.7, rr:2.5, grade:'A', status:'closed',
   emotion:'calm', thesis:'bounce', rulesFollowed:'yes',

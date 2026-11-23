@@ -34,7 +34,7 @@ function harness(state, store) {
       getItem(k){ return this._d[k] || null; },
       setItem(k,v){ this._d[k] = v; },
     },
-    atAccountIdByName: nm => ({ 'Yaz-3036': 'acct-1', 'Joint JTWROS-7264': 'acct-2' }[nm] || null),
+    atAccountIdByName: nm => ({ 'Alpha-0001': 'acct-1', 'Joint ACME-0002': 'acct-2' }[nm] || null),
     atSbReady: () => ({
       from(table) {
         return { upsert(rows) { (sent[table] = sent[table] || []).push(...rows); return Promise.resolve({ error: null }); } };
@@ -52,7 +52,7 @@ function harness(state, store) {
 console.log('\nwithdrawals');
 let s = harness({
   withdrawals: [
-    { id: 'w1', date: '2026-11-10', account: 'Yaz-3036', amount: 500, note: 'payout' },
+    { id: 'w1', date: '2026-11-10', account: 'Alpha-0001', amount: 500, note: 'payout' },
     { id: 'w2', date: '2026-11-12', account: 'Unknown Acct', amount: 250, note: '' },
   ],
 });
@@ -61,7 +61,7 @@ let rows = s.sent.withdrawals || [];
 if (rows.length === 2) pass('both withdrawals sent');
 else fail('expected 2, got ' + rows.length);
 const w1 = rows.find(r => r.id === 'w1');
-if (w1 && w1.account_id === 'acct-1' && w1.account_name === 'Yaz-3036') pass('account resolved to its id');
+if (w1 && w1.account_id === 'acct-1' && w1.account_name === 'Alpha-0001') pass('account resolved to its id');
 else fail('account_id wrong: ' + JSON.stringify(w1));
 if (w1 && w1.amount === 500 && w1.wd_date === '2026-11-10') pass('amount and date carried');
 else fail('fields wrong: ' + JSON.stringify(w1));
@@ -72,16 +72,16 @@ else fail('unmatched account handling: ' + JSON.stringify(w2));
 
 console.log('\nchange detection');
 const store = {};
-s = harness({ withdrawals: [{ id: 'w1', date: '2026-11-10', account: 'Yaz-3036', amount: 500 }] }, store);
+s = harness({ withdrawals: [{ id: 'w1', date: '2026-11-10', account: 'Alpha-0001', amount: 500 }] }, store);
 await vm.runInContext('atPushWithdrawals()', s);
 const first = (s.sent.withdrawals || []).length;
-s = harness({ withdrawals: [{ id: 'w1', date: '2026-11-10', account: 'Yaz-3036', amount: 500 }] }, store);
+s = harness({ withdrawals: [{ id: 'w1', date: '2026-11-10', account: 'Alpha-0001', amount: 500 }] }, store);
 await vm.runInContext('atPushWithdrawals()', s);
 const second = (s.sent.withdrawals || []).length;
 if (first === 1 && second === 0) pass('unchanged rows are not resent');
 else fail('expected 1 then 0, got ' + first + ' then ' + second);
 
-s = harness({ withdrawals: [{ id: 'w1', date: '2026-11-10', account: 'Yaz-3036', amount: 600 }] }, store);
+s = harness({ withdrawals: [{ id: 'w1', date: '2026-11-10', account: 'Alpha-0001', amount: 600 }] }, store);
 await vm.runInContext('atPushWithdrawals()', s);
 if ((s.sent.withdrawals || []).length === 1) pass('an edited row is resent');
 else fail('edit not detected');
@@ -94,18 +94,18 @@ console.log('\ntombstones carry NOT NULL columns');
 {
   const hStore = {};
   let h = harness({
-    stockHoldings: { 'Yaz -3036': { ts: 'Nov 6 2026 06:58 PM ET', cash: 1, summary: { a: 1 },
+    stockHoldings: { 'Alpha -0001': { ts: 'Nov 6 2026 06:58 PM ET', cash: 1, summary: { a: 1 },
                                     positions: [{ symbol: 'SHOP', qty: 1, value: 2 }] } },
   }, hStore);
   await vm.runInContext('atPushHoldings()', h);
   // rename: same data, new account key -> old ids must tombstone
   h = harness({
-    stockHoldings: { 'Yaz-3036': { ts: 'Nov 6 2026 06:58 PM ET', cash: 1, summary: { a: 1 },
+    stockHoldings: { 'Alpha-0001': { ts: 'Nov 6 2026 06:58 PM ET', cash: 1, summary: { a: 1 },
                                    positions: [{ symbol: 'SHOP', qty: 1, value: 2 }] } },
   }, hStore);
   await vm.runInContext('atPushHoldings()', h);
   const tomb = (h.sent.holdings || []).filter(r => r.deleted === true);
-  if (tomb.length === 1 && tomb[0].id === 'Yaz -3036|SHOP')
+  if (tomb.length === 1 && tomb[0].id === 'Alpha -0001|SHOP')
     pass('the renamed-away holding is tombstoned');
   else fail('expected one tombstone for the old id, got ' + JSON.stringify(tomb.map(r => r.id)));
   if (tomb[0] && tomb[0].data !== undefined && tomb[0].data !== null)
@@ -133,8 +133,8 @@ console.log('\nholdings (real E-Trade export shape)');
 // accounts silently failed to sync for two days.
 s = harness({
   stockHoldings: {
-    'Yaz-3036': {
-      acctName: 'Yaz-3036',
+    'Alpha-0001': {
+      acctName: 'Alpha-0001',
       ts: 'Nov 6 2026 06:58 PM ET',
       cash: 1200.5,
       summary: { netValue: 50000 },
@@ -154,7 +154,7 @@ catch (e) { fail('atPushHoldings threw on the real export shape: ' + e.message);
 if ((s.sent.holdings || []).length === 2) pass('one row per position');
 else fail('expected 2 positions, got ' + (s.sent.holdings || []).length);
 const shop = (s.sent.holdings || []).find(r => r.symbol === 'SHOP');
-if (shop && shop.id === 'Yaz-3036|SHOP' && shop.account_id === 'acct-1')
+if (shop && shop.id === 'Alpha-0001|SHOP' && shop.account_id === 'acct-1')
   pass('holding id is account|symbol, so a re-import overwrites in place');
 else fail('holding id wrong: ' + JSON.stringify(shop && shop.id));
 if (shop && shop.qty === 30 && shop.market_value === 4467.3)
@@ -193,7 +193,7 @@ for (const [val, label] of tsCases) {
 console.log('\ntransactions');
 const txnState = () => ({
   transactionHistory: {
-    'Yaz-3036': {
+    'Alpha-0001': {
       days: [{
         date: '2026-11-10',
         trades: [

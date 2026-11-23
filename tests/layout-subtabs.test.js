@@ -133,7 +133,7 @@ t('four panes, and the 15 cards are spread across them',()=>{
   const names=[...d.querySelectorAll('.subpane[data-group="cfg"]')].map(p=>p.dataset.pane);
   assert.deepStrictEqual(names,['accounts','goals','rules','data']);
   const cards=d.querySelectorAll('#screen-cfg .cfg-card, #screen-cfg details.rollup').length;
-  assert.strictEqual(cards,15,'every card kept, none dropped in the regroup');
+  assert.strictEqual(cards,16,'15 regrouped, plus Account Merges');
 });
 t('each pane has its own grid, so cards still lay out',()=>{
   seed();

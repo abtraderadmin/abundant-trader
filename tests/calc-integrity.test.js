@@ -24,7 +24,7 @@ const grab = n => (html.match(new RegExp('(?:async )?function ' + n + '\\([\\s\\
 const names = ['atNum','atDate','atCanonAcctName','atAcctNameTarget','atTradeRow','atTradeFromRow'];
 const src = names.map(grab);
 const cols = (html.match(/var AT_TRADE_COLS=\[[\s\S]*?\];/) || [])[0];
-const alias = (html.match(/var AT_ACCT_ALIASES=\{[^}]*\};/) || [])[0];
+const alias = (html.match(/function atAcctAliases\(\)[\s\S]*?\n\}/) || [])[0];
 if (src.some(x => !x) || !cols) { console.error('extraction failed'); process.exit(1); }
 
 const sb = { state: { settings: {} } };
@@ -36,11 +36,11 @@ const roundTrip = t => vm.runInContext(
 // A book shaped like the real one: three modules, wins and losses, an open
 // trade with no P/L, a scratch, a zero-fee trade, grades and journal fields.
 const book = [
-  { id:'a1', module:'spy_day', account:'Yaz-3036', date:'2026-11-05', symbol:'SPY',
+  { id:'a1', module:'spy_day', account:'Alpha-0001', date:'2026-11-05', symbol:'SPY',
     direction:'LONG', optType:'C', entry:3.10, stop:2.40, target:5.20, qty:3,
     exitPrice:11.70, grossPL:2580, feesActual:0.13, netPL:2579.87, rr:3.0,
     grade:'A+', status:'closed', emotion:'calm', rulesFollowed:'yes', thesis:'bounce' },
-  { id:'a2', module:'spy_day', account:'Joint JTWROS-7264', date:'2026-11-06', symbol:'SPY',
+  { id:'a2', module:'spy_day', account:'Joint ACME-0002', date:'2026-11-06', symbol:'SPY',
     direction:'PUT', entry:2.10, stop:1.60, target:3.50, qty:63,
     exitPrice:1.79, grossPL:-1953, feesActual:13.62, netPL:-1966.62, rr:2.8,
     grade:'C', status:'closed', emotion:'frustrated', rulesFollowed:'no' },
@@ -48,16 +48,16 @@ const book = [
     direction:'LONG', entry:5210.25, stop:5195, t1:5222.5, target:5235, qty:2, contracts:2,
     exitPrice:5234.75, grossPL:245, feesActual:6.60, netPL:238.40, rr:1.61,
     grade:'A', status:'closed', rulesFollowed:'yes', srcKey:'mes|1112|0947', holdSec:412 },
-  { id:'a4', module:'stock', account:'Joint JTWROS-7264', date:'2026-11-03', symbol:'ACCO',
+  { id:'a4', module:'stock', account:'Joint ACME-0002', date:'2026-11-03', symbol:'ACCO',
     direction:'LONG', entry:5.67, stop:4.97, target:7.33, qty:142, shares:142,
     exitPrice:6.10, grossPL:61.06, feesActual:0, netPL:61.06, rr:2.37,
     grade:'B', status:'closed', rulesFollowed:'yes' },
   // open: no exit, no P/L. Must stay excluded from closed-trade maths.
-  { id:'a5', module:'stock', account:'Yaz-3036', date:'2026-11-17', symbol:'LUNG',
+  { id:'a5', module:'stock', account:'Alpha-0001', date:'2026-11-17', symbol:'LUNG',
     direction:'LONG', entry:3.07, stop:2.43, target:5.23, qty:156, shares:156,
     status:'open' },
   // scratch: exactly zero. Must count as closed, not be treated as missing.
-  { id:'a6', module:'spy_day', account:'Jim-2310', date:'2026-11-11', symbol:'SPY',
+  { id:'a6', module:'spy_day', account:'Beta-0003', date:'2026-11-11', symbol:'SPY',
     direction:'CALL', entry:2.00, stop:1.70, target:2.60, qty:4,
     exitPrice:2.00, grossPL:0, feesActual:0, netPL:0, grade:'B', status:'closed' },
 ];

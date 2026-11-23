@@ -20,7 +20,7 @@ let fail=0;
 const t=(m,fn)=>{try{fn();console.log('  ok   '+m);}catch(e){fail++;console.log('  FAIL '+m+'\n       '+e.message);}};
 const BLOB='at_v2';
 let n=0;
-const open=(entry,stop,qty,mod)=>({id:'t'+(++n),module:mod||'stock',account:'Yaz',
+const open=(entry,stop,qty,mod)=>({id:'t'+(++n),module:mod||'stock',account:'Alpha',
   date:'2026-11-10',symbol:'X'+n,direction:'LONG',entry,stop,qty,status:'OPEN'});
 
 function seed(trades,over){

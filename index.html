@@ -2331,6 +2331,19 @@ body::before{
 
   <div class="subpane" data-group="cfg" data-pane="accounts">
     <div class="cfg-grid">
+    <div class="cfg-card">
+      <div class="cfg-hd">Account Merges <span style="font-size:11px;color:var(--fg3);font-weight:400;margin-left:6px">when one account arrives under two names</span></div>
+      <div class="cfg-body">
+        <div class="cfg-sub" style="margin-bottom:8px">Spacing differences are handled automatically. Use this only for genuinely different names that are the same account &mdash; trades logged under one, the broker export naming it another.</div>
+        <div id="cfg-alias-list" style="margin-bottom:9px"></div>
+        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
+          <input class="fc" id="cfg-alias-from" placeholder="name to retire" maxlength="40" style="flex:1;min-width:120px">
+          <span style="color:var(--fg3);font-size:12px">&rarr;</span>
+          <input class="fc" id="cfg-alias-to" placeholder="name it becomes" maxlength="40" style="flex:1;min-width:120px">
+          <button onclick="atAddAcctAlias()" style="font-size:11px;padding:5px 14px;border-radius:12px;border:1px solid var(--blue);cursor:pointer;background:var(--blue-bg);color:var(--blue);font-weight:700">Add</button>
+        </div>
+      </div>
+    </div>
     <details class="rollup" data-ru="cfg-acctnames" ontoggle="atRollupToggle('cfg-acctnames',this)">
       <summary><span class="ru-caret">&#9656;</span><span>Trading Account Names</span><span class="ru-sub">10 eval &middot; 5 PA slots, with a goal each</span></summary>
       <div class="ru-body">
@@ -14787,6 +14800,52 @@ function atActiveFutAccts(){
 }
 // Live futures accounts, for the tab badge. Counted in one place so the
 // badge and the panels cannot disagree about what counts as live.
+// Deliberate merges, where two names turned out to be one account. Spacing
+// alone cannot resolve these, so they are stated explicitly rather than
+// guessed at from a fuzzy match.
+//
+// These are the user's own account names, so they live in their settings and
+// sync with the rest of their data. They were briefly hard-coded here, which
+// put real account names in a public repository -- data does not belong in
+// source. Shape: settings.accountAliases = {"old name":"name it merges into"}.
+function atAcctAliases(){
+  var m=(typeof state!=='undefined'&&state.settings&&state.settings.accountAliases)||{};
+  return (m&&typeof m==='object'&&!Array.isArray(m))?m:{};
+}
+function atRenderAcctAliases(){
+  var el=document.getElementById('cfg-alias-list'); if(!el)return;
+  var A=atAcctAliases(), keys=Object.keys(A);
+  if(!keys.length){
+    el.innerHTML='<div style="font-size:11px;color:var(--fg3);padding:4px 0">'
+      +'No merges set. Add one when the same account arrives under two names.</div>';
+    return;
+  }
+  el.innerHTML=keys.map(function(k){
+    var esc=function(x){return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');};
+    return '<div style="display:flex;gap:8px;align-items:center;font-size:11px;padding:4px 0;border-top:1px solid var(--border)">'
+      +'<span style="font-family:var(--mono)">'+esc(k)+'</span>'
+      +'<span style="color:var(--fg3)">&rarr;</span>'
+      +'<span style="font-family:var(--mono);color:var(--blue)">'+esc(A[k])+'</span>'
+      +'<button onclick="atRemoveAcctAlias(\''+esc(k).replace(/'/g,"\\'")+'\')" '
+      +'style="margin-left:auto;font-size:10px;padding:2px 9px;border-radius:10px;border:1px solid var(--border);'
+      +'background:transparent;color:var(--fg3);cursor:pointer">Remove</button></div>';
+  }).join('');
+}
+function atAddAcctAlias(){
+  var f=document.getElementById('cfg-alias-from'), t=document.getElementById('cfg-alias-to');
+  var from=(f&&f.value||'').trim(), to=(t&&t.value||'').trim();
+  if(!from||!to){alert('Both names are needed.');return;}
+  if(from===to){alert('Those are the same name.');return;}
+  if(!state.settings.accountAliases)state.settings.accountAliases={};
+  state.settings.accountAliases[from]=to;
+  saveState(); f.value='';t.value='';
+  atRenderAcctAliases();
+}
+function atRemoveAcctAlias(k){
+  if(!state.settings.accountAliases)return;
+  delete state.settings.accountAliases[k];
+  saveState(); atRenderAcctAliases();
+}
 function atStockTabCount(){
   try{
     var n=0;Object.keys(state.stockHoldings||{}).forEach(function(k){
@@ -15914,6 +15973,7 @@ function evalRender(){
     _q('atPaintAllSubTabs',atPaintAllSubTabs);
     _q('atPaintNav',atPaintNav);
     _q('atPaintRollups',atPaintRollups);
+    _q('atRenderAcctAliases',atRenderAcctAliases);
     _q('atStockTabCount',atStockTabCount);
     _q('atFuturesTabCount',atFuturesTabCount);
     _q('atOreTabCounts',atOreTabCounts);
@@ -16376,16 +16436,6 @@ function atCanonAcctName(n){
   return String(n==null?'':n).replace(/\s*-\s*/g,'-').trim();
 }
 
-// Deliberate merges, where two names turned out to be one account. Spacing
-// alone cannot resolve these, so they are listed explicitly rather than
-// guessed at from a fuzzy match.
-//
-//   ET-Jim  ->  Jim-2310
-//     The E-Trade account for Jim. Trades were logged under "ET-Jim" (8 SPY
-//     day trades) while the broker export named it "Jim -2310" (8 positions,
-//     $11,054). Confirmed as one account. Jim-2310 wins because the account
-//     number matches the convention used by Yaz-3036 and Joint JTWROS-7264.
-var AT_ACCT_ALIASES={'ET-Jim':'Jim-2310'};
 
 // Every account name the app already knows about, canonicalised.
 function atKnownAccountNames(){
@@ -16417,7 +16467,8 @@ function atAcctNameTarget(n){
   var o=String(n==null?'':n).trim();
   if(!o)return o;
   var c=atCanonAcctName(o);
-  return AT_ACCT_ALIASES[o]||AT_ACCT_ALIASES[c]||c;
+  var A=atAcctAliases();
+  return A[o]||A[c]||c;
 }
 
 // Collects every account name in use, works out which need canonicalising, and

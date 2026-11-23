@@ -34,12 +34,12 @@ w.atPullArray=async function(cfg){
 
 const now=new Date().toISOString();
 const HOLD={
-  'Yaz-3036':{accountType:'ira',cash:1234.56,ts:'Nov 6 2026 06:58 PM ET',
+  'Alpha-0001':{accountType:'ira',cash:1234.56,ts:'Nov 6 2026 06:58 PM ET',
     summary:{netValue:98765.43,totalGain:4321.1},
     positions:[
       {symbol:'SPY',qty:100,pricePaid:540.12,lastPrice:601.33,value:60133,daysGain:12.5,totalGain:6121,totalGainPct:11.3,totalCost:54012},
       {symbol:'AAPL',qty:25,pricePaid:166,lastPrice:171.4,value:4285,daysGain:-3.2,totalGain:135,totalGainPct:3.25,totalCost:4150}]},
-  'Joint JTWROS-7264':{accountType:'cash',cash:10,ts:'Nov 6 2026 06:58 PM ET',
+  'Joint ACME-0002':{accountType:'cash',cash:10,ts:'Nov 6 2026 06:58 PM ET',
     summary:{netValue:2000},
     positions:[{symbol:'QQQ',qty:3,pricePaid:500,lastPrice:512,value:1536,daysGain:1,totalGain:36,totalGainPct:2.4,totalCost:1500}]}
 };
@@ -59,16 +59,16 @@ seed({stockHoldings:{}});
   await w.atPullHoldings();
   const H=()=>peek().stockHoldings||{};
   t('every account came back',()=>
-    assert.deepStrictEqual(Object.keys(H()).sort(),['Joint JTWROS-7264','Yaz-3036']));
+    assert.deepStrictEqual(Object.keys(H()).sort(),['Alpha-0001','Joint ACME-0002']));
   t('cash, timestamp and summary are identical',()=>{
-    const g=H()['Yaz-3036'];
+    const g=H()['Alpha-0001'];
     assert.strictEqual(g.cash,1234.56);
     assert.strictEqual(g.ts,'Nov 6 2026 06:58 PM ET','the broker string must survive verbatim');
-    assert.deepStrictEqual(g.summary,HOLD['Yaz-3036'].summary,'summary gained or lost keys');
+    assert.deepStrictEqual(g.summary,HOLD['Alpha-0001'].summary,'summary gained or lost keys');
   });
   t('accountType survives, though it has no column',()=>{
-    assert.strictEqual(H()['Yaz-3036'].accountType,'ira');
-    assert.strictEqual(H()['Joint JTWROS-7264'].accountType,'cash');
+    assert.strictEqual(H()['Alpha-0001'].accountType,'ira');
+    assert.strictEqual(H()['Joint ACME-0002'].accountType,'cash');
   });
   t('every position comes back unchanged',()=>{
     Object.keys(HOLD).forEach(nm=>{
@@ -79,7 +79,7 @@ seed({stockHoldings:{}});
     });
   });
   t('the RMD figure the screen reads is intact',()=>
-    assert.strictEqual(H()['Yaz-3036'].summary.netValue,98765.43));
+    assert.strictEqual(H()['Alpha-0001'].summary.netValue,98765.43));
   t('a position whose snapshot is missing is still kept',async()=>{});
 
   // ---------- transactions ----------
@@ -87,9 +87,9 @@ seed({stockHoldings:{}});
     underlying:under||'SPY',optType:'CALL',strike:600,expiry:'12/19/2026',qty:1,price:1.2,amount,comm});
   const fills=[FILL('2026-11-03','SPY 600C',250,1.3),FILL('2026-11-03','SPY 601C',-80,1.3),
                FILL('2026-11-04','QQQ 500C',120,0.65,'QQQ'),FILL('2026-11-05','XSP 60C',-40,0.65,'XSP')];
-  const orig=JSON.parse(JSON.stringify(w.atTxnRecord('Yaz-3036','2026-11-01 to 2026-11-30',fills)));
+  const orig=JSON.parse(JSON.stringify(w.atTxnRecord('Alpha-0001','2026-11-01 to 2026-11-30',fills)));
   FEED.transactions=fills.map((r,i)=>({
-    id:'t'+i, account_name:'Yaz-3036', txn_date:r.date, act_type:r.actType,
+    id:'t'+i, account_name:'Alpha-0001', txn_date:r.date, act_type:r.actType,
     description:r.desc, symbol:r.sym, underlying:r.underlying, opt_type:r.optType,
     strike:r.strike, expiry:r.expiry, qty:r.qty, price:r.price, amount:r.amount,
     commission:r.comm, data:{dr:'2026-11-01 to 2026-11-30'}, deleted:false, updated_at:now}));
@@ -97,7 +97,7 @@ seed({stockHoldings:{}});
   console.log('\ntransactions rebuild from their table');
   seed({transactionHistory:{}});
   await w.atPullTransactions();
-  const back=(peek().transactionHistory||{})['Yaz-3036'];
+  const back=(peek().transactionHistory||{})['Alpha-0001'];
   t('the record came back',()=>assert(back,'nothing rebuilt'));
   t('day buckets match, newest first',()=>
     assert.deepStrictEqual(back.days.map(d=>d.date),orig.days.map(d=>d.date)));

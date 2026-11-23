@@ -14,13 +14,13 @@ const tr=(acct,mod,pl)=>({id:acct+mod+(++n),module:mod,account:acct,date:'2026-1
 w.localStorage.setItem('at_v2',JSON.stringify({
   settings:{evalAccounts:['EV-A','','','','','','','','',''],
             paAccounts:['PA-A','','','',''],
-            cashAccounts:['Jim-2310','Yaz-3036',''],
+            cashAccounts:['Beta-0003','Alpha-0001',''],
             paperAccounts:['','','','',''],
-            accountGoals:{'EV-A':3000,'PA-A':5200,'Jim-2310':2000,'Yaz-3036':4000},
+            accountGoals:{'EV-A':3000,'PA-A':5200,'Beta-0003':2000,'Alpha-0001':4000},
             apexAccounts:{}},
   trades:[tr('EV-A','futures',288), tr('PA-A','futures',-67),
-          tr('Jim-2310','stock',400), tr('Yaz-3036','stock',-120),
-          tr('Yaz-3036','spy_day',55)]}));
+          tr('Beta-0003','stock',400), tr('Alpha-0001','stock',-120),
+          tr('Alpha-0001','spy_day',55)]}));
 w.loadState();
 w.renderGoals('goalsRibbon','statsRow');
 w.renderGoals('goalsRibbon2','statsRow2');
@@ -34,7 +34,7 @@ t('futures accounts are there',()=>{
 });
 t('no cash accounts on it',()=>{
   const r=txt('goalsRibbon');
-  assert(!/Jim-2310/.test(r)&&!/Yaz-3036/.test(r),'a cash account leaked onto Futures');
+  assert(!/Beta-0003/.test(r)&&!/Alpha-0001/.test(r),'a cash account leaked onto Futures');
 });
 t('no Stock or SPY rings on it',()=>{
   const r=txt('goalsRibbon');
@@ -52,8 +52,8 @@ t('no futures accounts on it',()=>{
 });
 t('cash accounts finally get their own cards',()=>{
   const r=txt('goalsRibbon2');
-  assert(/Jim-2310/.test(r),'Jim-2310 has no card');
-  assert(/Yaz-3036/.test(r),'Yaz-3036 has no card');
+  assert(/Beta-0003/.test(r),'Beta-0003 has no card');
+  assert(/Alpha-0001/.test(r),'Alpha-0001 has no card');
 });
 t('eval accounts no longer sit under Paper & Sim there',()=>
   assert(!/EV-A/.test(txt('statsRow2')),'eval tile on the Stock stats'));
@@ -81,7 +81,7 @@ console.log('\na closed account still drops out, on either screen');
 (function(){
   const b=JSON.parse(w.localStorage.getItem('at_v2'));
   b.settings.apexAccounts={'PA-A':{status:'blown'}};
-  b.settings.cashAccounts=['Jim-2310','Yaz-3036',''];
+  b.settings.cashAccounts=['Beta-0003','Alpha-0001',''];
   w.localStorage.setItem('at_v2',JSON.stringify(b)); w.loadState();
 })();
 w.renderGoals('goalsRibbon','statsRow');

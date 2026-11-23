@@ -13,12 +13,12 @@ const tr=(acct,mod,pl,i)=>({id:acct+mod+i,module:mod,account:acct,date:'2026-11-
 w.localStorage.setItem(BLOB,JSON.stringify({
   settings:{evalAccounts:['Apex-4687-107','Apex-4687-108','','','','','','','',''],
             paAccounts:['PA-APEX-4687-13','','','',''],
-            cashAccounts:['Yaz-3036','',''],
+            cashAccounts:['Alpha-0001','',''],
             paperAccounts:['Paper-1','','','',''],
             accountGoals:{'Apex-4687-107':3000,'Apex-4687-108':3000},
             apexAccounts:{}},
   trades:[tr('Apex-4687-107','futures',288,1), tr('Apex-4687-108','futures',288,2),
-          tr('PA-APEX-4687-13','futures',-67,3), tr('Yaz-3036','stock',1000,4),
+          tr('PA-APEX-4687-13','futures',-67,3), tr('Alpha-0001','stock',1000,4),
           tr('Paper-1','futures',9999,5)]}));
 w.loadState();
 
@@ -27,7 +27,7 @@ t('eval, paper, real and unassigned are distinct',()=>{
   assert.strictEqual(w.acctNature({account:'Apex-4687-107'}),'eval');
   assert.strictEqual(w.acctNature({account:'Paper-1'}),'paper');
   assert.strictEqual(w.acctNature({account:'PA-APEX-4687-13'}),'real');
-  assert.strictEqual(w.acctNature({account:'Yaz-3036'}),'real');
+  assert.strictEqual(w.acctNature({account:'Alpha-0001'}),'real');
 });
 
 console.log('\nsimulated money stays out of the real totals');

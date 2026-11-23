@@ -2,7 +2,7 @@
 // Account name normalisation.
 //
 // Built from the real name set in the live blob. Holdings arrived from the
-// broker as "Yaz -3036" while trades carried "Yaz-3036", so one account
+// broker as "Alpha -0001" while trades carried "Alpha-0001", so one account
 // existed as two and never joined. Canonical form has no whitespace touching
 // a hyphen.
 //
@@ -25,9 +25,9 @@ const grab = n => (html.match(new RegExp('function ' + n + '\\([\\s\\S]*?\\n\\}'
 const names = ['atCanonAcctName','atAcctNameTarget','atNormalizeAccountNames',
                'atNormalizeAccountNamesOnce','atMigrateAccountName','atNameKeyedMaps'];
 const src = names.map(grab);
-// the alias table lives outside a function
-const aliasDecl = (html.match(/var AT_ACCT_ALIASES=\{[^}]*\};/) || [])[0];
-if (!aliasDecl) { console.error('AT_ACCT_ALIASES not found'); process.exit(1); }
+// the alias table is the user's data now, read from settings
+const aliasDecl = (html.match(/function atAcctAliases\(\)[\s\S]*?\n\}/) || [])[0];
+if (!aliasDecl) { console.error('atAcctAliases not found'); process.exit(1); }
 src.unshift(aliasDecl);
 const missing = names.filter((n,i) => !src[i]);
 if (missing.length) { console.error('could not extract: ' + missing.join(', ')); process.exit(1); }
@@ -40,28 +40,31 @@ function liveState() {
     trades: [
       ...trade('PA -APEX-4687-12', 152),
       ...trade('PA -APEX-4687-13', 88),
-      ...trade('Joint JTWROS-7264', 16),
-      ...trade('Yaz-3036', 9),
-      ...trade('ET-Jim', 8),
+      ...trade('Joint ACME-0002', 16),
+      ...trade('Alpha-0001', 9),
+      ...trade('ET-Beta', 8),
     ],
     withdrawals: [],
     stockHoldings: {
-      'Yaz -3036':          { acctName: 'Yaz -3036',          positions: [{ symbol: 'SHOP' }] },
-      'Jim -2310':          { acctName: 'Jim -2310',          positions: [{ symbol: 'AAPL' }] },
-      'Joint JTWROS -7264': { acctName: 'Joint JTWROS -7264', positions: [{ symbol: 'MSFT' }] },
+      'Alpha -0001':          { acctName: 'Alpha -0001',          positions: [{ symbol: 'SHOP' }] },
+      'Beta -0003':          { acctName: 'Beta -0003',          positions: [{ symbol: 'AAPL' }] },
+      'Joint ACME -0002': { acctName: 'Joint ACME -0002', positions: [{ symbol: 'MSFT' }] },
     },
     portfolioOpen: {}, transactionHistory: {},
     settings: {
-      cashAccounts:  ['Yaz-3036', 'ET-Jim', 'Joint JTWROS-7264'],
+      cashAccounts:  ['Alpha-0001', 'ET-Beta', 'Joint ACME-0002'],
       evalAccounts:  ['Apex-4687-102'],
       paAccounts:    ['PA -APEX-4687-12', 'PA -APEX-4687-13'],
       paperAccounts: ['ET-PT', 'TOS-PT'],
+      // A deliberate merge. It is the user's data, so it comes from
+      // their settings, not from a table baked into the source.
+      accountAliases: { 'ET-Beta': 'Beta-0003' },
       apexAccounts:  { 'PA -APEX-4687-12': { size: 50000, dd: 2500 },
                        'PA -APEX-4687-13': { size: 50000, dd: 2500 } },
       accountGoals:  { 'PA -APEX-4687-12': 4000, 'PA -APEX-4687-13': 4000, 'Apex-4687-102': 1000 },
       accountPriorPL:{ 'PA -APEX-4687-12': 1200, 'PA -APEX-4687-13': 1100 },
       accountDayGoals:{ 'PA -APEX-4687-12': 250, 'PA -APEX-4687-13': 250,
-                        'Yaz-3036': 250, 'ET-Jim': 250, 'Joint JTWROS-7264': 250,
+                        'Alpha-0001': 250, 'ET-Beta': 250, 'Joint ACME-0002': 250,
                         'Apex-4687-102': 250 },
       accountTaxDeferred: {}, accountBirthYear: {},
       accountAnnualDist: {}, accountAnnualContrib: {},
@@ -82,20 +85,20 @@ function run(state, opts) {
 console.log('\ncanonical form');
 const canon = s => new Function(grab('atCanonAcctName') + '\nreturn atCanonAcctName(' + JSON.stringify(s) + ');')();
 [
-  ['Yaz -3036',          'Yaz-3036'],
-  ['Joint JTWROS -7264', 'Joint JTWROS-7264'],
+  ['Alpha -0001',          'Alpha-0001'],
+  ['Joint ACME -0002', 'Joint ACME-0002'],
   ['PA -APEX-4687-12',   'PA-APEX-4687-12'],
-  ['Jim -2310',          'Jim-2310'],
-  ['ET-Jim',             'ET-Jim'],
+  ['Beta -0003',          'Beta-0003'],
+  ['ET-Beta',             'ET-Beta'],
   ['Apex-4687-102',      'Apex-4687-102'],
   ['TOS-PT',             'TOS-PT'],
-  ['  Yaz - 3036  ',     'Yaz-3036'],
+  ['  Alpha - 0001  ',     'Alpha-0001'],
 ].forEach(([i, o]) => {
   const got = canon(i);
   if (got === o) pass(JSON.stringify(i) + ' → ' + JSON.stringify(o));
   else fail(JSON.stringify(i) + ' → ' + JSON.stringify(got) + ', expected ' + JSON.stringify(o));
 });
-if (canon('Joint JTWROS-7264') === 'Joint JTWROS-7264')
+if (canon('Joint ACME-0002') === 'Joint ACME-0002')
   pass('an internal space not touching a hyphen is preserved');
 else fail('internal space was eaten');
 
@@ -104,16 +107,16 @@ console.log('\ndry run');
 let { out: plan } = run(liveState(), { dryRun: true });
 const pairs = plan.map(p => p.from + ' → ' + p.to).sort();
 const expected = [
-  'ET-Jim → Jim-2310',
-  'Jim -2310 → Jim-2310',
-  'Joint JTWROS -7264 → Joint JTWROS-7264',
+  'ET-Beta → Beta-0003',
+  'Beta -0003 → Beta-0003',
+  'Joint ACME -0002 → Joint ACME-0002',
   'PA -APEX-4687-12 → PA-APEX-4687-12',
   'PA -APEX-4687-13 → PA-APEX-4687-13',
-  'Yaz -3036 → Yaz-3036',
+  'Alpha -0001 → Alpha-0001',
 ].sort();
-if (JSON.stringify(pairs) === JSON.stringify(expected)) pass('plan is the 5 spaced names plus the ET-Jim merge');
+if (JSON.stringify(pairs) === JSON.stringify(expected)) pass('plan is the 5 spaced names plus the ET-Beta merge');
 else fail('plan wrong:\n    got      ' + pairs.join('\n             ') + '\n    expected ' + expected.join('\n             '));
-if (!plan.some(p => ['Apex-4687-102','TOS-PT','ET-PT','Yaz-3036'].includes(p.from)))
+if (!plan.some(p => ['Apex-4687-102','TOS-PT','ET-PT','Alpha-0001'].includes(p.from)))
   pass('names already canonical are left alone');
 else fail('a clean name was scheduled for rename');
 
@@ -128,38 +131,38 @@ else fail('PA trades: ' + acctCount('PA-APEX-4687-12') + '/' + acctCount('PA-APE
 if (st.trades.filter(t => /\s-/.test(t.account)).length === 0)
   pass('no trade is left with a spaced name');
 else fail(st.trades.filter(t => /\s-/.test(t.account)).length + ' trades still spaced');
-if (acctCount('Yaz-3036') === 9 && acctCount('Joint JTWROS-7264') === 16)
+if (acctCount('Alpha-0001') === 9 && acctCount('Joint ACME-0002') === 16)
   pass('untouched accounts keep their exact trade counts');
 else fail('an untouched account changed count');
 
-console.log('\nET-Jim merges into Jim-2310');
-if (acctCount('Jim-2310') === 8) pass("Jim's 8 SPY trades moved to Jim-2310");
-else fail('expected 8 trades on Jim-2310, got ' + acctCount('Jim-2310'));
-if (acctCount('ET-Jim') === 0) pass('no trade is left on ET-Jim');
-else fail(acctCount('ET-Jim') + ' trades still on ET-Jim');
-if (st.stockHoldings['Jim-2310'] && st.stockHoldings['Jim-2310'].positions[0].symbol === 'AAPL')
+console.log('\nET-Beta merges into Beta-0003');
+if (acctCount('Beta-0003') === 8) pass("Beta's 8 SPY trades moved to Beta-0003");
+else fail('expected 8 trades on Beta-0003, got ' + acctCount('Beta-0003'));
+if (acctCount('ET-Beta') === 0) pass('no trade is left on ET-Beta');
+else fail(acctCount('ET-Beta') + ' trades still on ET-Beta');
+if (st.stockHoldings['Beta-0003'] && st.stockHoldings['Beta-0003'].positions[0].symbol === 'AAPL')
   pass('the holdings land on the same account as the trades');
-else fail('holdings did not join Jim-2310');
-if (st.settings.cashAccounts.includes('Jim-2310') && !st.settings.cashAccounts.includes('ET-Jim'))
+else fail('holdings did not join Beta-0003');
+if (st.settings.cashAccounts.includes('Beta-0003') && !st.settings.cashAccounts.includes('ET-Beta'))
   pass('cashAccounts renamed');
 else fail('cashAccounts: ' + JSON.stringify(st.settings.cashAccounts));
 if (st.settings.cashAccounts.length === 3) pass('no duplicate left in cashAccounts');
 else fail('cashAccounts length ' + st.settings.cashAccounts.length);
-if (st.settings.accountDayGoals['Jim-2310'] === 250 && !('ET-Jim' in st.settings.accountDayGoals))
-  pass("Jim's day goal followed the merge");
+if (st.settings.accountDayGoals['Beta-0003'] === 250 && !('ET-Beta' in st.settings.accountDayGoals))
+  pass("Beta's day goal followed the merge");
 else fail('day goal: ' + JSON.stringify(st.settings.accountDayGoals));
 if (st.trades.length === 273) pass('273 trades in, 273 out — nothing lost or duplicated');
 else fail('trade count changed to ' + st.trades.length);
 
 console.log('\nholdings join the right account');
 const hk = Object.keys(st.stockHoldings).sort();
-if (JSON.stringify(hk) === JSON.stringify(['Jim-2310','Joint JTWROS-7264','Yaz-3036']))
+if (JSON.stringify(hk) === JSON.stringify(['Alpha-0001','Beta-0003','Joint ACME-0002']))
   pass('holdings keys canonicalised: ' + hk.join(', '));
 else fail('holdings keys: ' + hk.join(', '));
-if (st.stockHoldings['Yaz-3036'] && st.stockHoldings['Yaz-3036'].positions[0].symbol === 'SHOP')
+if (st.stockHoldings['Alpha-0001'] && st.stockHoldings['Alpha-0001'].positions[0].symbol === 'SHOP')
   pass('position data moved with the key');
 else fail('holdings payload lost');
-if (st.stockHoldings['Yaz-3036'] && !st.stockHoldings['Yaz -3036'])
+if (st.stockHoldings['Alpha-0001'] && !st.stockHoldings['Alpha -0001'])
   pass('the spaced key is gone, not duplicated');
 else fail('both keys still present');
 
@@ -175,11 +178,11 @@ else fail('apexAccounts did not follow: ' + JSON.stringify(Object.keys(st.settin
 if (st.settings.accountPriorPL['PA-APEX-4687-12'] === 1200) pass('prior P/L followed');
 else fail('prior P/L lost');
 if (st.settings.accountDayGoals['PA-APEX-4687-12'] === 250 &&
-    st.settings.accountDayGoals['Yaz-3036'] === 250 &&
+    st.settings.accountDayGoals['Alpha-0001'] === 250 &&
     Object.keys(st.settings.accountDayGoals).length === 6)
   pass('day goals followed, still six accounts');
 else fail('day goals: ' + JSON.stringify(st.settings.accountDayGoals));
-if (JSON.stringify(st.settings.cashAccounts) === JSON.stringify(['Yaz-3036','Jim-2310','Joint JTWROS-7264']))
+if (JSON.stringify(st.settings.cashAccounts) === JSON.stringify(['Alpha-0001','Beta-0003','Joint ACME-0002']))
   pass('cashAccounts holds the merged name in place');
 else fail('cashAccounts: ' + JSON.stringify(st.settings.cashAccounts));
 
