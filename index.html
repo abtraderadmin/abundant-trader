@@ -10956,6 +10956,59 @@ function oreParseMarketOverview(text){
 // going forward, which is why the first snapshot is marked as a baseline and
 // never counted as evidence of anything.
 const AT_SNAP_KEEP=120;
+// Levels have to describe a trade that could actually be taken before any
+// score built on them means anything. Real examples from one pull: a short
+// whose stop and target were the same price, and a long whose stop sat above
+// its entry. Both would have produced a confident number from nonsense.
+function atLevelsSane(a){
+  var d=String(a&&a.direction||'').toUpperCase();
+  var e=parseFloat(a&&a.entry), st=parseFloat(a&&a.stop);
+  var tg=parseFloat(a&&(a.target1!=null?a.target1:a.target));
+  if(!isFinite(e)||!isFinite(st)||!isFinite(tg))return{ok:false,why:'no levels'};
+  if(d!=='LONG'&&d!=='SHORT')return{ok:false,why:'no direction'};
+  if(st===tg)return{ok:false,why:'stop and target are the same price'};
+  if(d==='LONG'&&!(st<e&&e<tg))
+    return{ok:false,why:'a long needs stop below entry below target'};
+  if(d==='SHORT'&&!(st>e&&e>tg))
+    return{ok:false,why:'a short needs stop above entry above target'};
+  return{ok:true,why:''};
+}
+// What the trade actually did, read off daily bars. Deliberately NOT the
+// service's own "Hit 1st Target" wording: a list that reports its own results
+// and quietly drops what went wrong will score near perfect every time, which
+// is the whole reason this exists.
+//
+// bars: [{date,high,low}] in date order from the day the alert was first seen.
+function atAlertOutcome(a,bars){
+  var sane=atLevelsSane(a);
+  if(!sane.ok)return{state:'unscorable',why:sane.why};
+  if(!Array.isArray(bars)||!bars.length)return{state:'no data',why:'no price history'};
+  var LONG=String(a.direction).toUpperCase()==='LONG';
+  var e=+a.entry, st=+a.stop, tg=+(a.target1!=null?a.target1:a.target);
+  var trig=null;
+  for(var i=0;i<bars.length;i++){
+    var b=bars[i];
+    var hi=+b.high, lo=+b.low;
+    if(!isFinite(hi)||!isFinite(lo))continue;
+    if(!trig){
+      if(LONG?(lo<=e):(hi>=e)){
+        trig=b.date;
+        // The whole bar on the far side of the entry means price gapped
+        // through it rather than coming back to it. There was no fill to be
+        // had at the stated level, so this is not a stop-out and counting it
+        // as one would blame the setup for a trade nobody could take.
+        if(LONG?(hi<e):(lo>e))return{state:'gapped',trigDate:trig,endDate:b.date};
+      } else continue;
+    }
+    var hitStop=LONG?(lo<=st):(hi>=st);
+    var hitTgt =LONG?(hi>=tg):(lo<=tg);
+    // A daily bar does not say which came first. Resolving the tie toward the
+    // target would flatter every result, so the stop wins.
+    if(hitStop)return{state:'stopped',trigDate:trig,endDate:b.date};
+    if(hitTgt) return{state:'hit',   trigDate:trig,endDate:b.date};
+  }
+  return trig?{state:'open',trigDate:trig}:{state:'untriggered'};
+}
 function atAlertKey(a){
   return (a.source||'acorn_alerts')+'|'+String(a.ticker||'').toUpperCase()
     +'|'+String(a.foundOn||a.found||'');
@@ -11013,8 +11066,16 @@ function atAlertLedger(source){
     // Present in the very first snapshot means it was alive before tracking
     // began, so nothing is known about what Acorn removed before that.
     r.baseline=(r.firstSeen===firstDay);
+    // Two different things, kept apart on purpose:
+    //   claimedHit - the service said so in its own listing
+    //   status     - what the listing itself did (still there, or gone)
+    // A list that grades its own results is evidence about the list, not
+    // about the trade, so the claim never silently becomes the score.
+    r.claimedHit=!!r.hitDate;
     r.status=r.hitDate?'hit'
             :(r.stillListed?'open':'removed');
+    var sane=atLevelsSane(r);
+    r.sane=sane.ok; r.unsaneWhy=sane.why;
     r.daysTracked=Math.max(0,Math.round(
       (new Date(r.lastSeen+'T12:00:00')-new Date(r.firstSeen+'T12:00:00'))/86400000));
     return r;
@@ -11034,7 +11095,11 @@ function atAlertScore(by,source){
     if(rr<2.5)return '2.0 – 2.49';
     return '2.5 and up';
   };
-  led.records.forEach(function(r){
+  // Levels that could not describe a real trade are counted apart. Folding a
+  // short whose stop equals its target into a hit rate produces a number that
+  // looks like evidence and is not.
+  const unsane=led.records.filter(function(r){return !r.sane;});
+  led.records.filter(function(r){return r.sane;}).forEach(function(r){
     const g=(by==='rr')?band(r.rr):(r.strategy||'(none)');
     if(!groups[g])groups[g]={group:g,total:0,hit:0,removed:0,open:0,
                              baseline:0,scored:0,rrSum:0,rrN:0};
@@ -11066,6 +11131,9 @@ function atAlertScore(by,source){
          firstDay:led.firstDay,lastDay:led.lastDay,
          totalRecords:led.records.length,
          baselineCount:led.records.filter(function(r){return r.baseline;}).length,
+         unsane:unsane.map(function(r){
+           return{ticker:r.ticker,why:r.unsaneWhy,firstSeen:r.firstSeen};}),
+         claimedHits:led.records.filter(function(r){return r.claimedHit;}).length,
          rows:rows};
 }
 
@@ -11506,17 +11574,25 @@ function oreParseAlerts(){
   if(service==='acorn_wealth'){
     parsed=oreParseAcornWealth(rawText);
     mode=parsed.length?'full levels':'';
+    // The full report lists everything currently open, so two of them can be
+    // compared: what is in the earlier one and missing from the later is the
+    // only record anyone keeps of an alert that did not work out.
+    if(parsed.length){try{atAlertSnapshot(parsed,'acorn');}catch(e){}}
   }
   if(!parsed.length&&(service==='acorn_alerts'||/^\s*[\[{]/.test(rawText))){
     parsed=oreParseAcornAlerts(rawText);
     mode=parsed.length?'members table':'';
     // Every pull is a snapshot. What disappears between two of them is the
     // only record anyone keeps of the alerts that did not work.
-    if(parsed.length){try{atAlertSnapshot(parsed,'acorn_alerts');}catch(e){}}
+    if(parsed.length){try{atAlertSnapshot(parsed,'acorn');}catch(e){}}
   }
   if(!parsed.length&&(service==='acorn_setups'||/Stock Setups\s*for/i.test(rawText))){
     parsed=oreParseAcornSetups(rawText);
     mode=parsed.length?'daily setups':'';
+    // Deliberately NOT snapshotted. The daily note carries that morning's
+    // new setups, not the whole open list, so diffing it against a full
+    // report would read every name it happens to omit as dropped, inventing
+    // failures wholesale. Only complete lists go in the ledger.
     // Held for the renderer: the regime these were written against, and the
     // status lines for ideas already being carried.
     state.oreLastOverview=oreParseMarketOverview(rawText)||null;
