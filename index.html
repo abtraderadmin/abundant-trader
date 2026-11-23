@@ -10472,7 +10472,9 @@ function oreParseAcornWealth(text){
       const alertDate =g(/Date of Alert[–-]+\s*(.+)/i);
       const pattern   =g(/Pattern\/Why[–-]+\s*(.+)/i);
       const entryRaw  =g(/Entry Criteria\s*[–-]+\s*Break (?:above|below)\s*([\d.]+)/i);
-      const entry     =entryRaw ? parseFloat(entryRaw) : null;
+      // let, not const: a dual-entry idea replaces this with the
+      // conservative level a few lines down.
+      let entry       =entryRaw ? parseFloat(entryRaw) : null;
       const t1Raw     =g(/Target 1[–-]+\s*([\d.]+)/i);
       const target1   =t1Raw ? parseFloat(t1Raw) : null;
       const t2Raw     =g(/Target 2[–-]+\s*([\d.]+)/i);
@@ -10502,6 +10504,20 @@ function oreParseAcornWealth(text){
       // "Break above 3.07 (aggressive), 3.33 (conservative)"
       const aggM=/Break (?:above|below)\s*([\d.]+)\s*\(aggressive\)/i.exec(block);
       const conM=/([\d.]+)\s*\(conservative\)/i.exec(block);
+      const entryAggressive  = aggM?parseFloat(aggM[1]):null;
+      const entryConservative= conM?parseFloat(conM[1]):null;
+
+      // Both levels are captured, and the plan is built on the CONSERVATIVE
+      // one. Acorn calls it "the official conservative entry" and talks about
+      // the other as merely aggressive, so planning on the looser level
+      // flatters the trade twice over: it shortens the distance to the stop
+      // and lengthens the distance to the target. On LUNG that read as 3.38
+      // R:R when the official entry gives 2.11 — a gap wide enough to turn a
+      // marginal idea into a top-ranked one.
+      //
+      // The aggressive level is kept and shown, because taking it is a real
+      // choice. It is just not the one made on the trader's behalf.
+      if(entryConservative!=null) entry=entryConservative;
 
       // Does the stop sit on the risk side of the entry?
       const stopValid = (stop==null) ? null
@@ -10519,8 +10535,7 @@ function oreParseAcornWealth(text){
         statusDate: statusDate?statusDate[1]:'',
         stopUpdatedOn: stopUpdated?stopUpdated[1].trim():'',
         dropped,
-        entryAggressive: aggM?parseFloat(aggM[1]):null,
-        entryConservative: conM?parseFloat(conM[1]):null,
+        entryAggressive, entryConservative,
         // derived risk figures - null rather than wrong when the stop is stale
         stopValid, risk, reward, rr,
         alertDate, pattern, entryText, entry, stop,
@@ -10628,6 +10643,98 @@ function oreParseAlerts(){
 // queue roughly six times larger than the stock plan sized the same trade.
 function oreRiskBudget(){ return atRiskBudget().budget; }
 
+// ── WHERE PRICE ACTUALLY IS ─────────────────────────────────────────
+// "Not triggered" is the report's view as of its own close. It says nothing
+// about where the stock is now, and the gap between those two is the whole
+// question: an idea four percent from its entry and one thirty percent away
+// read identically on the card.
+//
+// So each queued idea gets a quote and carries the distance to its own
+// trigger. Nothing is inferred when the quote fails — a missing price stays
+// missing and the card says so, because a guess here would be a guess about
+// whether to put money on.
+function oreTriggerGap(item,price){
+  const p=parseFloat(price), e=parseFloat(item&&item.entry);
+  if(!(p>0&&e>0))return null;
+  const long=item.direction==='LONG';
+  // A long triggers on a break ABOVE, a short on a break BELOW, so "armed"
+  // means price has not yet crossed in the direction of the trade.
+  const armed = long ? (p<e) : (p>e);
+  const dist  = long ? (e-p) : (p-e);
+  return{price:p, entry:e, armed:armed,
+         distance:parseFloat(Math.abs(dist).toFixed(2)),
+         pct:parseFloat((Math.abs(dist)/p*100).toFixed(2)),
+         // Past its own trigger without the report saying so: the move
+         // happened after the report was written.
+         crossed:!armed};
+}
+// Quote every distinct ticker in the queue once. Sequential on purpose: the
+// free endpoint is one symbol per call and a burst just earns a rate limit.
+async function oreQueuePrices(onProgress){
+  const q=(state.importQueue||[]);
+  const tickers=[];
+  q.forEach(function(it){
+    if(it&&it.ticker&&tickers.indexOf(it.ticker)===-1)tickers.push(it.ticker);
+  });
+  let done=0,ok=0;
+  for(var i=0;i<tickers.length;i++){
+    const t=tickers[i];
+    if(onProgress)onProgress('Quoting '+t+'… ('+(done+1)+'/'+tickers.length+')');
+    try{
+      const quote=await avGet({function:'GLOBAL_QUOTE',symbol:t});
+      const g=quote&&quote['Global Quote'];
+      const px=g&&parseFloat(g['05. price']);
+      const day=g&&g['07. latest trading day'];
+      if(px>0){
+        ok++;
+        q.forEach(function(it){
+          if(it.ticker!==t)return;
+          it.livePrice=px;
+          it.livePriceDay=day||'';
+          it.gap=oreTriggerGap(it,px);
+        });
+      }else{
+        // Rate limit or no data. Recorded, never substituted.
+        q.forEach(function(it){ if(it.ticker===t)it.priceError=
+          (quote&&(quote.Information||quote.Note))?'rate limit':'no quote'; });
+      }
+      await avPace();
+    }catch(e){
+      q.forEach(function(it){ if(it.ticker===t)it.priceError='lookup failed'; });
+    }
+    done++;
+  }
+  saveState();
+  try{oreRenderQueue();}catch(e){}
+  return{tickers:tickers.length,quoted:ok};
+}
+// Sort key. Ideas you could act on today come first, and inside that the
+// nearest trigger leads; everything historical keeps its place below rather
+// than being hidden, because a setup that is past today is often the one
+// worth watching next week.
+function oreQueueRank(item){
+  if(!item)return 9;
+  if(item.dropped)return 6;
+  if(item.hitTarget)return 5;
+  if(item.triggered)return 4;
+  var m=null; try{m=oreQueueMath(item);}catch(e){}
+  if(m&&!m.valid)return 7;            // stop past entry: nothing sizable
+  if(item.gap&&item.gap.crossed)return 3;  // moved past entry since the report
+  if(item.gap)return 1;               // armed, with a live distance
+  return 2;                           // armed, price unknown
+}
+function oreQueueSorted(){
+  return (state.importQueue||[]).slice().sort(function(a,b){
+    var ra=oreQueueRank(a),rb=oreQueueRank(b);
+    if(ra!==rb)return ra-rb;
+    var pa=(a.gap&&a.gap.pct), pb=(b.gap&&b.gap.pct);
+    if(pa!=null&&pb!=null&&pa!==pb)return pa-pb;   // nearest trigger first
+    if(pa!=null&&pb==null)return -1;
+    if(pb!=null&&pa==null)return 1;
+    return String(a.ticker||'').localeCompare(String(b.ticker||''));
+  });
+}
+
 function oreQueueMath(item){
   var dir   =item.direction;
   var entry =(item.entryOverride!=null?item.entryOverride:item.entry);
@@ -10719,6 +10826,37 @@ function oreQueueBuy(i){
   toast(item.ticker+' loaded into the stock form — review the regime and setup before saving.','ok',7000);
 }
 
+// The one line that answers "can I still take this". Silent until a quote
+// has actually been fetched: an empty space is honest, a zero is not.
+function oreGapLine(item){
+  if(!item)return '';
+  if(item.priceError)
+    return '<div style="font-size:11px;color:var(--fg3);margin-bottom:8px">'
+      +'No live price — '+item.priceError+'. The flags above are the report’s view as of its own close.</div>';
+  var g=item.gap;
+  if(!g)return '';
+  var col=g.armed?'var(--green)':'var(--gold)';
+  var txt=g.armed
+    ? ('$'+fmt(g.price,2)+' now — <strong>'+fmt(g.distance,2)+' ('+fmt(g.pct,1)
+       +'%) from the '+(item.direction==='LONG'?'break above ':'break below ')+fmt(g.entry,2)+'</strong>')
+    : ('$'+fmt(g.price,2)+' now — already '+(item.direction==='LONG'?'above':'below')
+       +' the '+fmt(g.entry,2)+' trigger by '+fmt(g.distance,2)+' ('+fmt(g.pct,1)+'%)');
+  return '<div style="font-size:11px;color:'+col+';margin-bottom:8px">'+txt
+    +(item.livePriceDay?('<span style="color:var(--fg3)"> · close '+item.livePriceDay+'</span>'):'')
+    +'</div>';
+}
+// Fetch on demand rather than on import: quotes cost calls, and a queue is
+// often pasted in well before anybody is ready to act on it.
+async function oreQueuePriceRun(){
+  var msg=document.getElementById('imp-price-msg');
+  var say=function(t){ if(msg)msg.textContent=t; };
+  try{
+    var r=await oreQueuePrices(say);
+    say(r.quoted+' of '+r.tickers+' quoted'
+      +(r.quoted<r.tickers?' — the rest are marked on their cards.':'.'));
+  }catch(e){ say('Quote lookup failed: '+(e&&e.message||e)); }
+}
+
 function oreRenderQueue(){
   var wrap=document.getElementById('imp-queue-wrap');
   var table=document.getElementById('imp-queue-table');
@@ -10735,13 +10873,26 @@ function oreRenderQueue(){
       +'<div style="font-family:var(--mono);font-size:12px;'+(colour?'color:'+colour:'')+'">'+val+'</div></div>';
   };
 
-  var html='<div style="font-size:11px;color:var(--fg3);margin-bottom:10px">'
-    +'Sized to '+money(oreRiskBudget(),0)+' of risk per trade '
-    +'(account '+money(parseFloat(state.settings&&state.settings.stockOptionsAccountValue)||10000,0)
-    +' × '+((parseFloat(state.settings&&state.settings.tradeRiskPct)||1))+'%). '
-    +'Entry and share count are editable; everything else recomputes.</div>';
+  // This used to describe the budget as account x percent, which stopped
+  // being how it is worked out: the flat max-loss cap is often the tighter of
+  // the two and therefore the one governing. atRiskBudgetNote names whichever
+  // it actually is.
+  var _rb=(typeof atRiskBudget==='function')?atRiskBudget():null;
+  var html='<div style="font-size:11px;color:var(--fg3);margin-bottom:10px;line-height:1.6">'
+    +((typeof atRiskBudgetNote==='function')?atRiskBudgetNote():'')
+    +((_rb&&_rb.ceiling)?(' Capital ceiling '+money(_rb.ceiling,0)+' a position.'):'')
+    +' Entry and share count are editable; everything else recomputes.</div>'
+    +'<div style="display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:12px">'
+      +'<button onclick="oreQueuePriceRun()" style="font-size:11px;font-weight:700;padding:5px 11px;border-radius:7px;'
+        +'border:1px solid var(--blue);background:var(--s2);color:var(--blue);cursor:pointer">Get live prices</button>'
+      +'<span id="imp-price-msg" style="font-size:11px;color:var(--fg3)"></span>'
+    +'</div>';
 
-  q.forEach(function(item,i){
+  // Sorted for reading, indexed against the real array: every handler here
+  // writes to state.importQueue[i], so the display order must not become
+  // the index or edits would land on whichever row happened to sort there.
+  oreQueueSorted().forEach(function(item){
+    var i=q.indexOf(item);
     var m=oreQueueMath(item);
     var v=oreRRVerdict(m.rr);
     var isLong=item.direction==='LONG';
@@ -10765,6 +10916,7 @@ function oreRenderQueue(){
         +'<span style="font-size:11px;color:var(--fg2)">'+(item.pattern||'—')+'</span>'
         +'<span style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap">'+flags+'</span>'
       +'</div>'
+      +oreGapLine(item)
 
       // editable inputs
       +'<div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)">'
